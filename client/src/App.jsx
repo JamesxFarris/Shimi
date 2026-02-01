@@ -3,119 +3,204 @@ import './index.css'
 
 const API_BASE = import.meta.env.PROD ? '' : 'http://localhost:3001'
 
-// Token colors
-const TOKEN_COLORS = {
-  BTC: '#f7931a', ETH: '#627eea', SOL: '#14f195', XRP: '#23292f',
-  DOGE: '#c2a633', ADA: '#0033ad', AVAX: '#e84142', LINK: '#2a5ada',
-  MATIC: '#8247e5', DOT: '#e6007a', SHIB: '#ffa409', LTC: '#345d9d',
-  UNI: '#ff007a', ATOM: '#2e3148', APT: '#4cd8af'
+// All tracked tokens with their colors and icons
+const TOKEN_CONFIG = {
+  BTC: { color: '#f7931a', name: 'Bitcoin', icon: '₿' },
+  ETH: { color: '#627eea', name: 'Ethereum', icon: 'Ξ' },
+  SOL: { color: '#14f195', name: 'Solana', icon: '◎' },
+  XRP: { color: '#23292f', name: 'XRP', icon: '✕' },
+  DOGE: { color: '#c2a633', name: 'Dogecoin', icon: 'Ð' },
+  ADA: { color: '#0033ad', name: 'Cardano', icon: '₳' },
+  AVAX: { color: '#e84142', name: 'Avalanche', icon: 'A' },
+  LINK: { color: '#2a5ada', name: 'Chainlink', icon: '⬡' },
+  MATIC: { color: '#8247e5', name: 'Polygon', icon: 'Ⓜ' },
+  DOT: { color: '#e6007a', name: 'Polkadot', icon: '●' },
+  SHIB: { color: '#ffa409', name: 'Shiba', icon: '🐕' },
+  LTC: { color: '#345d9d', name: 'Litecoin', icon: 'Ł' },
+  UNI: { color: '#ff007a', name: 'Uniswap', icon: '🦄' },
+  ATOM: { color: '#2e3148', name: 'Cosmos', icon: '⚛' },
+  APT: { color: '#4cd8af', name: 'Aptos', icon: 'A' }
 }
 
 // Format helpers
 const formatCurrency = (val) => `$${parseFloat(val || 0).toFixed(2)}`
 const formatPercent = (val) => `${parseFloat(val || 0).toFixed(1)}%`
-const formatPrice = (val) => {
-  if (!val) return '$0'
-  if (val >= 1000) return `$${(val/1000).toFixed(1)}k`
-  return `$${val.toFixed(0)}`
+
+// Format price with proper decimal places
+const formatPrice = (val, token) => {
+  if (!val) return '$0.00'
+  const num = parseFloat(val)
+
+  // Very small prices (SHIB, DOGE etc)
+  if (num < 0.01) return `$${num.toFixed(6)}`
+  if (num < 1) return `$${num.toFixed(4)}`
+  if (num < 100) return `$${num.toFixed(2)}`
+  if (num < 10000) return `$${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
+  // Large prices (BTC, ETH)
+  return `$${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
+// Price Ticker Item
+const PriceTickerItem = memo(({ token, price }) => {
+  const config = TOKEN_CONFIG[token] || { color: '#888', name: token, icon: '?' }
+
+  return (
+    <div className="ticker-item" style={{ '--token-color': config.color }}>
+      <div className="ticker-icon">{config.icon}</div>
+      <div className="ticker-info">
+        <span className="ticker-symbol">{token}</span>
+        <span className="ticker-price">{formatPrice(price, token)}</span>
+      </div>
+    </div>
+  )
+})
+
 // Opportunity Card
-const OpportunityCard = memo(({ opp, onBet, isPlacing }) => (
-  <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''}`}>
-    <div className="opp-header">
-      <span
-        className="crypto-badge"
-        style={{ background: `${TOKEN_COLORS[opp.cryptoType] || '#888'}30`, color: TOKEN_COLORS[opp.cryptoType] || '#888' }}
+const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
+  const config = TOKEN_CONFIG[opp.cryptoType] || { color: '#888', name: opp.cryptoType, icon: '?' }
+
+  return (
+    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''}`}>
+      {/* Card Header */}
+      <div className="opp-header">
+        <div className="opp-token">
+          <div className="token-icon" style={{ background: `${config.color}20`, color: config.color }}>
+            {config.icon}
+          </div>
+          <div className="token-info">
+            <span className="token-symbol">{opp.cryptoType}</span>
+            <span className="token-name">{config.name}</span>
+          </div>
+        </div>
+        <div className="opp-badges">
+          {opp.isObviousBet && <span className="badge safe">HIGH CONF</span>}
+          <span className="badge time">{opp.timeRemainingFormatted}</span>
+        </div>
+      </div>
+
+      {/* Market Title */}
+      <div className="opp-title">{opp.title}</div>
+
+      {/* Price Comparison */}
+      <div className="price-comparison">
+        <div className="price-box current">
+          <span className="price-label">Current</span>
+          <span className="price-value">{formatPrice(opp.currentPrice, opp.cryptoType)}</span>
+        </div>
+        <div className="price-arrow">
+          <span className={parseFloat(opp.pctFromStrike) >= 0 ? 'up' : 'down'}>
+            {parseFloat(opp.pctFromStrike) >= 0 ? '↑' : '↓'}
+          </span>
+          <span className={`pct ${parseFloat(opp.pctFromStrike) >= 0 ? 'up' : 'down'}`}>
+            {opp.pctFromStrike > 0 ? '+' : ''}{opp.pctFromStrike}%
+          </span>
+        </div>
+        <div className="price-box strike">
+          <span className="price-label">Strike</span>
+          <span className="price-value">{formatPrice(opp.strikePrice, opp.cryptoType)}</span>
+        </div>
+      </div>
+
+      {/* Stats Grid */}
+      <div className="stats-grid">
+        <div className="stat-box">
+          <span className="stat-label">Win Probability</span>
+          <span className="stat-value highlight">{opp.winProbability}%</span>
+        </div>
+        <div className="stat-box">
+          <span className="stat-label">Market Price</span>
+          <span className="stat-value">{(opp.betPrice * 100).toFixed(0)}¢</span>
+        </div>
+        <div className="stat-box edge">
+          <span className="stat-label">Your Edge</span>
+          <span className="stat-value">+{formatPercent(opp.edge)}</span>
+        </div>
+        <div className="stat-box">
+          <span className="stat-label">Profit if Win</span>
+          <span className="stat-value">{opp.profitIfWin}¢</span>
+        </div>
+      </div>
+
+      {/* Analysis Bar */}
+      <div className="analysis-bar">
+        <div className="analysis-item">
+          <span className={`momentum-icon ${opp.momentum}`}>
+            {opp.momentum === 'up' ? '📈' : opp.momentum === 'down' ? '📉' : '➡️'}
+          </span>
+          <span className="analysis-text">{opp.momentumStrength}</span>
+        </div>
+        <div className="analysis-item">
+          <span className="analysis-icon">🎯</span>
+          <span className="analysis-text">{opp.confidence}</span>
+        </div>
+        <div className="analysis-item">
+          <span className="analysis-icon">📊</span>
+          <span className="analysis-text">{opp.dataPoints} points</span>
+        </div>
+      </div>
+
+      {/* Recommendation */}
+      <div className="recommendation">
+        <div className={`rec-side ${opp.betSide?.toLowerCase()}`}>
+          BET {opp.betSide}
+        </div>
+        <div className="rec-reason">{opp.betReason}</div>
+      </div>
+
+      {/* Action Button */}
+      <button
+        className={`bet-btn ${isPlacing ? 'loading' : ''} ${opp.betSide?.toLowerCase()}`}
+        onClick={() => onBet(opp)}
+        disabled={isPlacing}
       >
-        {opp.cryptoType}
-      </span>
-      {opp.isObviousBet && <span className="safe-badge">✅ SAFE</span>}
-      <span className="time-badge">{opp.timeRemainingFormatted}</span>
+        {isPlacing ? (
+          <span className="btn-loading">Placing bet...</span>
+        ) : (
+          <>
+            <span className="btn-action">Place $1 Bet</span>
+            <span className="btn-profit">Win {opp.profitIfWin}¢</span>
+          </>
+        )}
+      </button>
     </div>
-
-    <div className="opp-title">{opp.title}</div>
-
-    <div className="opp-prices">
-      <div className="price-row">
-        <span className="label">Current:</span>
-        <span className="value">{formatPrice(opp.currentPrice)}</span>
-      </div>
-      <div className="price-row">
-        <span className="label">Strike:</span>
-        <span className="value">{formatPrice(opp.strikePrice)}</span>
-      </div>
-      <div className="price-row">
-        <span className="label">From Strike:</span>
-        <span className={`value ${parseFloat(opp.pctFromStrike) > 0 ? 'up' : 'down'}`}>
-          {opp.pctFromStrike > 0 ? '+' : ''}{opp.pctFromStrike}%
-        </span>
-      </div>
-    </div>
-
-    <div className="opp-stats">
-      <div className="stat">
-        <span className="stat-label">Win Prob</span>
-        <span className="stat-value">{opp.winProbability}%</span>
-      </div>
-      <div className="stat">
-        <span className="stat-label">Price</span>
-        <span className="stat-value dim">{(opp.betPrice * 100).toFixed(0)}¢</span>
-      </div>
-      <div className="stat edge-stat">
-        <span className="stat-label">Edge</span>
-        <span className="stat-value edge">+{formatPercent(opp.edge)}</span>
-      </div>
-      <div className="stat">
-        <span className="stat-label">Profit</span>
-        <span className="stat-value">{opp.profitIfWin}¢</span>
-      </div>
-    </div>
-
-    <div className="opp-analysis">
-      <span className={`momentum ${opp.momentum}`}>
-        {opp.momentum === 'up' ? '📈' : opp.momentum === 'down' ? '📉' : '➡️'} {opp.momentumStrength}
-      </span>
-      <span className="confidence">{opp.confidence} conf</span>
-      <span className="data-points">{opp.dataPoints} pts</span>
-    </div>
-
-    <div className="opp-recommendation">
-      <span className={`bet-side ${opp.betSide?.toLowerCase()}`}>
-        BET {opp.betSide}
-      </span>
-      <span className="bet-reason">{opp.betReason}</span>
-    </div>
-
-    <button
-      className={`bet-button ${isPlacing ? 'loading' : ''}`}
-      onClick={() => onBet(opp)}
-      disabled={isPlacing}
-    >
-      {isPlacing ? '⏳ PLACING...' : `BET $1 → Win ${opp.profitIfWin}¢`}
-    </button>
-  </div>
-))
+  )
+})
 
 // History Item
 const HistoryItem = memo(({ bet }) => (
-  <div className="history-item">
-    <div className="history-main">
-      <span className={`history-side ${bet.side}`}>{bet.side?.toUpperCase()}</span>
-      <span className="history-title">{bet.title}</span>
+  <div className="history-row">
+    <div className="history-cell side">
+      <span className={`side-badge ${bet.side}`}>{bet.side?.toUpperCase()}</span>
     </div>
-    <div className="history-details">
-      <span className="history-amount">{formatCurrency(bet.totalCost / 100)}</span>
-      {bet.edge && <span className="history-edge">+{formatPercent(bet.edge)} edge</span>}
-      <span className={`history-status ${bet.status}`}>{bet.status}</span>
+    <div className="history-cell title">
+      <span className="history-title">{bet.title}</span>
+      <span className="history-time">{new Date(bet.timestamp).toLocaleString()}</span>
+    </div>
+    <div className="history-cell amount">{formatCurrency(bet.totalCost / 100)}</div>
+    <div className="history-cell edge">{bet.edge ? `+${formatPercent(bet.edge)}` : '-'}</div>
+    <div className="history-cell status">
+      <span className={`status-badge ${bet.status}`}>{bet.status}</span>
     </div>
   </div>
 ))
 
+// Stats Card
+const StatsCard = ({ title, value, subtitle, icon, color }) => (
+  <div className="stats-card" style={{ '--card-color': color }}>
+    <div className="stats-card-icon">{icon}</div>
+    <div className="stats-card-content">
+      <span className="stats-card-value">{value}</span>
+      <span className="stats-card-title">{title}</span>
+      {subtitle && <span className="stats-card-subtitle">{subtitle}</span>}
+    </div>
+  </div>
+)
+
 function App() {
-  const [tab, setTab] = useState('bets')
+  const [tab, setTab] = useState('dashboard')
   const [opportunities, setOpportunities] = useState([])
-  const [prices, setPrices] = useState({ BTC: 0, ETH: 0 })
+  const [prices, setPrices] = useState({})
   const [balance, setBalance] = useState(10)
   const [betHistory, setBetHistory] = useState([])
   const [loading, setLoading] = useState(true)
@@ -126,8 +211,8 @@ function App() {
   const [authForm, setAuthForm] = useState({ apiKeyId: '', privateKey: '' })
   const [authError, setAuthError] = useState(null)
   const [authLoading, setAuthLoading] = useState(false)
-  const [betStatus, setBetStatus] = useState(null)  // { type: 'success'|'error', message: string }
-  const [placingBet, setPlacingBet] = useState(null)  // ticker of bet being placed
+  const [betStatus, setBetStatus] = useState(null)
+  const [placingBet, setPlacingBet] = useState(null)
 
   // Fetch opportunities
   const fetchOpportunities = useCallback(async () => {
@@ -137,7 +222,7 @@ function App() {
 
       if (data.success) {
         setOpportunities(data.opportunities || [])
-        setPrices(data.prices || { BTC: 0, ETH: 0 })
+        setPrices(data.prices || {})
         setError(null)
       }
     } catch (err) {
@@ -178,7 +263,6 @@ function App() {
     fetchPortfolio()
     checkAuth()
 
-    // Refresh every 15 seconds
     const interval = setInterval(() => {
       fetchOpportunities()
       fetchPortfolio()
@@ -208,18 +292,17 @@ function App() {
         setBalance(data.newBalance)
         setBetStatus({
           type: 'success',
-          message: `✅ BET PLACED: ${opp.betSide} on ${opp.cryptoType} @ ${(opp.betPrice * 100).toFixed(0)}¢${data.simulated ? ' (simulated)' : ''}`
+          message: `Bet placed: ${opp.betSide} on ${opp.cryptoType} @ ${(opp.betPrice * 100).toFixed(0)}¢${data.simulated ? ' (simulated)' : ''}`
         })
         fetchPortfolio()
         fetchOpportunities()
       } else {
-        setBetStatus({ type: 'error', message: `❌ ${data.error || 'Bet failed'}` })
+        setBetStatus({ type: 'error', message: data.error || 'Bet failed' })
       }
     } catch (err) {
-      setBetStatus({ type: 'error', message: '❌ Error placing bet - check connection' })
+      setBetStatus({ type: 'error', message: 'Error placing bet - check connection' })
     } finally {
       setPlacingBet(null)
-      // Clear status after 5 seconds
       setTimeout(() => setBetStatus(null), 5000)
     }
   }
@@ -241,15 +324,15 @@ function App() {
         const bet = data.bet
         setBetStatus({
           type: 'success',
-          message: `✅ BET PLACED: ${bet.side.toUpperCase()} on ${bet.cryptoType} @ ${bet.price}¢ | Edge: +${bet.edge?.toFixed(1)}%${data.simulated ? ' (simulated)' : ''}`
+          message: `Bet placed: ${bet.side.toUpperCase()} on ${bet.cryptoType} @ ${bet.price}¢${data.simulated ? ' (simulated)' : ''}`
         })
         fetchPortfolio()
         fetchOpportunities()
       } else if (data.message) {
-        setBetStatus({ type: 'info', message: `ℹ️ ${data.message}` })
+        setBetStatus({ type: 'info', message: data.message })
       }
     } catch (err) {
-      setBetStatus({ type: 'error', message: '❌ Error in auto-bet' })
+      setBetStatus({ type: 'error', message: 'Error in auto-bet' })
     } finally {
       setPlacingBet(null)
       setTimeout(() => setBetStatus(null), 5000)
@@ -262,16 +345,10 @@ function App() {
       const res = await fetch(`${API_BASE}/api/crypto/auto-bet/toggle`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          enabled: !autoBetEnabled,
-          intervalSeconds: 15  // Check every 15 seconds
-        })
+        body: JSON.stringify({ enabled: !autoBetEnabled, intervalSeconds: 15 })
       })
       const data = await res.json()
-
-      if (data.success) {
-        setAutoBetEnabled(data.enabled)
-      }
+      if (data.success) setAutoBetEnabled(data.enabled)
     } catch (err) {
       alert('Error toggling auto-bet')
     }
@@ -306,232 +383,427 @@ function App() {
     }
   }
 
+  // Calculate stats
+  const totalBets = betHistory.length
+  const winningBets = betHistory.filter(b => b.status === 'won').length
+  const totalWagered = betHistory.reduce((sum, b) => sum + (b.totalCost || 0), 0) / 100
+  const avgEdge = opportunities.length > 0
+    ? opportunities.reduce((sum, o) => sum + (o.edge || 0), 0) / opportunities.length
+    : 0
+
   return (
     <div className="app">
-      {/* Header */}
-      <header className="header">
-        <div className="header-left">
+      {/* Sidebar */}
+      <aside className="sidebar">
+        <div className="sidebar-header">
           <h1 className="logo">SHIMI</h1>
-          <span className="subtitle">Crypto Bot</span>
+          <span className="logo-subtitle">Crypto Prediction Bot</span>
         </div>
-        <div className="header-right">
-          <div className="balance-badge">
-            {!isAuthenticated && <span className="sim-tag">SIM</span>}
-            <span className="balance-amount">{formatCurrency(balance)}</span>
+
+        <nav className="sidebar-nav">
+          <button className={`nav-item ${tab === 'dashboard' ? 'active' : ''}`} onClick={() => setTab('dashboard')}>
+            <span className="nav-icon">📊</span>
+            <span className="nav-text">Dashboard</span>
+          </button>
+          <button className={`nav-item ${tab === 'opportunities' ? 'active' : ''}`} onClick={() => setTab('opportunities')}>
+            <span className="nav-icon">🎯</span>
+            <span className="nav-text">Opportunities</span>
+            {opportunities.length > 0 && <span className="nav-badge">{opportunities.length}</span>}
+          </button>
+          <button className={`nav-item ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
+            <span className="nav-icon">📜</span>
+            <span className="nav-text">History</span>
+          </button>
+          <button className={`nav-item ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>
+            <span className="nav-icon">⚙️</span>
+            <span className="nav-text">Settings</span>
+          </button>
+        </nav>
+
+        <div className="sidebar-footer">
+          <div className="balance-display">
+            <span className="balance-label">
+              {isAuthenticated ? 'Live Balance' : 'Simulated'}
+            </span>
+            <span className="balance-value">{formatCurrency(balance)}</span>
+          </div>
+          <div className={`connection-status ${isAuthenticated ? 'connected' : 'simulated'}`}>
+            <span className="status-dot"></span>
+            <span>{isAuthenticated ? 'Connected to Kalshi' : 'Simulation Mode'}</span>
           </div>
         </div>
-      </header>
-
-      {/* Live Prices - Scrollable */}
-      <div className="price-ticker">
-        <div className="ticker-scroll">
-          {Object.entries(prices).filter(([_, p]) => p > 0).slice(0, 8).map(([token, price]) => (
-            <div
-              key={token}
-              className="ticker-item"
-              style={{ '--token-color': TOKEN_COLORS[token] || '#888' }}
-            >
-              <span className="ticker-label">{token}</span>
-              <span className="ticker-price">{formatPrice(price)}</span>
-            </div>
-          ))}
-        </div>
-        <div className="ticker-status">
-          <span className={`status-dot ${loading ? '' : 'live'}`}></span>
-          {Object.keys(prices).length}
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <nav className="tabs">
-        <button
-          className={`tab ${tab === 'bets' ? 'active' : ''}`}
-          onClick={() => setTab('bets')}
-        >
-          OPPORTUNITIES
-        </button>
-        <button
-          className={`tab ${tab === 'history' ? 'active' : ''}`}
-          onClick={() => setTab('history')}
-        >
-          HISTORY
-        </button>
-        <button
-          className={`tab ${tab === 'settings' ? 'active' : ''}`}
-          onClick={() => setTab('settings')}
-        >
-          SETTINGS
-        </button>
-      </nav>
-
-      {/* Error Banner */}
-      {error && (
-        <div className="error-banner" onClick={fetchOpportunities}>
-          {error}
-          <span className="retry">Tap to retry</span>
-        </div>
-      )}
-
-      {/* Bet Status Banner */}
-      {betStatus && (
-        <div className={`bet-status-banner ${betStatus.type}`} onClick={() => setBetStatus(null)}>
-          {betStatus.message}
-        </div>
-      )}
+      </aside>
 
       {/* Main Content */}
-      <main className="main">
-        {/* Bets Tab */}
-        {tab === 'bets' && (
-          <div className="bets-view">
-            {/* Auto-bet controls */}
-            <div className="auto-controls">
-              <button
-                className={`auto-bet-now ${placingBet === 'auto' ? 'loading' : ''}`}
-                onClick={placeAutoBet}
-                disabled={opportunities.length === 0 || placingBet}
-              >
-                {placingBet === 'auto' ? '⏳ PLACING...' : 'PLACE BEST BET NOW'}
-              </button>
-              <button
-                className={`auto-toggle ${autoBetEnabled ? 'active' : ''}`}
-                onClick={toggleAutoBet}
-              >
-                {autoBetEnabled ? 'STOP AUTO' : 'AUTO 15s'}
-              </button>
-            </div>
+      <main className="main-content">
+        {/* Top Bar */}
+        <header className="top-bar">
+          <div className="top-bar-left">
+            <h2 className="page-title">
+              {tab === 'dashboard' && 'Dashboard'}
+              {tab === 'opportunities' && 'Betting Opportunities'}
+              {tab === 'history' && 'Bet History'}
+              {tab === 'settings' && 'Settings'}
+            </h2>
+          </div>
+          <div className="top-bar-right">
+            <button className="refresh-btn" onClick={() => { setLoading(true); fetchOpportunities() }}>
+              <span className="refresh-icon">↻</span>
+              Refresh
+            </button>
+          </div>
+        </header>
 
-            {/* Loading */}
-            {loading && (
-              <div className="loading">
-                <div className="spinner"></div>
-                <p>Scanning crypto markets...</p>
-              </div>
-            )}
+        {/* Price Ticker */}
+        <div className="price-ticker-container">
+          <div className="price-ticker">
+            {Object.entries(prices)
+              .filter(([_, p]) => p > 0)
+              .sort(([a], [b]) => {
+                const order = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK', 'MATIC', 'DOT', 'SHIB', 'LTC', 'UNI', 'ATOM', 'APT']
+                return order.indexOf(a) - order.indexOf(b)
+              })
+              .map(([token, price]) => (
+                <PriceTickerItem key={token} token={token} price={price} />
+              ))}
+          </div>
+          <div className="ticker-fade-left"></div>
+          <div className="ticker-fade-right"></div>
+          <div className="ticker-status">
+            <span className={`status-indicator ${loading ? '' : 'live'}`}></span>
+            <span className="status-text">{Object.keys(prices).filter(k => prices[k] > 0).length} tokens live</span>
+          </div>
+        </div>
 
-            {/* No opportunities */}
-            {!loading && opportunities.length === 0 && (
-              <div className="empty-state">
-                <p>No opportunities with edge found</p>
-                <span className="hint">
-                  Waiting for markets where our probability differs from Kalshi's price...
-                </span>
-              </div>
-            )}
-
-            {/* Opportunities */}
-            {!loading && opportunities.length > 0 && (
-              <div className="opps-grid">
-                {opportunities.map(opp => (
-                  <OpportunityCard
-                    key={opp.ticker}
-                    opp={opp}
-                    onBet={placeBet}
-                    isPlacing={placingBet === opp.ticker}
-                  />
-                ))}
-              </div>
-            )}
+        {/* Status Banner */}
+        {betStatus && (
+          <div className={`status-banner ${betStatus.type}`} onClick={() => setBetStatus(null)}>
+            <span className="status-icon">
+              {betStatus.type === 'success' ? '✓' : betStatus.type === 'error' ? '✕' : 'ℹ'}
+            </span>
+            <span className="status-message">{betStatus.message}</span>
+            <button className="status-close">×</button>
           </div>
         )}
 
-        {/* History Tab */}
-        {tab === 'history' && (
-          <div className="history-view">
-            <h2>Bet History</h2>
-            {betHistory.length === 0 ? (
-              <div className="empty-state">
-                <p>No bets yet</p>
-                <span className="hint">Place your first bet to see history</span>
+        {/* Content Area */}
+        <div className="content-area">
+          {/* Dashboard Tab */}
+          {tab === 'dashboard' && (
+            <div className="dashboard">
+              {/* Quick Stats */}
+              <div className="stats-row">
+                <StatsCard
+                  title="Balance"
+                  value={formatCurrency(balance)}
+                  subtitle={isAuthenticated ? 'Live' : 'Simulated'}
+                  icon="💰"
+                  color="#00ff88"
+                />
+                <StatsCard
+                  title="Opportunities"
+                  value={opportunities.length}
+                  subtitle="Markets with edge"
+                  icon="🎯"
+                  color="#a855f7"
+                />
+                <StatsCard
+                  title="Avg Edge"
+                  value={`+${avgEdge.toFixed(1)}%`}
+                  subtitle="Current markets"
+                  icon="📈"
+                  color="#4da6ff"
+                />
+                <StatsCard
+                  title="Total Bets"
+                  value={totalBets}
+                  subtitle={`$${totalWagered.toFixed(2)} wagered`}
+                  icon="🎰"
+                  color="#ffd700"
+                />
               </div>
-            ) : (
-              <div className="history-list">
-                {betHistory.map(bet => (
-                  <HistoryItem key={bet.id} bet={bet} />
-                ))}
-              </div>
-            )}
-          </div>
-        )}
 
-        {/* Settings Tab */}
-        {tab === 'settings' && (
-          <div className="settings-view">
-            <div className="settings-section">
-              <h2>Account</h2>
-              {isAuthenticated ? (
-                <div className="connected-section">
-                  <p className="connected-status">Connected to Kalshi</p>
-                  <p>Real money betting enabled</p>
-                </div>
-              ) : (
-                <div className="connect-section">
-                  <p>Connect your Kalshi account to place real bets</p>
-                  <button className="connect-btn" onClick={() => setShowAuth(true)}>
-                    Connect Kalshi API
+              {/* Quick Actions */}
+              <div className="quick-actions">
+                <h3 className="section-title">Quick Actions</h3>
+                <div className="action-buttons">
+                  <button
+                    className={`action-btn primary ${placingBet === 'auto' ? 'loading' : ''}`}
+                    onClick={placeAutoBet}
+                    disabled={opportunities.length === 0 || placingBet}
+                  >
+                    <span className="action-icon">⚡</span>
+                    <span className="action-text">
+                      {placingBet === 'auto' ? 'Placing...' : 'Place Best Bet Now'}
+                    </span>
                   </button>
+                  <button
+                    className={`action-btn ${autoBetEnabled ? 'danger' : 'secondary'}`}
+                    onClick={toggleAutoBet}
+                  >
+                    <span className="action-icon">{autoBetEnabled ? '⏹' : '▶'}</span>
+                    <span className="action-text">
+                      {autoBetEnabled ? 'Stop Auto-Bet' : 'Start Auto-Bet (15s)'}
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Top Opportunities Preview */}
+              <div className="top-opportunities">
+                <div className="section-header">
+                  <h3 className="section-title">Top Opportunities</h3>
+                  <button className="view-all-btn" onClick={() => setTab('opportunities')}>
+                    View All →
+                  </button>
+                </div>
+
+                {loading && (
+                  <div className="loading-state">
+                    <div className="spinner"></div>
+                    <p>Scanning crypto markets...</p>
+                  </div>
+                )}
+
+                {!loading && opportunities.length === 0 && (
+                  <div className="empty-state">
+                    <span className="empty-icon">🔍</span>
+                    <p>No opportunities with edge found</p>
+                    <span className="empty-hint">Waiting for price mispricings...</span>
+                  </div>
+                )}
+
+                {!loading && opportunities.length > 0 && (
+                  <div className="opportunities-preview">
+                    {opportunities.slice(0, 3).map(opp => (
+                      <OpportunityCard
+                        key={opp.ticker}
+                        opp={opp}
+                        onBet={placeBet}
+                        isPlacing={placingBet === opp.ticker}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Opportunities Tab */}
+          {tab === 'opportunities' && (
+            <div className="opportunities-page">
+              <div className="page-actions">
+                <button
+                  className={`action-btn primary ${placingBet === 'auto' ? 'loading' : ''}`}
+                  onClick={placeAutoBet}
+                  disabled={opportunities.length === 0 || placingBet}
+                >
+                  <span className="action-icon">⚡</span>
+                  {placingBet === 'auto' ? 'Placing...' : 'Place Best Bet'}
+                </button>
+                <button
+                  className={`action-btn ${autoBetEnabled ? 'danger' : 'secondary'}`}
+                  onClick={toggleAutoBet}
+                >
+                  <span className="action-icon">{autoBetEnabled ? '⏹' : '▶'}</span>
+                  {autoBetEnabled ? 'Stop Auto' : 'Auto 15s'}
+                </button>
+              </div>
+
+              {loading && (
+                <div className="loading-state">
+                  <div className="spinner"></div>
+                  <p>Scanning crypto markets...</p>
+                </div>
+              )}
+
+              {!loading && opportunities.length === 0 && (
+                <div className="empty-state large">
+                  <span className="empty-icon">🔍</span>
+                  <h3>No Opportunities Found</h3>
+                  <p>Waiting for markets where our probability differs from Kalshi's price...</p>
+                </div>
+              )}
+
+              {!loading && opportunities.length > 0 && (
+                <div className="opportunities-grid">
+                  {opportunities.map(opp => (
+                    <OpportunityCard
+                      key={opp.ticker}
+                      opp={opp}
+                      onBet={placeBet}
+                      isPlacing={placingBet === opp.ticker}
+                    />
+                  ))}
                 </div>
               )}
             </div>
+          )}
 
-            <div className="settings-section">
-              <h2>How It Works</h2>
-              <p className="how-it-works">
-                Shimi tracks live BTC and ETH prices from Binance every 10 seconds,
-                calculates 15-minute volatility, and estimates the actual probability
-                of hitting Kalshi's strike prices.
-              </p>
-              <p className="how-it-works">
-                When our calculated probability differs from Kalshi's market price,
-                that's <strong>edge</strong>. We only bet when edge exceeds 5%.
-              </p>
+          {/* History Tab */}
+          {tab === 'history' && (
+            <div className="history-page">
+              {betHistory.length === 0 ? (
+                <div className="empty-state large">
+                  <span className="empty-icon">📜</span>
+                  <h3>No Bet History</h3>
+                  <p>Place your first bet to see history here</p>
+                </div>
+              ) : (
+                <div className="history-table">
+                  <div className="history-header">
+                    <div className="history-cell side">Side</div>
+                    <div className="history-cell title">Market</div>
+                    <div className="history-cell amount">Amount</div>
+                    <div className="history-cell edge">Edge</div>
+                    <div className="history-cell status">Status</div>
+                  </div>
+                  <div className="history-body">
+                    {betHistory.map(bet => (
+                      <HistoryItem key={bet.id} bet={bet} />
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
+          )}
 
-            <div className="settings-section">
-              <h2>Current Settings</h2>
-              <div className="settings-info">
-                <div className="setting-item">
-                  <span>Bankroll</span>
-                  <span>{formatCurrency(balance)}</span>
+          {/* Settings Tab */}
+          {tab === 'settings' && (
+            <div className="settings-page">
+              <div className="settings-grid">
+                {/* Account Section */}
+                <div className="settings-card">
+                  <h3 className="settings-card-title">Account</h3>
+                  {isAuthenticated ? (
+                    <div className="connected-info">
+                      <div className="connected-badge">
+                        <span className="connected-dot"></span>
+                        Connected to Kalshi
+                      </div>
+                      <p>Real money betting is enabled</p>
+                    </div>
+                  ) : (
+                    <div className="connect-prompt">
+                      <p>Connect your Kalshi account to place real bets</p>
+                      <button className="connect-btn" onClick={() => setShowAuth(true)}>
+                        Connect Kalshi API
+                      </button>
+                    </div>
+                  )}
                 </div>
-                <div className="setting-item">
-                  <span>Min Edge Required</span>
-                  <span>1%</span>
+
+                {/* Current Settings */}
+                <div className="settings-card">
+                  <h3 className="settings-card-title">Current Configuration</h3>
+                  <div className="settings-list">
+                    <div className="settings-item">
+                      <span className="settings-label">Bankroll</span>
+                      <span className="settings-value">{formatCurrency(balance)}</span>
+                    </div>
+                    <div className="settings-item">
+                      <span className="settings-label">Bet Amount</span>
+                      <span className="settings-value">$1.00 fixed</span>
+                    </div>
+                    <div className="settings-item">
+                      <span className="settings-label">Min Edge (High Conf)</span>
+                      <span className="settings-value">0.5%</span>
+                    </div>
+                    <div className="settings-item">
+                      <span className="settings-label">Min Edge (Normal)</span>
+                      <span className="settings-value">3%</span>
+                    </div>
+                    <div className="settings-item">
+                      <span className="settings-label">Auto-bet Status</span>
+                      <span className={`settings-value ${autoBetEnabled ? 'active' : ''}`}>
+                        {autoBetEnabled ? 'Running' : 'Stopped'}
+                      </span>
+                    </div>
+                    <div className="settings-item">
+                      <span className="settings-label">Mode</span>
+                      <span className={`settings-value ${isAuthenticated ? 'live' : ''}`}>
+                        {isAuthenticated ? 'Live' : 'Simulation'}
+                      </span>
+                    </div>
+                  </div>
                 </div>
-                <div className="setting-item">
-                  <span>Bet Amount</span>
-                  <span>$1.00 fixed</span>
+
+                {/* How It Works */}
+                <div className="settings-card wide">
+                  <h3 className="settings-card-title">How It Works</h3>
+                  <div className="how-it-works">
+                    <div className="step">
+                      <span className="step-number">1</span>
+                      <div className="step-content">
+                        <h4>Track Prices</h4>
+                        <p>We monitor 15 cryptocurrencies via CoinGecko every 10 seconds, tracking price movements and calculating volatility.</p>
+                      </div>
+                    </div>
+                    <div className="step">
+                      <span className="step-number">2</span>
+                      <div className="step-content">
+                        <h4>Analyze Markets</h4>
+                        <p>We fetch Kalshi's 15-minute crypto markets and calculate the true probability of each outcome using our statistical model.</p>
+                      </div>
+                    </div>
+                    <div className="step">
+                      <span className="step-number">3</span>
+                      <div className="step-content">
+                        <h4>Find Edge</h4>
+                        <p>When our calculated probability differs from Kalshi's price, that's your edge. We only show bets with positive expected value.</p>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-                <div className="setting-item">
-                  <span>Auto-bet Status</span>
-                  <span>{autoBetEnabled ? 'Running (every 15s)' : 'Stopped'}</span>
-                </div>
-                <div className="setting-item">
-                  <span>Mode</span>
-                  <span>{isAuthenticated ? 'Real Money' : 'Simulation'}</span>
+
+                {/* Tracked Tokens */}
+                <div className="settings-card wide">
+                  <h3 className="settings-card-title">Tracked Cryptocurrencies</h3>
+                  <div className="tokens-grid">
+                    {Object.entries(TOKEN_CONFIG).map(([token, config]) => (
+                      <div key={token} className="token-item" style={{ '--token-color': config.color }}>
+                        <span className="token-icon">{config.icon}</span>
+                        <span className="token-symbol">{token}</span>
+                        <span className="token-name">{config.name}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </main>
 
-      {/* Footer */}
-      <footer className="footer">
-        <button className="refresh-btn" onClick={() => {
-          setLoading(true)
-          fetchOpportunities()
-        }}>
-          Refresh
+      {/* Mobile Bottom Nav */}
+      <nav className="mobile-nav">
+        <button className={`mobile-nav-item ${tab === 'dashboard' ? 'active' : ''}`} onClick={() => setTab('dashboard')}>
+          <span>📊</span>
+          <span>Dashboard</span>
         </button>
-      </footer>
+        <button className={`mobile-nav-item ${tab === 'opportunities' ? 'active' : ''}`} onClick={() => setTab('opportunities')}>
+          <span>🎯</span>
+          <span>Bets</span>
+        </button>
+        <button className={`mobile-nav-item ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
+          <span>📜</span>
+          <span>History</span>
+        </button>
+        <button className={`mobile-nav-item ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>
+          <span>⚙️</span>
+          <span>Settings</span>
+        </button>
+      </nav>
 
       {/* Auth Modal */}
       {showAuth && (
         <div className="modal-overlay" onClick={() => setShowAuth(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
-            <h2>Connect Kalshi</h2>
-            <p>Enter your API credentials from kalshi.com/account/api</p>
+            <div className="modal-header">
+              <h2>Connect Kalshi</h2>
+              <button className="modal-close" onClick={() => setShowAuth(false)}>×</button>
+            </div>
+            <p className="modal-description">Enter your API credentials from kalshi.com/account/api</p>
 
             {authError && <div className="auth-error">{authError}</div>}
 
@@ -556,10 +828,10 @@ function App() {
                 />
               </div>
               <div className="modal-actions">
-                <button type="button" onClick={() => setShowAuth(false)}>
+                <button type="button" className="btn-secondary" onClick={() => setShowAuth(false)}>
                   Cancel
                 </button>
-                <button type="submit" className="primary" disabled={authLoading}>
+                <button type="submit" className="btn-primary" disabled={authLoading}>
                   {authLoading ? 'Connecting...' : 'Connect'}
                 </button>
               </div>
