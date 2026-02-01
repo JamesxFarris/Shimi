@@ -47,23 +47,23 @@ let portfolio = { balance: 0, positions: [] };
 // CRYPTO PRICE TRACKING - EXPANDED TOKENS
 // ============================================
 
-// All tokens we track - Binance symbols
+// All tokens we track - with price ranges for strike detection
 const TRACKED_TOKENS = {
-  BTC: { symbol: 'BTCUSDT', name: 'Bitcoin', minPrice: 10000, maxPrice: 500000 },
-  ETH: { symbol: 'ETHUSDT', name: 'Ethereum', minPrice: 100, maxPrice: 20000 },
-  SOL: { symbol: 'SOLUSDT', name: 'Solana', minPrice: 1, maxPrice: 1000 },
-  XRP: { symbol: 'XRPUSDT', name: 'XRP', minPrice: 0.1, maxPrice: 100 },
-  DOGE: { symbol: 'DOGEUSDT', name: 'Dogecoin', minPrice: 0.01, maxPrice: 10 },
-  ADA: { symbol: 'ADAUSDT', name: 'Cardano', minPrice: 0.1, maxPrice: 50 },
-  AVAX: { symbol: 'AVAXUSDT', name: 'Avalanche', minPrice: 1, maxPrice: 500 },
-  LINK: { symbol: 'LINKUSDT', name: 'Chainlink', minPrice: 1, maxPrice: 200 },
-  MATIC: { symbol: 'MATICUSDT', name: 'Polygon', minPrice: 0.1, maxPrice: 50 },
-  DOT: { symbol: 'DOTUSDT', name: 'Polkadot', minPrice: 1, maxPrice: 200 },
-  SHIB: { symbol: 'SHIBUSDT', name: 'Shiba Inu', minPrice: 0.000001, maxPrice: 0.001 },
-  LTC: { symbol: 'LTCUSDT', name: 'Litecoin', minPrice: 10, maxPrice: 1000 },
-  UNI: { symbol: 'UNIUSDT', name: 'Uniswap', minPrice: 1, maxPrice: 100 },
-  ATOM: { symbol: 'ATOMUSDT', name: 'Cosmos', minPrice: 1, maxPrice: 100 },
-  APT: { symbol: 'APTUSDT', name: 'Aptos', minPrice: 1, maxPrice: 100 }
+  BTC: { name: 'Bitcoin', minPrice: 10000, maxPrice: 500000 },
+  ETH: { name: 'Ethereum', minPrice: 100, maxPrice: 20000 },
+  SOL: { name: 'Solana', minPrice: 1, maxPrice: 1000 },
+  XRP: { name: 'XRP', minPrice: 0.1, maxPrice: 100 },
+  DOGE: { name: 'Dogecoin', minPrice: 0.01, maxPrice: 10 },
+  ADA: { name: 'Cardano', minPrice: 0.1, maxPrice: 50 },
+  AVAX: { name: 'Avalanche', minPrice: 1, maxPrice: 500 },
+  LINK: { name: 'Chainlink', minPrice: 1, maxPrice: 200 },
+  MATIC: { name: 'Polygon', minPrice: 0.1, maxPrice: 50 },
+  DOT: { name: 'Polkadot', minPrice: 1, maxPrice: 200 },
+  SHIB: { name: 'Shiba Inu', minPrice: 0.000001, maxPrice: 0.001 },
+  LTC: { name: 'Litecoin', minPrice: 10, maxPrice: 1000 },
+  UNI: { name: 'Uniswap', minPrice: 1, maxPrice: 100 },
+  ATOM: { name: 'Cosmos', minPrice: 1, maxPrice: 100 },
+  APT: { name: 'Aptos', minPrice: 1, maxPrice: 100 }
 };
 
 // Price data storage
@@ -72,21 +72,32 @@ Object.keys(TRACKED_TOKENS).forEach(token => {
   cryptoPrices[token] = { price: 0, timestamp: 0, history: [], volatility: 0.02 };
 });
 
-// Fetch all prices from Binance in one call
+// CoinGecko ID mapping
+const COINGECKO_IDS = {
+  BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana', XRP: 'ripple', DOGE: 'dogecoin',
+  ADA: 'cardano', AVAX: 'avalanche-2', LINK: 'chainlink', MATIC: 'matic-network',
+  DOT: 'polkadot', SHIB: 'shiba-inu', LTC: 'litecoin', UNI: 'uniswap', ATOM: 'cosmos', APT: 'aptos'
+};
+
+// Fetch all prices from CoinGecko (works globally, no restrictions)
 async function fetchCryptoPrices() {
   try {
-    // Fetch all prices at once
-    const res = await fetch('https://api.binance.com/api/v3/ticker/price');
-    const allPrices = await res.json();
+    const ids = Object.values(COINGECKO_IDS).join(',');
+    const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd`);
+    const data = await res.json();
+
+    if (data.error) {
+      console.error('CoinGecko error:', data.error);
+      return null;
+    }
 
     const now = Date.now();
-    const priceMap = {};
-    allPrices.forEach(p => { priceMap[p.symbol] = parseFloat(p.price); });
 
     // Update each tracked token
-    for (const [token, config] of Object.entries(TRACKED_TOKENS)) {
-      const price = priceMap[config.symbol];
-      if (price && price > 0) {
+    for (const [token, geckoId] of Object.entries(COINGECKO_IDS)) {
+      const priceData = data[geckoId];
+      if (priceData && priceData.usd > 0) {
+        const price = priceData.usd;
         cryptoPrices[token].price = price;
         cryptoPrices[token].timestamp = now;
 
@@ -244,37 +255,72 @@ async function fetchCryptoMarkets() {
   }
 
   try {
-    const data = await kalshiRequest('GET', '/markets?limit=1000&status=open');
-    const markets = data.markets || [];
+    // Fetch crypto markets directly by series ticker instead of filtering 1000+ markets
+    // This ensures we get the 15-minute crypto markets that would otherwise be buried
+    const cryptoSeries = [
+      'KXBTC15M',   // Bitcoin 15-minute
+      'KXETH15M',   // Ethereum 15-minute
+      'KXSOL15M',   // Solana 15-minute
+      'KXBTCD',     // Bitcoin above/below
+      'KXETHD',     // Ethereum above/below
+      'KXSOLD',     // Solana above/below
+      'KXXRPD',     // XRP above/below
+      'KXDOGED',    // Doge above/below
+      'KXBTCMAXD',  // BTC max daily
+    ];
 
-    // Filter for crypto markets closing within 2 hours
-    const cryptoMarkets = markets.filter(m => {
-      const ticker = (m.ticker || '').toUpperCase();
-      const title = (m.title || '').toUpperCase();
+    const allMarkets = [];
 
-      // Check if it's a crypto market
-      let isCrypto = false;
-      for (const [token, cfg] of Object.entries(TRACKED_TOKENS)) {
-        if (ticker.includes(token) || title.includes(token) || title.includes(cfg.name.toUpperCase())) {
-          isCrypto = true;
-          break;
+    // Fetch each crypto series in parallel
+    const fetches = cryptoSeries.map(async (series) => {
+      try {
+        const data = await kalshiRequest('GET', `/markets?limit=100&status=open&series_ticker=${series}`);
+        return data.markets || [];
+      } catch (e) {
+        console.log(`No markets for ${series}`);
+        return [];
+      }
+    });
+
+    const results = await Promise.all(fetches);
+    results.forEach(markets => allMarkets.push(...markets));
+
+    // Also try the general crypto filter as backup
+    try {
+      const data = await kalshiRequest('GET', '/markets?limit=1000&status=open');
+      const markets = data.markets || [];
+
+      markets.forEach(m => {
+        const ticker = (m.ticker || '').toUpperCase();
+        const title = (m.title || '').toUpperCase();
+
+        // Check if already added
+        if (allMarkets.some(existing => existing.ticker === m.ticker)) return;
+
+        // Check if it's a crypto market
+        let isCrypto = false;
+        for (const [token, cfg] of Object.entries(TRACKED_TOKENS)) {
+          if (ticker.includes(token) || title.includes(token) || title.includes(cfg.name.toUpperCase())) {
+            isCrypto = true;
+            break;
+          }
         }
-      }
 
-      // Also check for common crypto ticker patterns
-      if (!isCrypto) {
-        isCrypto = ticker.includes('INX') || // Kalshi crypto index
-                   title.includes('CRYPTO') ||
-                   title.includes('COIN');
-      }
+        if (isCrypto) allMarkets.push(m);
+      });
+    } catch (e) {
+      console.log('Backup market fetch failed:', e.message);
+    }
 
-      // Check time - within 4 hours for more opportunities
+    // Filter for short-term markets (within 4 hours, more than 30 seconds remaining)
+    const cryptoMarkets = allMarkets.filter(m => {
       const closeTime = m.close_time ? new Date(m.close_time).getTime() : null;
       const timeRemaining = closeTime ? closeTime - now : null;
       const isShortTerm = timeRemaining && timeRemaining > 30000 && timeRemaining < 4 * 60 * 60 * 1000;
-
-      return isCrypto && isShortTerm;
+      return isShortTerm;
     });
+
+    console.log(`📊 Fetched ${allMarkets.length} crypto markets, ${cryptoMarkets.length} short-term`);
 
     marketCache.data = cryptoMarkets;
     marketCache.lastFetch = now;
@@ -300,27 +346,32 @@ function parseMarket(market) {
     }
   }
 
-  // Extract strike price from title
+  // Extract strike price - check floor_strike first (for 15-minute markets), then title
   let strikePrice = null;
-  const priceMatches = title.match(/\$?([\d,]+(?:\.\d+)?)/g);
-  if (priceMatches && cryptoType) {
-    const cfg = TRACKED_TOKENS[cryptoType];
-    for (const match of priceMatches) {
-      const price = parseFloat(match.replace(/[$,]/g, ''));
-      if (price >= cfg.minPrice && price <= cfg.maxPrice) {
-        strikePrice = price;
-        break;
+  if (market.floor_strike && typeof market.floor_strike === 'number') {
+    strikePrice = market.floor_strike;
+  } else {
+    const priceMatches = title.match(/\$?([\d,]+(?:\.\d+)?)/g);
+    if (priceMatches && cryptoType) {
+      const cfg = TRACKED_TOKENS[cryptoType];
+      for (const match of priceMatches) {
+        const price = parseFloat(match.replace(/[$,]/g, ''));
+        if (price >= cfg.minPrice && price <= cfg.maxPrice) {
+          strikePrice = price;
+          break;
+        }
       }
     }
   }
 
   // Determine market type (above/below/between)
+  // 15-minute markets use "up" (YES = price goes up = above starting price)
   let marketType = null;
   if (title.includes('above') || title.includes('>=') || title.includes('higher') ||
-      title.includes('or more') || title.includes('over')) {
+      title.includes('or more') || title.includes('over') || title.includes(' up')) {
     marketType = 'above'; // YES = price above strike
   } else if (title.includes('below') || title.includes('<=') || title.includes('lower') ||
-             title.includes('or less') || title.includes('under')) {
+             title.includes('or less') || title.includes('under') || title.includes(' down')) {
     marketType = 'below'; // YES = price below strike
   } else if (title.includes('between')) {
     marketType = 'between';
@@ -331,6 +382,13 @@ function parseMarket(market) {
   const timeRemaining = closeTime ? closeTime - Date.now() : null;
   const timeRemainingMinutes = timeRemaining ? timeRemaining / (60 * 1000) : null;
 
+  // Kalshi API returns prices in cents (0-100), convert to probability (0-1)
+  // e.g., yes_ask: 4 means $0.04 = 4% probability
+  const yesAsk = (parseFloat(market.yes_ask) || 0) / 100;
+  const noAsk = (parseFloat(market.no_ask) || 0) / 100;
+  const yesBid = (parseFloat(market.yes_bid) || 0) / 100;
+  const noBid = (parseFloat(market.no_bid) || 0) / 100;
+
   return {
     ticker: market.ticker,
     title: market.title,
@@ -340,10 +398,10 @@ function parseMarket(market) {
     closeTime: market.close_time,
     timeRemaining,
     timeRemainingMinutes,
-    yesAsk: parseFloat(market.yes_ask) || 0,
-    noAsk: parseFloat(market.no_ask) || 0,
-    yesBid: parseFloat(market.yes_bid) || 0,
-    noBid: parseFloat(market.no_bid) || 0,
+    yesAsk,
+    noAsk,
+    yesBid,
+    noBid,
     volume: parseInt(market.volume) || 0
   };
 }
@@ -521,15 +579,14 @@ app.post('/api/bet', async (req, res) => {
       return res.status(404).json({ success: false, error: 'Market not found' });
     }
 
-    const price = side.toLowerCase() === 'yes'
-      ? parseFloat(market.yes_ask)
-      : parseFloat(market.no_ask);
+    // Kalshi API returns prices in cents already (e.g., yes_ask: 4 means 4 cents)
+    const priceCents = side.toLowerCase() === 'yes'
+      ? parseFloat(market.yes_ask) || 0
+      : parseFloat(market.no_ask) || 0;
 
-    if (!price || price <= 0) {
+    if (!priceCents || priceCents <= 0) {
       return res.status(400).json({ success: false, error: 'Invalid market price' });
     }
-
-    const priceCents = Math.round(price * 100);
     const count = Math.floor(amountCents / priceCents);
 
     if (count < 1) {
