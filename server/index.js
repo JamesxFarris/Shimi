@@ -169,6 +169,13 @@ async function fetchCryptoPrices() {
           cryptoPrices[token].history.shift();
         }
 
+        // Keep extended history for statistical analysis (2 hours)
+        if (!priceHistoryExtended[token]) priceHistoryExtended[token] = [];
+        priceHistoryExtended[token].push({ price, time: now });
+        // Keep last 2 hours (720 points at 10-second intervals)
+        const twoHoursAgo = now - 2 * 60 * 60 * 1000;
+        priceHistoryExtended[token] = priceHistoryExtended[token].filter(p => p.time > twoHoursAgo);
+
         // Calculate volatility
         cryptoPrices[token].volatility = calculateVolatility(cryptoPrices[token].history, token);
       }
@@ -180,6 +187,16 @@ async function fetchCryptoPrices() {
     return null;
   }
 }
+
+// ============================================
+// STATISTICAL ANALYSIS ENGINE
+// ============================================
+
+// Store extended price history for analysis (last 2 hours)
+const priceHistoryExtended = {};
+Object.keys(TRACKED_TOKENS).forEach(token => {
+  priceHistoryExtended[token] = [];
+});
 
 // Calculate 15-minute volatility from price history
 function calculateVolatility(history, token) {
@@ -213,6 +230,175 @@ function calculateVolatility(history, token) {
 
   // Cap at reasonable bounds
   return Math.max(0.005, Math.min(0.08, volatility15Min));
+}
+
+// Calculate momentum (recent price trend)
+// Returns: positive = uptrend, negative = downtrend, magnitude = strength
+function calculateMomentum(history, lookbackMinutes = 5) {
+  if (history.length < 5) return { trend: 0, strength: 'weak' };
+
+  const now = Date.now();
+  const lookbackMs = lookbackMinutes * 60 * 1000;
+
+  // Get prices in the lookback window
+  const recentPrices = history.filter(p => now - p.time < lookbackMs);
+  if (recentPrices.length < 3) return { trend: 0, strength: 'weak' };
+
+  // Calculate trend using linear regression
+  const n = recentPrices.length;
+  let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+
+  recentPrices.forEach((p, i) => {
+    sumX += i;
+    sumY += p.price;
+    sumXY += i * p.price;
+    sumX2 += i * i;
+  });
+
+  const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+  const avgPrice = sumY / n;
+
+  // Normalize slope as percentage per minute
+  const trendPctPerMin = (slope / avgPrice) * 100;
+
+  // Classify strength
+  let strength = 'weak';
+  if (Math.abs(trendPctPerMin) > 0.1) strength = 'moderate';
+  if (Math.abs(trendPctPerMin) > 0.3) strength = 'strong';
+
+  return {
+    trend: trendPctPerMin,
+    strength,
+    direction: trendPctPerMin > 0.05 ? 'up' : trendPctPerMin < -0.05 ? 'down' : 'neutral'
+  };
+}
+
+// Analyze historical price crossings
+// Given current price and a target, how often does price cross that target in X minutes?
+function analyzeHistoricalCrossings(history, currentPrice, targetPrice, windowMinutes = 15) {
+  if (history.length < 30) {
+    return { crossingProb: 0.5, sampleSize: 0, reliable: false };
+  }
+
+  const windowMs = windowMinutes * 60 * 1000;
+  let crossings = 0;
+  let totalWindows = 0;
+
+  // Look at historical windows
+  for (let i = 0; i < history.length - 10; i++) {
+    const startPrice = history[i].price;
+    const startTime = history[i].time;
+
+    // Find prices within the window
+    const windowPrices = history.filter(p =>
+      p.time > startTime && p.time <= startTime + windowMs
+    );
+
+    if (windowPrices.length < 3) continue;
+    totalWindows++;
+
+    // Did price cross the equivalent target?
+    // Scale target relative to start price
+    const relativeTarget = targetPrice / currentPrice;
+    const scaledTarget = startPrice * relativeTarget;
+
+    const didCross = windowPrices.some(p => {
+      if (currentPrice > targetPrice) {
+        // Currently above target - did it drop below?
+        return p.price < scaledTarget;
+      } else {
+        // Currently below target - did it rise above?
+        return p.price > scaledTarget;
+      }
+    });
+
+    if (didCross) crossings++;
+  }
+
+  const crossingProb = totalWindows > 0 ? crossings / totalWindows : 0.5;
+
+  return {
+    crossingProb,
+    sampleSize: totalWindows,
+    reliable: totalWindows >= 10
+  };
+}
+
+// Main statistical prediction function
+// Returns probability that price will be above/below target at expiry
+function predictOutcome(token, currentPrice, targetPrice, expiryMinutes = 15) {
+  const history = cryptoPrices[token]?.history || [];
+  const extHistory = priceHistoryExtended[token] || [];
+
+  // Combine histories for analysis
+  const allHistory = [...extHistory, ...history].sort((a, b) => a.time - b.time);
+
+  // 1. Calculate volatility-based probability (baseline)
+  const volatility = cryptoPrices[token]?.volatility || 0.025;
+  const pctToTarget = (targetPrice - currentPrice) / currentPrice;
+  const zScore = pctToTarget / volatility;
+
+  // Base probability from normal distribution
+  // Probability of ending BELOW target
+  let probBelow = normalCDF(zScore);
+  let probAbove = 1 - probBelow;
+
+  // 2. Adjust for momentum
+  const momentum = calculateMomentum(allHistory, 5);
+
+  // Momentum adjustment: if trending up, increase prob of staying above
+  // This is a Bayesian-style update
+  let momentumAdjustment = 0;
+  if (momentum.strength === 'strong') {
+    momentumAdjustment = momentum.trend > 0 ? 0.08 : -0.08;  // ±8%
+  } else if (momentum.strength === 'moderate') {
+    momentumAdjustment = momentum.trend > 0 ? 0.04 : -0.04;  // ±4%
+  }
+
+  probAbove = Math.max(0.05, Math.min(0.95, probAbove + momentumAdjustment));
+  probBelow = 1 - probAbove;
+
+  // 3. Check historical crossing data
+  const crossingAnalysis = analyzeHistoricalCrossings(allHistory, currentPrice, targetPrice, expiryMinutes);
+
+  if (crossingAnalysis.reliable) {
+    // Blend with historical data (weight: 30% historical, 70% model)
+    const historicalProbCross = crossingAnalysis.crossingProb;
+
+    if (currentPrice > targetPrice) {
+      // Currently above - historical says X% chance of dropping below
+      const blendedProbBelow = 0.3 * historicalProbCross + 0.7 * probBelow;
+      probBelow = blendedProbBelow;
+      probAbove = 1 - probBelow;
+    } else {
+      // Currently below - historical says X% chance of rising above
+      const blendedProbAbove = 0.3 * historicalProbCross + 0.7 * probAbove;
+      probAbove = blendedProbAbove;
+      probBelow = 1 - probAbove;
+    }
+  }
+
+  // 4. Calculate confidence based on data quality
+  const confidence = Math.min(
+    allHistory.length / 100,  // More data = more confidence
+    crossingAnalysis.reliable ? 0.8 : 0.5,
+    momentum.strength === 'strong' ? 0.9 : 0.7
+  );
+
+  return {
+    probAbove,
+    probBelow,
+    momentum,
+    volatility,
+    zScore,
+    confidence,
+    dataPoints: allHistory.length,
+    analysis: {
+      method: crossingAnalysis.reliable ? 'historical+model' : 'model',
+      momentumDirection: momentum.direction,
+      momentumStrength: momentum.strength
+    }
+  };
 }
 
 // Calculate probability using log-normal distribution
@@ -551,103 +737,75 @@ function analyzeCryptoMarket(parsed) {
   const volatility = priceData.volatility;
   const timeMinutes = parsed.timeRemainingMinutes || 15;
 
-  // Calculate how far price is from strike (as percentage and z-score)
+  // Calculate how far price is from strike
   const pctFromStrike = ((currentPrice - parsed.strikePrice) / parsed.strikePrice) * 100;
-  const zScore = pctFromStrike / (volatility * 100);
 
-  // Calculate probabilities using log-normal model
-  const { probAbove, probBelow } = calculateProbability(currentPrice, parsed.strikePrice, volatility);
+  // USE STATISTICAL PREDICTION ENGINE
+  // This analyzes historical data, momentum, and volatility
+  const prediction = predictOutcome(
+    parsed.cryptoType,
+    currentPrice,
+    parsed.strikePrice,
+    timeMinutes
+  );
 
   // For "above/up" markets: YES wins if price >= strike at expiry
   // For "below/down" markets: YES wins if price < strike at expiry
   let probYesWins, probNoWins;
   if (parsed.marketType === 'above') {
-    probYesWins = probAbove;
-    probNoWins = probBelow;
-  } else { // below
-    probYesWins = probBelow;
-    probNoWins = probAbove;
+    probYesWins = prediction.probAbove;
+    probNoWins = prediction.probBelow;
+  } else {
+    probYesWins = prediction.probBelow;
+    probNoWins = prediction.probAbove;
   }
 
   // Market implied probabilities from ask prices
   const marketProbYes = parsed.yesAsk;
   const marketProbNo = parsed.noAsk;
 
-  // Calculate edge for both sides
-  // Edge = our probability - market's price (what we pay)
-  const edgeYes = (probYesWins - marketProbYes) * 100;
-  const edgeNo = (probNoWins - marketProbNo) * 100;
-
-  // FIND THE BEST SIDE - Check BOTH YES and NO for every market
-  // Don't just look for "obvious" bets - find any edge on either side
-  let bestBet = null;
-
-  // Calculate probabilities for both sides
-  let yesWinProb, noWinProb;
-  if (parsed.marketType === 'above') {
-    // "Price up" market: YES wins if price >= strike
-    if (zScore >= 0) {
-      // Price above strike - YES favored
-      yesWinProb = 0.5 + (normalCDF(Math.abs(zScore)) - 0.5);  // 50% + extra
-      noWinProb = 1 - yesWinProb;
-    } else {
-      // Price below strike - NO favored
-      noWinProb = 0.5 + (normalCDF(Math.abs(zScore)) - 0.5);
-      yesWinProb = 1 - noWinProb;
-    }
-  } else {
-    // "Price down/below" market: YES wins if price < strike
-    if (zScore <= 0) {
-      yesWinProb = 0.5 + (normalCDF(Math.abs(zScore)) - 0.5);
-      noWinProb = 1 - yesWinProb;
-    } else {
-      noWinProb = 0.5 + (normalCDF(Math.abs(zScore)) - 0.5);
-      yesWinProb = 1 - noWinProb;
-    }
-  }
-
   // Calculate edge for BOTH sides
-  const yesEdge = (yesWinProb - marketProbYes) * 100;
-  const noEdge = (noWinProb - marketProbNo) * 100;
+  const yesEdge = (probYesWins - marketProbYes) * 100;
+  const noEdge = (probNoWins - marketProbNo) * 100;
 
-  // Determine minimum edge based on confidence
-  const yesMinEdge = yesWinProb > 0.85 ? OBVIOUS_BET_MIN_EDGE : MANUAL_BET_MIN_EDGE;
-  const noMinEdge = noWinProb > 0.85 ? OBVIOUS_BET_MIN_EDGE : MANUAL_BET_MIN_EDGE;
+  // Build analysis description
+  const momentumDesc = prediction.momentum.direction === 'up' ? '📈 trending UP' :
+                       prediction.momentum.direction === 'down' ? '📉 trending DOWN' : '➡️ sideways';
+
+  // Determine minimum edge based on confidence and probability
+  const highConfidence = prediction.confidence > 0.6 && prediction.dataPoints > 30;
+  const yesMinEdge = (probYesWins > 0.75 && highConfidence) ? OBVIOUS_BET_MIN_EDGE : MANUAL_BET_MIN_EDGE;
+  const noMinEdge = (probNoWins > 0.75 && highConfidence) ? OBVIOUS_BET_MIN_EDGE : MANUAL_BET_MIN_EDGE;
+
+  // FIND THE BEST SIDE based on statistical analysis
+  let bestBet = null;
 
   // Check YES side
   if (yesEdge >= yesMinEdge && parsed.yesAsk > 0 && parsed.yesAsk < 0.98) {
-    const isObvious = yesWinProb > 0.85;
+    const isObvious = probYesWins > 0.75 && highConfidence;
     bestBet = {
       side: 'YES',
       edge: yesEdge,
-      prob: yesWinProb,
+      prob: probYesWins,
       isObvious,
-      reason: isObvious
-        ? `🎯 ${(yesWinProb*100).toFixed(0)}% win rate - price ${pctFromStrike > 0 ? 'above' : 'near'} strike`
-        : `📊 Model: ${(yesWinProb*100).toFixed(0)}% win probability`
+      reason: `${momentumDesc} | ${(probYesWins*100).toFixed(0)}% probability (${prediction.analysis.method})`
     };
   }
 
-  // Check NO side - prefer it if it has better edge OR if YES doesn't qualify
+  // Check NO side - prefer it if better edge or higher probability
   if (noEdge >= noMinEdge && parsed.noAsk > 0 && parsed.noAsk < 0.98) {
-    const isObvious = noWinProb > 0.85;
-    // Use NO if: no YES bet, OR NO has better edge, OR NO is obvious and YES isn't
-    if (!bestBet || noEdge > bestBet.edge || (isObvious && !bestBet.isObvious)) {
+    const isObvious = probNoWins > 0.75 && highConfidence;
+    // Use NO if: no YES bet, OR NO has better edge, OR NO is higher probability
+    if (!bestBet || noEdge > bestBet.edge || probNoWins > bestBet.prob) {
       bestBet = {
         side: 'NO',
         edge: noEdge,
-        prob: noWinProb,
+        prob: probNoWins,
         isObvious,
-        reason: isObvious
-          ? `🎯 ${(noWinProb*100).toFixed(0)}% win rate - price ${pctFromStrike < 0 ? 'below' : 'near'} strike`
-          : `📊 Model: ${(noWinProb*100).toFixed(0)}% win probability`
+        reason: `${momentumDesc} | ${(probNoWins*100).toFixed(0)}% probability (${prediction.analysis.method})`
       };
     }
   }
-
-  // Use the calculated probabilities for both model and obvious bets
-  let obviousBet = bestBet;
-  let estimatedWinProb = bestBet ? bestBet.prob : 0;
 
   // Pick the best bet: PRIORITIZE high probability "free money" over high edge risky bets
   // Strategy: Safe steady growth > gambling on uncertain edges
@@ -692,14 +850,14 @@ function analyzeCryptoMarket(parsed) {
     currentPrice,
     volatility: (volatility * 100).toFixed(2) + '%',
     pctFromStrike: pctFromStrike.toFixed(2),
-    zScore: zScore.toFixed(2),
+    zScore: prediction.zScore.toFixed(2),
     probYesWins: probYesWins * 100,
     probNoWins: probNoWins * 100,
     ourProbability,  // Already in percentage
     winProbability: (winProbability * 100).toFixed(1),
     marketImpliedProb: marketImpliedProb * 100,
-    edgeYes,
-    edgeNo,
+    yesEdge,
+    noEdge,
     edge,
     betSide,
     betPrice,
@@ -709,6 +867,12 @@ function analyzeCryptoMarket(parsed) {
     profitPotential,
     recommendedBet,
     isObviousBet: bestBet?.isObvious || false,
+    // Statistical analysis info
+    momentum: prediction.momentum.direction,
+    momentumStrength: prediction.momentum.strength,
+    confidence: (prediction.confidence * 100).toFixed(0) + '%',
+    dataPoints: prediction.dataPoints,
+    analysisMethod: prediction.analysis.method,
     timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining)
   };
 }

@@ -72,6 +72,14 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => (
       </div>
     </div>
 
+    <div className="opp-analysis">
+      <span className={`momentum ${opp.momentum}`}>
+        {opp.momentum === 'up' ? '📈' : opp.momentum === 'down' ? '📉' : '➡️'} {opp.momentumStrength}
+      </span>
+      <span className="confidence">{opp.confidence} conf</span>
+      <span className="data-points">{opp.dataPoints} pts</span>
+    </div>
+
     <div className="opp-recommendation">
       <span className={`bet-side ${opp.betSide?.toLowerCase()}`}>
         BET {opp.betSide}

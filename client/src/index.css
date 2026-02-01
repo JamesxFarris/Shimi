@@ -914,3 +914,40 @@ body {
   opacity: 0.6;
   cursor: not-allowed;
 }
+
+/* Analysis section */
+.opp-analysis {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.4rem 0.5rem;
+  margin-bottom: 0.5rem;
+  background: rgba(77, 166, 255, 0.1);
+  border-radius: 6px;
+  font-size: 0.65rem;
+  color: var(--text-secondary);
+}
+
+.momentum {
+  font-weight: 600;
+}
+
+.momentum.up {
+  color: var(--accent-green);
+}
+
+.momentum.down {
+  color: var(--accent-red);
+}
+
+.momentum.neutral {
+  color: var(--text-secondary);
+}
+
+.confidence {
+  color: var(--accent-blue);
+}
+
+.data-points {
+  color: var(--text-muted);
+}
