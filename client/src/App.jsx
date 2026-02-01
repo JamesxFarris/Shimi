@@ -4,9 +4,9 @@ const API_BASE = '/api'
 
 // Risk level presets
 const RISK_PRESETS = {
-  low: { minProbability: 75, minEdge: 3, maxTimeDays: 7, label: 'LOW RISK', desc: '75%+ win chance' },
-  medium: { minProbability: 60, minEdge: 5, maxTimeDays: 5, label: 'MEDIUM', desc: '60%+ win chance' },
-  high: { minProbability: 50, minEdge: 8, maxTimeDays: 3, label: 'HIGH RISK', desc: '50%+ win, high edge' }
+  low: { minProbability: 75, minProfit: 15, maxTimeDays: 7, label: 'LOW RISK', desc: '75%+ win, 15%+ profit' },
+  medium: { minProbability: 60, minProfit: 25, maxTimeDays: 5, label: 'MEDIUM', desc: '60%+ win, 25%+ profit' },
+  high: { minProbability: 50, minProfit: 40, maxTimeDays: 3, label: 'HIGH RISK', desc: '50%+ win, 40%+ profit' }
 }
 
 // Trading Card Component
@@ -32,15 +32,15 @@ const TradingCard = memo(({ market, onPlaceBet, compact = false }) => {
           <span className="stat-value">{formatPercent(market.bestProbability)}</span>
         </div>
         <div className="stat">
-          <span className="stat-label">Edge</span>
-          <span className="stat-value edge">+{formatPercent(market.edge || 0)}</span>
+          <span className="stat-label">Profit</span>
+          <span className="stat-value edge">+{formatPercent(market.bestProfitPotential || 0)}</span>
         </div>
         <div className="stat">
           <span className="stat-label">Cost</span>
           <span className="stat-value">{formatCurrency(market.bestAskPrice)}</span>
         </div>
         <div className="stat">
-          <span className="stat-label">Kelly Bet</span>
+          <span className="stat-label">Bet</span>
           <span className="stat-value kelly">{formatCurrency((market.recommendedBet || 0) / 100)}</span>
         </div>
       </div>
@@ -84,13 +84,13 @@ function App() {
   const fetchBets = useCallback(async () => {
     try {
       setError(null)
-      const { minProbability, minEdge, maxTimeDays } = RISK_PRESETS[riskLevel]
+      const { minProbability, minProfit, maxTimeDays } = RISK_PRESETS[riskLevel]
 
       // Update server settings first
       await fetch(`${API_BASE}/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ minProbability, minEdge, maxTimeDays })
+        body: JSON.stringify({ minProbability, minProfit, maxTimeDays })
       })
 
       const response = await fetch(`${API_BASE}/optimal-bets?maxTimeDays=${maxTimeDays}`)
@@ -416,8 +416,8 @@ function App() {
                   <span>{currentRisk.minProbability}%</span>
                 </div>
                 <div className="setting-item">
-                  <span>Min Edge Required</span>
-                  <span>{currentRisk.minEdge}%</span>
+                  <span>Min Profit Potential</span>
+                  <span>{currentRisk.minProfit}%</span>
                 </div>
                 <div className="setting-item">
                   <span>Max Time to Close</span>

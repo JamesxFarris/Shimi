@@ -39,7 +39,7 @@ let config = {
   minBetAmount: 100, // Minimum $1 bet
   maxTimeDays: 3, // Only bet on markets closing within 3 days
   minProbability: 60, // Minimum 60% win probability
-  minEdge: 5, // Minimum 5% edge required
+  minProfit: 25, // Minimum 25% profit potential required
   autoBetEnabled: false,
   autoBetInterval: null
 };
@@ -170,53 +170,42 @@ async function fetchKalshiMarkets() {
 }
 
 // ============================================
-// KELLY CRITERION BETTING STRATEGY
+// BETTING STRATEGY
 // ============================================
 
 /**
- * Kelly Criterion: f* = (bp - q) / b
- * where:
- *   f* = fraction of bankroll to bet
- *   b = odds received on the bet (profit per $1 wagered)
- *   p = probability of winning
- *   q = probability of losing (1 - p)
- *
- * We use "fractional Kelly" (usually 25-50%) to reduce variance
+ * Simple bet sizing based on probability and bankroll
+ * Higher probability = can bet more (lower risk)
+ * We use conservative sizing: 5-15% of bankroll based on probability
  */
-function calculateKellyBet(probability, odds, bankroll, kellyFraction = 0.25) {
-  const p = probability;
-  const q = 1 - p;
-  const b = odds; // How much you win per $1 bet (e.g., if you pay $0.70 to win $1, b = 0.30/0.70 = 0.428)
+function calculateBetSize(probability, profitPotential, bankroll) {
+  // Base bet: higher probability = larger bet allowed
+  // 50% prob = 5% of bankroll, 90% prob = 15% of bankroll
+  const probFactor = Math.max(0, (probability - 0.5) / 0.4); // 0-1 scale
+  const betPercent = 5 + (probFactor * 10); // 5-15%
 
-  // Kelly formula
-  const fullKelly = (b * p - q) / b;
+  let betAmount = Math.floor(bankroll * (betPercent / 100));
 
-  // Only bet if there's positive expected value
-  if (fullKelly <= 0) {
-    return { betAmount: 0, kellyFraction: 0, edge: 0 };
-  }
-
-  // Apply fractional Kelly for safety
-  const fractionalKelly = fullKelly * kellyFraction;
-
-  // Calculate bet amount
-  let betAmount = Math.floor(bankroll * fractionalKelly);
-
-  // Apply min/max constraints
+  // Cap at max bet percent
   const maxBet = Math.floor(bankroll * (config.maxBetPercent / 100));
   betAmount = Math.min(betAmount, maxBet);
-  betAmount = Math.max(betAmount, 0);
+  betAmount = Math.max(betAmount, config.minBetAmount);
 
-  // Edge calculation (expected return per dollar)
-  const edge = (p * (1 + b) - 1) * 100;
+  // Don't bet more than bankroll
+  betAmount = Math.min(betAmount, bankroll);
 
-  return {
-    betAmount,
-    kellyFraction: fractionalKelly,
-    fullKelly,
-    edge,
-    expectedValue: (p * b - q) * betAmount
-  };
+  return betAmount;
+}
+
+/**
+ * Score combines probability and profit potential
+ * We want: high probability + decent profit
+ * Score = probability * sqrt(profitPotential)
+ * This favors high probability but rewards good profit potential
+ */
+function calculateScore(probability, profitPotential) {
+  // probability: 0-1, profitPotential: percentage (e.g., 33 for 33%)
+  return probability * Math.sqrt(Math.max(profitPotential, 1));
 }
 
 function analyzeMarket(market) {
@@ -228,18 +217,15 @@ function analyzeMarket(market) {
   const volume = parseInt(market.volume) || 0;
   const openInterest = parseInt(market.open_interest) || 0;
 
-  // Probability estimates
+  // Probability = price (market's implied probability)
+  // YES at $0.70 = 70% implied chance of YES winning
   const yesProbability = yesAsk > 0 ? yesAsk : lastPrice;
   const noProbability = noAsk > 0 ? noAsk : (1 - lastPrice);
 
-  // Profit potential (odds)
-  // If you buy YES at 70 cents and it wins, you get $1, so profit = 30 cents
-  // Odds = profit / cost = 0.30 / 0.70 = 0.428
-  const yesOdds = yesAsk > 0 && yesAsk < 1 ? (1 - yesAsk) / yesAsk : 0;
-  const noOdds = noAsk > 0 && noAsk < 1 ? (1 - noAsk) / noAsk : 0;
-
-  const yesProfitPotential = yesOdds * 100;
-  const noProfitPotential = noOdds * 100;
+  // Profit potential (if you win)
+  // Buy YES at $0.70, win = $1.00, profit = $0.30 = 42.8% return
+  const yesProfitPotential = yesAsk > 0 && yesAsk < 1 ? ((1 - yesAsk) / yesAsk) * 100 : 0;
+  const noProfitPotential = noAsk > 0 && noAsk < 1 ? ((1 - noAsk) / noAsk) * 100 : 0;
 
   // Time calculations
   const closeTime = market.close_time ? new Date(market.close_time) : null;
@@ -247,22 +233,27 @@ function analyzeMarket(market) {
   const timeRemaining = expirationTime ? expirationTime.getTime() - Date.now() : null;
   const timeRemainingDays = timeRemaining ? timeRemaining / (24 * 60 * 60 * 1000) : null;
 
-  // Kelly analysis for both sides
-  const yesKelly = calculateKellyBet(yesProbability, yesOdds, config.bankroll);
-  const noKelly = calculateKellyBet(noProbability, noOdds, config.bankroll);
+  // Score for each side (probability * sqrt(profit potential))
+  const yesScore = calculateScore(yesProbability, yesProfitPotential);
+  const noScore = calculateScore(noProbability, noProfitPotential);
 
-  // Degen scores
-  const yesDegenScore = yesProbability > 0.5 ? yesProbability * yesProfitPotential : 0;
-  const noDegenScore = noProbability > 0.5 ? noProbability * noProfitPotential : 0;
-
-  // Best bet determination
-  const bestBet = yesKelly.edge > noKelly.edge ? 'YES' : 'NO';
-  const bestKelly = bestBet === 'YES' ? yesKelly : noKelly;
+  // Pick the better side (higher probability with decent profit)
+  // For turning $10 into $100, we want high probability bets
+  const bestBet = yesProbability >= noProbability ? 'YES' : 'NO';
   const bestProbability = bestBet === 'YES' ? yesProbability : noProbability;
   const bestProfitPotential = bestBet === 'YES' ? yesProfitPotential : noProfitPotential;
-  const bestDegenScore = bestBet === 'YES' ? yesDegenScore : noDegenScore;
   const bestAskPrice = bestBet === 'YES' ? yesAsk : noAsk;
-  const bestOdds = bestBet === 'YES' ? yesOdds : noOdds;
+  const bestScore = bestBet === 'YES' ? yesScore : noScore;
+
+  // Calculate recommended bet size
+  const recommendedBet = calculateBetSize(bestProbability, bestProfitPotential, config.bankroll);
+
+  // Expected value per dollar bet (if market probability is correct)
+  // EV = (prob * payout) - cost = (prob * $1) - price
+  // Positive EV only if we think probability is higher than market price
+  // Since we're using market price as probability, EV = 0 by definition
+  // But we show "expected profit" assuming the bet wins
+  const expectedProfit = recommendedBet * (bestProfitPotential / 100);
 
   return {
     ticker: market.ticker,
@@ -281,26 +272,22 @@ function analyzeMarket(market) {
 
     yesProbability: yesProbability * 100,
     yesProfitPotential,
-    yesDegenScore,
-    yesKelly,
 
     noProbability: noProbability * 100,
     noProfitPotential,
-    noDegenScore,
-    noKelly,
 
     bestBet,
     bestProbability: bestProbability * 100,
     bestProfitPotential,
-    bestDegenScore,
     bestAskPrice,
-    bestOdds,
-    bestKelly,
+    bestScore,
 
     // Betting recommendation
-    recommendedBet: bestKelly.betAmount,
-    edge: bestKelly.edge,
-    expectedValue: bestKelly.expectedValue,
+    recommendedBet,
+    expectedProfit,
+
+    // For display: what you'd win if bet hits
+    potentialWin: (recommendedBet / 100) * (1 + bestProfitPotential / 100),
 
     category: market.category || 'Other'
   };
@@ -423,7 +410,7 @@ app.post('/api/settings', (req, res) => {
     minBetAmount,
     maxTimeDays,
     minProbability,
-    minEdge
+    minProfit
   } = req.body;
 
   if (bankroll !== undefined) config.bankroll = Math.round(bankroll * 100);
@@ -431,7 +418,7 @@ app.post('/api/settings', (req, res) => {
   if (minBetAmount !== undefined) config.minBetAmount = Math.round(minBetAmount * 100);
   if (maxTimeDays !== undefined) config.maxTimeDays = maxTimeDays;
   if (minProbability !== undefined) config.minProbability = minProbability;
-  if (minEdge !== undefined) config.minEdge = minEdge;
+  if (minProfit !== undefined) config.minProfit = minProfit;
 
   res.json({
     success: true,
@@ -441,7 +428,7 @@ app.post('/api/settings', (req, res) => {
       minBetAmount: config.minBetAmount / 100,
       maxTimeDays: config.maxTimeDays,
       minProbability: config.minProbability,
-      minEdge: config.minEdge
+      minProfit: config.minProfit
     }
   });
 });
@@ -577,7 +564,7 @@ app.post('/api/bet', async (req, res) => {
   }
 });
 
-// Get optimal bets based on Kelly Criterion
+// Get optimal bets - high probability with good profit potential
 app.get('/api/optimal-bets', async (req, res) => {
   try {
     const { maxTimeDays = config.maxTimeDays } = req.query;
@@ -585,7 +572,7 @@ app.get('/api/optimal-bets', async (req, res) => {
     const markets = await fetchKalshiMarkets();
     let analyzed = markets.map(analyzeMarket);
 
-    // Filter for optimal betting opportunities
+    // Filter for good betting opportunities
     analyzed = analyzed.filter(m => {
       // Must have valid prices
       if (m.bestAskPrice <= 0 || m.bestAskPrice >= 1) return false;
@@ -597,20 +584,18 @@ app.get('/api/optimal-bets', async (req, res) => {
       // Must meet minimum probability
       if (m.bestProbability < config.minProbability) return false;
 
-      // Must have positive edge
-      if (m.edge < config.minEdge) return false;
-
-      // Must have a recommended bet amount
-      if (m.recommendedBet < config.minBetAmount) return false;
+      // Must have some profit potential (at least 10%)
+      if (m.bestProfitPotential < 10) return false;
 
       return true;
     });
 
-    // Sort by edge (best mathematical opportunities first)
-    analyzed.sort((a, b) => b.edge - a.edge);
+    // Sort by score (probability * sqrt(profit potential))
+    // This balances safety with reward
+    analyzed.sort((a, b) => b.bestScore - a.bestScore);
 
     // Take top opportunities
-    const optimalBets = analyzed.slice(0, 10);
+    const optimalBets = analyzed.slice(0, 15);
 
     res.json({
       success: true,
@@ -619,7 +604,6 @@ app.get('/api/optimal-bets', async (req, res) => {
       settings: {
         maxTimeDays: parseFloat(maxTimeDays),
         minProbability: config.minProbability,
-        minEdge: config.minEdge,
         bankroll: config.bankroll / 100
       },
       bets: optimalBets
@@ -648,8 +632,7 @@ app.post('/api/auto-bet', async (req, res) => {
       if (m.timeRemainingDays === null || m.timeRemainingDays > parseFloat(maxTimeDays)) return false;
       if (m.timeRemainingDays < 0) return false;
       if (m.bestProbability < config.minProbability) return false;
-      if (m.edge < config.minEdge) return false;
-      if (m.recommendedBet < config.minBetAmount) return false;
+      if (m.bestProfitPotential < 10) return false;
       return true;
     });
 
@@ -661,8 +644,8 @@ app.post('/api/auto-bet', async (req, res) => {
       });
     }
 
-    // Get the best opportunity by edge
-    analyzed.sort((a, b) => b.edge - a.edge);
+    // Get the best opportunity by score
+    analyzed.sort((a, b) => b.bestScore - a.bestScore);
     const bestOpportunity = analyzed[0];
 
     if (dryRun) {
@@ -674,7 +657,7 @@ app.post('/api/auto-bet', async (req, res) => {
           title: bestOpportunity.title,
           side: bestOpportunity.bestBet,
           probability: bestOpportunity.bestProbability,
-          edge: bestOpportunity.edge,
+          profitPotential: bestOpportunity.bestProfitPotential,
           recommendedBet: bestOpportunity.recommendedBet / 100,
           timeRemaining: bestOpportunity.timeRemainingFormatted
         }
@@ -701,7 +684,7 @@ app.post('/api/auto-bet', async (req, res) => {
       count,
       price: priceCents,
       totalCost: count * priceCents,
-      edge: bestOpportunity.edge,
+      profitPotential: bestOpportunity.bestProfitPotential,
       probability: bestOpportunity.bestProbability,
       timestamp: new Date().toISOString(),
       status: 'pending',
@@ -776,8 +759,7 @@ async function executeAutoBet() {
       if (m.timeRemainingDays === null || m.timeRemainingDays > config.maxTimeDays) return false;
       if (m.timeRemainingDays < 0) return false;
       if (m.bestProbability < config.minProbability) return false;
-      if (m.edge < config.minEdge) return false;
-      if (m.recommendedBet < config.minBetAmount) return false;
+      if (m.bestProfitPotential < 10) return false;
       return true;
     });
 
@@ -786,8 +768,8 @@ async function executeAutoBet() {
       return { success: true, bet: null };
     }
 
-    // Get the best opportunity by edge
-    analyzed.sort((a, b) => b.edge - a.edge);
+    // Get the best opportunity by score
+    analyzed.sort((a, b) => b.bestScore - a.bestScore);
     const bestOpportunity = analyzed[0];
 
     const priceCents = Math.round(bestOpportunity.bestAskPrice * 100);
@@ -806,7 +788,7 @@ async function executeAutoBet() {
       count,
       price: priceCents,
       totalCost: count * priceCents,
-      edge: bestOpportunity.edge,
+      profitPotential: bestOpportunity.bestProfitPotential,
       probability: bestOpportunity.bestProbability,
       timestamp: new Date().toISOString(),
       status: 'pending',
