@@ -1389,45 +1389,93 @@ app.get('/api/portfolio', async (req, res) => {
         realBetHistory = fills.map(fill => ({
           id: fill.trade_id || fill.fill_id || Date.now().toString(),
           ticker: fill.ticker,
-          title: fill.ticker, // We'll try to get market title below
+          title: fill.ticker,
           side: fill.side,
           count: fill.count || 1,
-          price: fill.price || 0, // in cents
+          price: fill.price || 0,
           totalCost: (fill.count || 1) * (fill.price || 0),
           timestamp: fill.created_time || fill.ts || new Date().toISOString(),
-          status: fill.is_taker ? 'filled' : 'placed',
+          status: 'pending', // Will be updated below
           action: fill.action || 'buy',
-          orderId: fill.order_id
+          orderId: fill.order_id,
+          outcome: null, // Will be 'won', 'lost', or null (pending)
+          payout: 0,
+          profit: 0
         }));
 
-        // Try to get market titles for the fills
+        // Get market data including settlement results
         const uniqueTickers = [...new Set(realBetHistory.map(b => b.ticker))];
-        const marketTitles = {};
+        const marketData = {};
 
-        for (const ticker of uniqueTickers.slice(0, 10)) { // Limit to avoid too many requests
+        for (const ticker of uniqueTickers.slice(0, 15)) {
           try {
-            const marketData = await kalshiRequest('GET', `/markets/${ticker}`);
-            if (marketData.market) {
-              marketTitles[ticker] = marketData.market.title || ticker;
+            const data = await kalshiRequest('GET', `/markets/${ticker}`);
+            if (data.market) {
+              marketData[ticker] = {
+                title: data.market.title || ticker,
+                result: data.market.result, // 'yes', 'no', or null if not settled
+                status: data.market.status, // 'open', 'closed', 'settled'
+                closeTime: data.market.close_time
+              };
             }
           } catch (e) {
-            marketTitles[ticker] = ticker;
+            marketData[ticker] = { title: ticker, result: null, status: 'unknown' };
           }
         }
 
-        // Update titles
-        realBetHistory = realBetHistory.map(bet => ({
-          ...bet,
-          title: marketTitles[bet.ticker] || bet.ticker
-        }));
+        // Update bets with market data and calculate outcomes
+        realBetHistory = realBetHistory.map(bet => {
+          const market = marketData[bet.ticker] || {};
+          const title = market.title || bet.ticker;
+          const result = market.result; // 'yes' or 'no' if settled
+          const marketStatus = market.status;
+
+          let outcome = null;
+          let status = 'open';
+          let payout = 0;
+          let profit = 0;
+
+          if (result) {
+            // Market has settled - determine if we won
+            const betSide = bet.side?.toLowerCase();
+            const wonBet = (betSide === result);
+
+            outcome = wonBet ? 'won' : 'lost';
+            status = 'settled';
+
+            if (wonBet) {
+              // Won: payout is $1 per contract (100 cents)
+              payout = bet.count * 100;
+              profit = payout - bet.totalCost;
+            } else {
+              // Lost: lose the bet amount
+              payout = 0;
+              profit = -bet.totalCost;
+            }
+          } else if (marketStatus === 'closed') {
+            status = 'closed';
+          } else {
+            status = 'open';
+          }
+
+          return {
+            ...bet,
+            title,
+            status,
+            outcome,
+            payout,
+            profit,
+            marketResult: result,
+            closeTime: market.closeTime
+          };
+        });
 
       } catch (fillError) {
         console.error('Error fetching fills:', fillError.message);
-        // Fall back to in-memory history
         realBetHistory = betHistory.slice(0, 20);
       }
 
-      // Merge with in-memory history (in case fills API misses recent ones)
+      // Merge with in-memory history
       const combinedHistory = [...realBetHistory];
       betHistory.forEach(memBet => {
         if (!combinedHistory.some(b => b.orderId === memBet.orderId || b.id === memBet.id)) {
@@ -1438,11 +1486,24 @@ app.get('/api/portfolio', async (req, res) => {
       // Sort by timestamp descending
       combinedHistory.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
+      // Calculate totals
+      const settled = combinedHistory.filter(b => b.outcome);
+      const totalProfit = settled.reduce((sum, b) => sum + (b.profit || 0), 0);
+      const wins = settled.filter(b => b.outcome === 'won').length;
+      const losses = settled.filter(b => b.outcome === 'lost').length;
+
       res.json({
         success: true,
         simulated: false,
         balance: portfolio.balance / 100,
-        betHistory: combinedHistory.slice(0, 20)
+        betHistory: combinedHistory.slice(0, 20),
+        stats: {
+          totalBets: settled.length,
+          wins,
+          losses,
+          winRate: settled.length > 0 ? ((wins / settled.length) * 100).toFixed(1) : '0',
+          totalProfit: totalProfit / 100 // in dollars
+        }
       });
     } else {
       // Return simulated data
@@ -1450,7 +1511,8 @@ app.get('/api/portfolio', async (req, res) => {
         success: true,
         simulated: true,
         balance: config.bankroll / 100,
-        betHistory: betHistory.slice(0, 20)
+        betHistory: betHistory.slice(0, 20),
+        stats: { totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 }
       });
     }
   } catch (error) {
@@ -1460,6 +1522,7 @@ app.get('/api/portfolio', async (req, res) => {
       simulated: !config.isAuthenticated,
       balance: config.bankroll / 100,
       betHistory: betHistory.slice(0, 20),
+      stats: { totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 },
       error: error.message
     });
   }

@@ -1051,6 +1051,74 @@ body {
    History Page
    ============================================ */
 
+/* Stats Summary */
+.history-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.stat-summary {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  text-align: center;
+}
+
+.stat-summary.positive {
+  border-color: rgba(16, 185, 129, 0.4);
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, var(--bg-card) 100%);
+}
+
+.stat-summary.negative {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.1) 0%, var(--bg-card) 100%);
+}
+
+.stat-summary.wins {
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.stat-summary.losses {
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.stat-summary .stat-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+
+.stat-summary .stat-value {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.stat-summary.positive .stat-value {
+  color: var(--accent-green-bright);
+}
+
+.stat-summary.negative .stat-value {
+  color: var(--accent-red);
+}
+
+.stat-summary.wins .stat-value {
+  color: var(--accent-green);
+}
+
+.stat-summary.losses .stat-value {
+  color: var(--accent-red);
+}
+
+/* History Table */
 .history-table {
   background: var(--bg-card);
   border: 1px solid var(--border-color);
@@ -1093,13 +1161,25 @@ body {
   background: var(--bg-card-hover);
 }
 
+.history-row.won {
+  background: rgba(16, 185, 129, 0.05);
+}
+
+.history-row.lost {
+  background: rgba(239, 68, 68, 0.05);
+}
+
 .history-cell {
   display: flex;
   align-items: center;
 }
 
+.history-cell.outcome {
+  width: 90px;
+}
+
 .history-cell.side {
-  width: 70px;
+  width: 60px;
 }
 
 .history-cell.title {
@@ -1110,40 +1190,80 @@ body {
   min-width: 0;
 }
 
-.history-cell.price {
-  width: 100px;
+.history-cell.cost {
+  width: 70px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 13px;
   color: var(--text-secondary);
 }
 
-.history-cell.amount {
+.history-cell.profit {
   width: 80px;
-  font-family: var(--font-mono);
-  font-weight: 600;
-}
-
-.history-cell.status {
-  width: 90px;
   justify-content: flex-end;
 }
 
-.side-badge {
+/* Outcome Badge */
+.outcome-badge {
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 700;
-  padding: 4px 10px;
+  padding: 5px 10px;
   border-radius: 4px;
 }
 
-.side-badge.yes {
+.outcome-badge.won {
   background: rgba(16, 185, 129, 0.2);
   color: var(--accent-green-bright);
 }
 
-.side-badge.no {
+.outcome-badge.lost {
   background: rgba(239, 68, 68, 0.2);
   color: var(--accent-red);
+}
+
+.outcome-badge.pending {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent-blue);
+  font-size: 10px;
+}
+
+/* Side Badge */
+.side-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+
+.side-badge.yes {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--accent-green);
+}
+
+.side-badge.no {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--accent-red);
+}
+
+/* Profit Display */
+.profit-display {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.profit-display.positive {
+  color: var(--accent-green-bright);
+}
+
+.profit-display.negative {
+  color: var(--accent-red);
+}
+
+.profit-display.pending {
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .history-title {
@@ -1157,39 +1277,6 @@ body {
 
 .history-time {
   font-size: 11px;
-  color: var(--text-muted);
-}
-
-.status-badge {
-  font-size: 10px;
-  font-weight: 600;
-  padding: 4px 10px;
-  border-radius: 4px;
-  text-transform: uppercase;
-}
-
-.status-badge.simulated {
-  background: rgba(245, 158, 11, 0.2);
-  color: var(--accent-yellow);
-}
-
-.status-badge.placed {
-  background: rgba(16, 185, 129, 0.2);
-  color: var(--accent-green);
-}
-
-.status-badge.filled {
-  background: rgba(16, 185, 129, 0.2);
-  color: var(--accent-green);
-}
-
-.status-badge.pending {
-  background: rgba(59, 130, 246, 0.2);
-  color: var(--accent-blue);
-}
-
-.status-badge.canceled {
-  background: rgba(107, 114, 128, 0.2);
   color: var(--text-muted);
 }
 
@@ -1694,17 +1781,45 @@ body {
     grid-template-columns: repeat(3, 1fr);
   }
 
+  /* History stats */
+  .history-stats {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+
+  .stat-summary {
+    padding: 12px;
+  }
+
+  .stat-summary .stat-value {
+    font-size: 18px;
+  }
+
   /* History table */
-  .history-cell.price {
+  .history-cell.side {
     display: none;
   }
 
-  .history-cell.amount {
+  .history-cell.outcome {
     width: 70px;
   }
 
-  .history-cell.status {
+  .history-cell.cost {
+    width: 60px;
+    font-size: 12px;
+  }
+
+  .history-cell.profit {
     width: 70px;
+  }
+
+  .outcome-badge {
+    font-size: 9px;
+    padding: 4px 6px;
+  }
+
+  .profit-display {
+    font-size: 12px;
   }
 }
 

@@ -169,25 +169,27 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
 
 // History Item
 const HistoryItem = memo(({ bet }) => {
-  // Calculate cost - handle both old format (totalCost in cents) and new Kalshi format
   const totalCostCents = bet.totalCost || (bet.count * bet.price) || 0
   const priceDisplay = bet.price ? `${bet.price}¢` : '-'
   const countDisplay = bet.count || 1
+  const profitCents = bet.profit || 0
 
-  // Determine status display
-  const statusMap = {
-    'filled': 'filled',
-    'placed': 'placed',
-    'pending': 'pending',
-    'simulated': 'simulated',
-    'resting': 'pending',
-    'canceled': 'canceled',
-    'executed': 'filled'
-  }
-  const displayStatus = statusMap[bet.status?.toLowerCase()] || bet.status || 'placed'
+  // Determine outcome display
+  const hasOutcome = bet.outcome === 'won' || bet.outcome === 'lost'
+  const isWin = bet.outcome === 'won'
+  const isLoss = bet.outcome === 'lost'
 
   return (
-    <div className="history-row">
+    <div className={`history-row ${hasOutcome ? (isWin ? 'won' : 'lost') : ''}`}>
+      <div className="history-cell outcome">
+        {hasOutcome ? (
+          <span className={`outcome-badge ${bet.outcome}`}>
+            {isWin ? '✓ WON' : '✗ LOST'}
+          </span>
+        ) : (
+          <span className="outcome-badge pending">OPEN</span>
+        )}
+      </div>
       <div className="history-cell side">
         <span className={`side-badge ${bet.side}`}>{bet.side?.toUpperCase()}</span>
       </div>
@@ -195,10 +197,15 @@ const HistoryItem = memo(({ bet }) => {
         <span className="history-title">{bet.title}</span>
         <span className="history-time">{new Date(bet.timestamp).toLocaleString()}</span>
       </div>
-      <div className="history-cell price">{priceDisplay} × {countDisplay}</div>
-      <div className="history-cell amount">{formatCurrency(totalCostCents / 100)}</div>
-      <div className="history-cell status">
-        <span className={`status-badge ${displayStatus}`}>{displayStatus}</span>
+      <div className="history-cell cost">{formatCurrency(totalCostCents / 100)}</div>
+      <div className="history-cell profit">
+        {hasOutcome ? (
+          <span className={`profit-display ${isWin ? 'positive' : 'negative'}`}>
+            {isWin ? '+' : ''}{formatCurrency(profitCents / 100)}
+          </span>
+        ) : (
+          <span className="profit-display pending">-</span>
+        )}
       </div>
     </div>
   )
@@ -222,6 +229,7 @@ function App() {
   const [prices, setPrices] = useState({})
   const [balance, setBalance] = useState(10)
   const [betHistory, setBetHistory] = useState([])
+  const [betStats, setBetStats] = useState({ totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [autoBetEnabled, setAutoBetEnabled] = useState(false)
@@ -260,6 +268,7 @@ function App() {
       if (data.success) {
         setBalance(data.balance || 10)
         setBetHistory(data.betHistory || [])
+        setBetStats(data.stats || { totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 })
         setIsAuthenticated(!data.simulated)
       }
     } catch (err) {
@@ -670,6 +679,30 @@ function App() {
           {/* History Tab */}
           {tab === 'history' && (
             <div className="history-page">
+              {/* Stats Summary */}
+              {betStats.totalBets > 0 && (
+                <div className="history-stats">
+                  <div className={`stat-summary ${betStats.totalProfit >= 0 ? 'positive' : 'negative'}`}>
+                    <span className="stat-label">Total P/L</span>
+                    <span className="stat-value">
+                      {betStats.totalProfit >= 0 ? '+' : ''}{formatCurrency(betStats.totalProfit)}
+                    </span>
+                  </div>
+                  <div className="stat-summary">
+                    <span className="stat-label">Win Rate</span>
+                    <span className="stat-value">{betStats.winRate}%</span>
+                  </div>
+                  <div className="stat-summary wins">
+                    <span className="stat-label">Wins</span>
+                    <span className="stat-value">{betStats.wins}</span>
+                  </div>
+                  <div className="stat-summary losses">
+                    <span className="stat-label">Losses</span>
+                    <span className="stat-value">{betStats.losses}</span>
+                  </div>
+                </div>
+              )}
+
               {betHistory.length === 0 ? (
                 <div className="empty-state large">
                   <span className="empty-icon">📜</span>
@@ -679,11 +712,11 @@ function App() {
               ) : (
                 <div className="history-table">
                   <div className="history-header">
+                    <div className="history-cell outcome">Result</div>
                     <div className="history-cell side">Side</div>
                     <div className="history-cell title">Market</div>
-                    <div className="history-cell price">Price</div>
-                    <div className="history-cell amount">Total</div>
-                    <div className="history-cell status">Status</div>
+                    <div className="history-cell cost">Cost</div>
+                    <div className="history-cell profit">P/L</div>
                   </div>
                   <div className="history-body">
                     {betHistory.map(bet => (
