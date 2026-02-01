@@ -43,6 +43,58 @@ let config = {
 let betHistory = [];
 let portfolio = { balance: 0, positions: [] };
 
+// ============================================
+// AUTO-LOAD CREDENTIALS FROM ENVIRONMENT
+// ============================================
+// Set these in Render dashboard under Environment Variables:
+//   KALSHI_API_KEY_ID = your API key ID
+//   KALSHI_PRIVATE_KEY = your private key (replace newlines with \n)
+//
+// For the private key, you can either:
+//   1. Replace actual newlines with literal \n characters
+//   2. Or base64 encode it and set KALSHI_PRIVATE_KEY_BASE64 instead
+
+async function loadCredentialsFromEnv() {
+  const apiKeyId = process.env.KALSHI_API_KEY_ID;
+  let privateKey = process.env.KALSHI_PRIVATE_KEY;
+
+  // Support base64-encoded private key (easier to paste in Render)
+  if (!privateKey && process.env.KALSHI_PRIVATE_KEY_BASE64) {
+    try {
+      privateKey = Buffer.from(process.env.KALSHI_PRIVATE_KEY_BASE64, 'base64').toString('utf8');
+    } catch (e) {
+      console.error('Failed to decode KALSHI_PRIVATE_KEY_BASE64:', e.message);
+    }
+  }
+
+  // Handle escaped newlines (common when pasting in env var UIs)
+  if (privateKey) {
+    privateKey = privateKey.replace(/\\n/g, '\n');
+  }
+
+  if (apiKeyId && privateKey) {
+    console.log('🔑 Found Kalshi credentials in environment variables');
+    config.apiKeyId = apiKeyId.trim();
+    config.privateKey = privateKey.trim();
+    config.isAuthenticated = true;
+
+    // Verify credentials by fetching balance
+    try {
+      const balanceData = await kalshiRequest('GET', '/portfolio/balance');
+      portfolio.balance = balanceData.balance || 0;
+      config.bankroll = portfolio.balance;
+      console.log(`✅ Kalshi authenticated! Balance: $${(portfolio.balance / 100).toFixed(2)}`);
+    } catch (error) {
+      console.error('❌ Kalshi credentials invalid:', error.message);
+      config.apiKeyId = null;
+      config.privateKey = null;
+      config.isAuthenticated = false;
+    }
+  } else {
+    console.log('ℹ️ No Kalshi credentials in environment. Set KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY (or KALSHI_PRIVATE_KEY_BASE64) in Render dashboard.');
+  }
+}
+
 // Track markets we've already bet on to avoid duplicate bets
 // Key: ticker, Value: { timestamp, side }
 const recentBets = new Map();
@@ -1060,10 +1112,13 @@ app.use((err, req, res, next) => {
   res.status(500).json({ success: false, error: 'Internal server error' });
 });
 
-const server = app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', async () => {
   console.log(`🎰 Shimi Crypto Bot running on port ${PORT}`);
   console.log(`📊 Tracking ${Object.keys(TRACKED_TOKENS).length} tokens: ${Object.keys(TRACKED_TOKENS).join(', ')}`);
   console.log(`💰 Min edge: ${config.minEdge}% | Max bet: ${config.maxBetPercent}%`);
+
+  // Auto-load Kalshi credentials from environment
+  await loadCredentialsFromEnv();
 });
 
 server.on('error', (err) => {
