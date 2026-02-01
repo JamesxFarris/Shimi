@@ -845,16 +845,20 @@ function analyzeCryptoMarket(parsed) {
   const probPct = (bestBet.prob * 100).toFixed(0);
   const betReason = `${momentumDesc} ${timeDesc} | ${probPct}% win prob`;
 
-  // Calculate expected profit per $1 bet
-  const profitPerContract = 1 - bestBet.price;
-  const expectedProfit = (bestBet.prob * profitPerContract - (1 - bestBet.prob) * bestBet.price) * 100;
+  // Calculate profit for $1 worth of contracts
+  // E.g., if price is 50¢, we buy 2 contracts. If we win, each pays $1, so profit = 2×$1 - $1 = $1 (100¢)
+  const priceCents = Math.round(bestBet.price * 100);
+  const contractsFor1Dollar = Math.floor(100 / priceCents);
+  const totalCostCents = contractsFor1Dollar * priceCents;
+  const payoutIfWinCents = contractsFor1Dollar * 100; // Each contract pays $1
+  const profitIfWinCents = payoutIfWinCents - totalCostCents;
 
-  // Profit if we win (per contract at $1 payout)
-  const profitIfWin = ((1 - bestBet.price) * 100).toFixed(0);
-  const profitPotential = ((1 - bestBet.price) / bestBet.price) * 100;
+  // Expected profit accounting for probability
+  const expectedProfit = (bestBet.prob * profitIfWinCents - (1 - bestBet.prob) * totalCostCents);
+  const profitPotential = (profitIfWinCents / totalCostCents) * 100;
 
   // Fixed bet amount ($1) for sustainable growth
-  const recommendedBet = config.fixedBetAmount || config.minBetAmount;
+  const recommendedBet = 100; // Always $1
 
   return {
     ...parsed,
@@ -872,8 +876,10 @@ function analyzeCryptoMarket(parsed) {
     edge: bestBet.edge,
     betSide: bestBet.side,
     betPrice: bestBet.price,
+    betPriceCents: priceCents,
+    contractsFor1Dollar,
     betReason,
-    profitIfWin,
+    profitIfWin: profitIfWinCents, // Total profit in cents for $1 bet
     expectedProfit: expectedProfit.toFixed(1),
     profitPotential,
     recommendedBet,
@@ -958,13 +964,12 @@ app.get('/api/crypto/opportunities', async (req, res) => {
 // Place a bet
 app.post('/api/bet', async (req, res) => {
   try {
-    const { ticker, side, amount } = req.body;
+    const { ticker, side } = req.body;
 
-    if (!ticker || !side || !amount) {
-      return res.status(400).json({ success: false, error: 'ticker, side, and amount required' });
+    if (!ticker || !side) {
+      return res.status(400).json({ success: false, error: 'ticker and side required' });
     }
 
-    const amountCents = Math.round(amount * 100);
     const markets = await fetchCryptoMarkets();
     const market = markets.find(m => m.ticker === ticker);
 
@@ -980,14 +985,22 @@ app.post('/api/bet', async (req, res) => {
     if (!priceCents || priceCents <= 0) {
       return res.status(400).json({ success: false, error: 'Invalid market price' });
     }
-    const count = Math.floor(amountCents / priceCents);
+
+    // ALWAYS BUY $1 WORTH OF CONTRACTS
+    // E.g., if price is 50 cents, buy 2 contracts ($1.00)
+    // E.g., if price is 33 cents, buy 3 contracts ($0.99)
+    const TARGET_BET_CENTS = 100; // $1.00
+    const count = Math.floor(TARGET_BET_CENTS / priceCents);
 
     if (count < 1) {
       return res.status(400).json({
         success: false,
-        error: `Amount too small. Min: $${(priceCents / 100).toFixed(2)}`
+        error: `Contract price too high (${priceCents}¢). Max price: 99¢`
       });
     }
+
+    const totalCost = count * priceCents;
+    console.log(`Bet: ${ticker} | ${side} | price=${priceCents}¢ | count=${count} | total=${totalCost}¢`);
 
     const betRecord = {
       id: Date.now().toString(),
@@ -996,7 +1009,7 @@ app.post('/api/bet', async (req, res) => {
       side: side.toLowerCase(),
       count,
       price: priceCents,
-      totalCost: count * priceCents,
+      totalCost,
       timestamp: new Date().toISOString(),
       status: 'pending'
     };
@@ -1074,8 +1087,9 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
         if (m === null) return false;
         // Skip if we already bet on this exact market
         if (recentBets.has(m.ticker)) return false;
-        // Only need minimal edge (0.5%) - we prioritize safety
-        if (m.edge < 0.5) return false;
+        // REQUIRE 60%+ WIN PROBABILITY for auto-betting
+        const winProb = parseFloat(m.winProbability) || 0;
+        if (winProb < 60) return false;
         return true;
       })
       // SORT BY WIN PROBABILITY (safest bets first)
@@ -1084,13 +1098,14 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     if (opportunities.length === 0) {
       return res.json({
         success: true,
-        message: 'No opportunities found with positive edge. Waiting for safer bets...',
+        message: 'No opportunities with 60%+ win probability found. Waiting...',
         bet: null,
         scanned: markets.length
       });
     }
 
     const best = opportunities[0];
+    console.log(`Auto-bet found: ${best.title} | Win prob: ${best.winProbability}% | Side: ${best.betSide}`);
 
     // Fixed $1 max bet - never exceed this
     const MAX_BET_CENTS = 100; // $1.00 max
@@ -1218,15 +1233,16 @@ async function runAutoBet() {
         if (recentBets.has(m.ticker)) {
           return false;
         }
-        // Only need minimal edge (0.5%) - we prioritize safety
-        if (m.edge < 0.5) return false;
+        // REQUIRE 60%+ WIN PROBABILITY for auto-betting
+        const winProb = parseFloat(m.winProbability) || 0;
+        if (winProb < 60) return false;
         return true;
       })
       // SORT BY WIN PROBABILITY (safest bets first)
       .sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
 
-    const safeCount = opportunities.filter(o => parseFloat(o.winProbability) >= 70).length;
-    console.log(`📊 Found ${markets.length} markets, ${opportunities.length} with edge (${safeCount} above 70% win prob)`);
+    const highConfCount = opportunities.filter(o => parseFloat(o.winProbability) >= 70).length;
+    console.log(`📊 Found ${markets.length} markets, ${opportunities.length} with 60%+ win prob (${highConfCount} above 70%)`);
 
     if (opportunities.length === 0) {
       console.log('⏳ No opportunities - waiting for next scan...');
