@@ -36,7 +36,7 @@ let config = {
   maxBetPercent: 15,
   minBetAmount: 100, // $1 fixed bets
   fixedBetAmount: 100, // Always bet $1
-  minEdge: 1, // Lowered to 1% for more volume
+  minEdge: 5, // 5% minimum - model has uncertainty, need buffer
   autoBetEnabled: false
 };
 
@@ -47,8 +47,10 @@ let portfolio = { balance: 0, positions: [] };
 // Key: ticker, Value: { timestamp, side }
 const recentBets = new Map();
 
-// Minimum edge for auto-betting (higher than manual to be more conservative)
-const AUTO_BET_MIN_EDGE = 3; // 3% minimum edge for auto mode
+// Minimum edge requirements - must be HIGH because our model has uncertainty
+// The bid-ask spread alone costs ~2-5%, so we need edge above that
+const AUTO_BET_MIN_EDGE = 10;  // 10% minimum edge for auto mode
+const MANUAL_BET_MIN_EDGE = 5; // 5% minimum edge for manual "best bet"
 
 // ============================================
 // CRYPTO PRICE TRACKING - EXPANDED TOKENS
@@ -678,8 +680,8 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       .map(m => analyzeCryptoMarket(parseMarket(m)))
       .filter(m => {
         if (m === null) return false;
-        // Must have minimum edge (use config.minEdge for manual, default 1%)
-        if (m.edge < config.minEdge) return false;
+        // Must have high edge - our model is uncertain, need buffer above spread costs
+        if (m.edge < MANUAL_BET_MIN_EDGE) return false;
         // Skip if we already bet on this exact market
         if (recentBets.has(m.ticker)) return false;
         return true;
@@ -689,7 +691,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     if (opportunities.length === 0) {
       return res.json({
         success: true,
-        message: 'No opportunities with sufficient edge (or already bet on available markets)',
+        message: `No opportunities with sufficient edge (need >${MANUAL_BET_MIN_EDGE}%) or already bet on available markets`,
         bet: null,
         scanned: markets.length
       });
@@ -830,7 +832,11 @@ async function runAutoBet() {
     }
 
     const best = opportunities[0];
-    console.log(`💰 Best: ${best.cryptoType} | ${best.betSide} | Edge: +${best.edge.toFixed(1)}%`);
+    console.log(`💰 Best opportunity found:`);
+    console.log(`   Token: ${best.cryptoType} | Side: ${best.betSide}`);
+    console.log(`   Current price: $${best.currentPrice.toFixed(2)} | Strike: $${best.strikePrice.toFixed(2)}`);
+    console.log(`   Our probability: ${best.ourProbability.toFixed(1)}% | Market probability: ${best.marketImpliedProb.toFixed(1)}%`);
+    console.log(`   Edge: +${best.edge.toFixed(1)}% (min required: ${AUTO_BET_MIN_EDGE}%)`);
 
     // Fixed $1 max bet - never exceed this
     const MAX_BET_CENTS = 100; // $1.00 max
