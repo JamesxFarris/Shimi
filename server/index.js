@@ -1386,22 +1386,39 @@ app.get('/api/portfolio', async (req, res) => {
         const fills = fillsData.fills || [];
 
         // Transform fills into our bet history format
-        realBetHistory = fills.map(fill => ({
-          id: fill.trade_id || fill.fill_id || Date.now().toString(),
-          ticker: fill.ticker,
-          title: fill.ticker,
-          side: fill.side,
-          count: fill.count || 1,
-          price: fill.price || 0,
-          totalCost: (fill.count || 1) * (fill.price || 0),
-          timestamp: fill.created_time || fill.ts || new Date().toISOString(),
-          status: 'pending', // Will be updated below
-          action: fill.action || 'buy',
-          orderId: fill.order_id,
-          outcome: null, // Will be 'won', 'lost', or null (pending)
-          payout: 0,
-          profit: 0
-        }));
+        realBetHistory = fills.map(fill => {
+          const count = fill.count || 1;
+          // Kalshi API can return price in different formats:
+          // - As cents (0-100): e.g., 10 = 10 cents
+          // - As decimal probability (0-1): e.g., 0.10 = 10 cents
+          // We need to normalize to cents
+          let priceCents = fill.price || 0;
+          if (priceCents > 0 && priceCents <= 1) {
+            // Price is a decimal probability, convert to cents
+            priceCents = Math.round(priceCents * 100);
+          }
+          // Total cost = number of contracts × price per contract (in cents)
+          const totalCost = count * priceCents;
+
+          console.log(`Fill: ${fill.ticker} | count=${count} | price=${fill.price} | priceCents=${priceCents} | totalCost=${totalCost}`);
+
+          return {
+            id: fill.trade_id || fill.fill_id || Date.now().toString(),
+            ticker: fill.ticker,
+            title: fill.ticker,
+            side: fill.side,
+            count,
+            price: priceCents,
+            totalCost,
+            timestamp: fill.created_time || fill.ts || new Date().toISOString(),
+            status: 'pending', // Will be updated below
+            action: fill.action || 'buy',
+            orderId: fill.order_id,
+            outcome: null, // Will be 'won', 'lost', or null (pending)
+            payout: 0,
+            profit: 0
+          };
+        });
 
         // Get market data including settlement results
         const uniqueTickers = [...new Set(realBetHistory.map(b => b.ticker))];
@@ -1435,7 +1452,10 @@ app.get('/api/portfolio', async (req, res) => {
           let payout = 0;
           let profit = 0;
 
-          if (result) {
+          // Only calculate outcomes for buy orders (not sells)
+          const isBuy = bet.action?.toLowerCase() !== 'sell';
+
+          if (result && isBuy) {
             // Market has settled - determine if we won
             const betSide = bet.side?.toLowerCase();
             const wonBet = (betSide === result);
@@ -1448,10 +1468,12 @@ app.get('/api/portfolio', async (req, res) => {
               payout = bet.count * 100;
               profit = payout - bet.totalCost;
             } else {
-              // Lost: lose the bet amount
+              // Lost: lose the entire bet amount (totalCost)
               payout = 0;
               profit = -bet.totalCost;
             }
+
+            console.log(`Outcome: ${bet.ticker} | side=${betSide} | result=${result} | won=${wonBet} | cost=${bet.totalCost} | profit=${profit}`);
           } else if (marketStatus === 'closed') {
             status = 'closed';
           } else {

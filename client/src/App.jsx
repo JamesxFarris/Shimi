@@ -217,12 +217,16 @@ const HistoryItem = memo(({ bet }) => {
             <span className={`side-badge ${bet.side}`}>{bet.side?.toUpperCase()}</span>
           </div>
           <div className="bet-info-item">
-            <span className="bet-info-label">Cost</span>
-            <span className="bet-info-value">{formatCurrency(totalCostCents / 100)}</span>
+            <span className="bet-info-label">Price</span>
+            <span className="bet-info-value">{bet.price || 0}¢</span>
           </div>
           <div className="bet-info-item">
             <span className="bet-info-label">Contracts</span>
             <span className="bet-info-value">{bet.count || 1}</span>
+          </div>
+          <div className="bet-info-item">
+            <span className="bet-info-label">Total Cost</span>
+            <span className="bet-info-value">{formatCurrency(totalCostCents / 100)}</span>
           </div>
           {hasOutcome && (
             <div className="bet-info-item">
