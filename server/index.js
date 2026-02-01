@@ -227,6 +227,55 @@ function calculateProbability(currentPrice, targetPrice, volatility) {
   return { probAbove, probBelow };
 }
 
+// Calculate how many standard deviations the current price is from strike
+// This helps identify "obvious" mispricings
+function calculateZScore(currentPrice, strikePrice, volatility) {
+  const pctDiff = (currentPrice - strikePrice) / strikePrice;
+  return pctDiff / volatility;  // How many std devs away
+}
+
+// Simple probability estimate based on distance from strike
+// More robust than complex volatility model for short timeframes
+function simpleEdgeCheck(currentPrice, strikePrice, marketPrice, side, volatility) {
+  const pctFromStrike = (currentPrice - strikePrice) / strikePrice * 100;
+  const zScore = calculateZScore(currentPrice, strikePrice, volatility);
+
+  // For "above/up" markets: YES wins if price ends >= strike
+  // If current price is ABOVE strike, YES is more likely
+  // If current price is BELOW strike, NO is more likely
+
+  let result = {
+    pctFromStrike,
+    zScore,
+    isObviousBet: false,
+    obviousSide: null,
+    obviousEdge: 0
+  };
+
+  // "Obvious" bet: price is far from strike (2+ std devs)
+  // These are potential "free money" situations
+  if (Math.abs(zScore) >= 1.5) {
+    if (zScore > 0) {
+      // Price is well ABOVE strike - YES (above) is very likely
+      // If YES is cheap (< 85¢), there's edge
+      result.isObviousBet = true;
+      result.obviousSide = 'YES';
+      // Estimate: if 1.5+ std devs above, ~93% chance it stays above
+      const estimatedProb = normalCDF(zScore);  // Prob of staying above
+      result.obviousEdge = (estimatedProb - marketPrice) * 100;
+    } else {
+      // Price is well BELOW strike - NO (below) is very likely
+      // If NO is cheap (< 85¢), there's edge
+      result.isObviousBet = true;
+      result.obviousSide = 'NO';
+      const estimatedProb = normalCDF(-zScore);  // Prob of staying below
+      result.obviousEdge = (estimatedProb - (1 - marketPrice)) * 100;
+    }
+  }
+
+  return result;
+}
+
 // Standard normal CDF
 function normalCDF(x) {
   const a1 =  0.254829592, a2 = -0.284496736, a3 =  1.421413741;
@@ -319,15 +368,34 @@ async function fetchCryptoMarkets() {
     // Fetch crypto markets directly by series ticker instead of filtering 1000+ markets
     // This ensures we get the 15-minute crypto markets that would otherwise be buried
     const cryptoSeries = [
-      'KXBTC15M',   // Bitcoin 15-minute
-      'KXETH15M',   // Ethereum 15-minute
-      'KXSOL15M',   // Solana 15-minute
+      // 15-minute markets (short term, high frequency)
+      'KXBTC15M',   // Bitcoin 15-minute up/down
+      'KXETH15M',   // Ethereum 15-minute up/down
+      'KXSOL15M',   // Solana 15-minute up/down
+
+      // Daily above/below markets
       'KXBTCD',     // Bitcoin above/below
       'KXETHD',     // Ethereum above/below
       'KXSOLD',     // Solana above/below
       'KXXRPD',     // XRP above/below
       'KXDOGED',    // Doge above/below
+      'KXLTCD',     // Litecoin above/below
+      'KXLINKD',    // Chainlink above/below
+      'KXAVAXD',    // Avalanche above/below
+      'KXDOTD',     // Polkadot above/below
+      'KXSHIBAD',   // Shiba above/below
+
+      // Range/min/max markets (look for mispricings)
       'KXBTCMAXD',  // BTC max daily
+      'KXBTC',      // Bitcoin range
+      'KXETH',      // Ethereum range
+      'KXSOL',      // Solana range
+      'KXXRP',      // XRP range
+
+      // Monthly directional
+      'KXBTCMAXM',  // BTC max monthly
+      'KXETHMAXM',  // ETH max monthly
+      'KXSOLMAXM',  // SOL max monthly
     ];
 
     const allMarkets = [];
@@ -482,11 +550,15 @@ function analyzeCryptoMarket(parsed) {
   const volatility = priceData.volatility;
   const timeMinutes = parsed.timeRemainingMinutes || 15;
 
-  // Calculate probabilities
+  // Calculate how far price is from strike (as percentage and z-score)
+  const pctFromStrike = ((currentPrice - parsed.strikePrice) / parsed.strikePrice) * 100;
+  const zScore = pctFromStrike / (volatility * 100);
+
+  // Calculate probabilities using log-normal model
   const { probAbove, probBelow } = calculateProbability(currentPrice, parsed.strikePrice, volatility);
 
-  // For "above" markets: YES wins if price > strike
-  // For "below" markets: YES wins if price < strike
+  // For "above/up" markets: YES wins if price >= strike at expiry
+  // For "below/down" markets: YES wins if price < strike at expiry
   let probYesWins, probNoWins;
   if (parsed.marketType === 'above') {
     probYesWins = probAbove;
@@ -496,39 +568,88 @@ function analyzeCryptoMarket(parsed) {
     probNoWins = probAbove;
   }
 
-  // Market implied probabilities from prices
-  // YES ask = price to buy YES, implies market thinks YES probability is roughly YES ask
-  // NO ask = price to buy NO, implies market thinks NO probability is roughly NO ask
+  // Market implied probabilities from ask prices
   const marketProbYes = parsed.yesAsk;
   const marketProbNo = parsed.noAsk;
 
   // Calculate edge for both sides
-  // Edge = our probability - market's implied probability
+  // Edge = our probability - market's price (what we pay)
   const edgeYes = (probYesWins - marketProbYes) * 100;
   const edgeNo = (probNoWins - marketProbNo) * 100;
 
-  // Pick the side with better edge (if either has positive edge)
+  // ALSO check for "obvious" mispricings based on distance from strike
+  // If price is far from strike, one side should be heavily favored
+  let obviousBet = null;
+
+  // For "above/up" markets:
+  // - If current price is ABOVE strike by 1.5+ volatility, YES should win ~90%+
+  // - If current price is BELOW strike by 1.5+ volatility, NO should win ~90%+
+  if (parsed.marketType === 'above') {
+    if (zScore >= 1.5) {
+      // Price well above strike - YES is very likely
+      const impliedProb = normalCDF(zScore);  // ~93% for z=1.5
+      const obviousEdge = (impliedProb - marketProbYes) * 100;
+      if (obviousEdge > 5 && marketProbYes < 0.90) {
+        obviousBet = { side: 'YES', edge: obviousEdge, reason: `Price ${pctFromStrike.toFixed(1)}% above strike` };
+      }
+    } else if (zScore <= -1.5) {
+      // Price well below strike - NO is very likely
+      const impliedProb = normalCDF(-zScore);  // ~93% for z=-1.5
+      const obviousEdge = (impliedProb - marketProbNo) * 100;
+      if (obviousEdge > 5 && marketProbNo < 0.90) {
+        obviousBet = { side: 'NO', edge: obviousEdge, reason: `Price ${Math.abs(pctFromStrike).toFixed(1)}% below strike` };
+      }
+    }
+  } else {
+    // For "below" markets, logic is reversed
+    if (zScore <= -1.5) {
+      const impliedProb = normalCDF(-zScore);
+      const obviousEdge = (impliedProb - marketProbYes) * 100;
+      if (obviousEdge > 5 && marketProbYes < 0.90) {
+        obviousBet = { side: 'YES', edge: obviousEdge, reason: `Price ${Math.abs(pctFromStrike).toFixed(1)}% below strike` };
+      }
+    } else if (zScore >= 1.5) {
+      const impliedProb = normalCDF(zScore);
+      const obviousEdge = (impliedProb - marketProbNo) * 100;
+      if (obviousEdge > 5 && marketProbNo < 0.90) {
+        obviousBet = { side: 'NO', edge: obviousEdge, reason: `Price ${pctFromStrike.toFixed(1)}% above strike` };
+      }
+    }
+  }
+
+  // Pick the best bet: prefer obvious bets, then highest edge
   let betSide = null;
   let betPrice = 0;
   let ourProbability = 0;
   let marketImpliedProb = 0;
   let edge = 0;
+  let betReason = '';
 
-  if (edgeYes > edgeNo && edgeYes > 0 && parsed.yesAsk > 0 && parsed.yesAsk < 0.98) {
+  if (obviousBet && obviousBet.edge > Math.max(edgeYes, edgeNo)) {
+    // Use the obvious bet
+    betSide = obviousBet.side;
+    betPrice = obviousBet.side === 'YES' ? parsed.yesAsk : parsed.noAsk;
+    ourProbability = obviousBet.side === 'YES' ? probYesWins : probNoWins;
+    marketImpliedProb = betPrice;
+    edge = obviousBet.edge;
+    betReason = obviousBet.reason + ' (obvious mispricing)';
+  } else if (edgeYes > edgeNo && edgeYes > 0 && parsed.yesAsk > 0 && parsed.yesAsk < 0.95) {
     betSide = 'YES';
     betPrice = parsed.yesAsk;
     ourProbability = probYesWins;
     marketImpliedProb = marketProbYes;
     edge = edgeYes;
-  } else if (edgeNo > 0 && parsed.noAsk > 0 && parsed.noAsk < 0.98) {
+    betReason = 'Model edge';
+  } else if (edgeNo > 0 && parsed.noAsk > 0 && parsed.noAsk < 0.95) {
     betSide = 'NO';
     betPrice = parsed.noAsk;
     ourProbability = probNoWins;
     marketImpliedProb = marketProbNo;
     edge = edgeNo;
+    betReason = 'Model edge';
   }
 
-  // Show opportunities with any positive edge (filtering happens at API level)
+  // Must have positive edge to show
   if (!betSide || edge < 0.5) {
     return null;
   }
@@ -543,6 +664,8 @@ function analyzeCryptoMarket(parsed) {
     ...parsed,
     currentPrice,
     volatility: (volatility * 100).toFixed(2) + '%',
+    pctFromStrike: pctFromStrike.toFixed(2),
+    zScore: zScore.toFixed(2),
     probYesWins: probYesWins * 100,
     probNoWins: probNoWins * 100,
     ourProbability: ourProbability * 100,
@@ -552,8 +675,10 @@ function analyzeCryptoMarket(parsed) {
     edge,
     betSide,
     betPrice,
+    betReason,
     profitPotential,
     recommendedBet,
+    isObviousBet: !!obviousBet,
     timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining)
   };
 }
@@ -885,10 +1010,11 @@ async function runAutoBet() {
 
     const best = opportunities[0];
     console.log(`💰 Best opportunity found:`);
-    console.log(`   Token: ${best.cryptoType} | Side: ${best.betSide}`);
-    console.log(`   Current price: $${best.currentPrice.toFixed(2)} | Strike: $${best.strikePrice.toFixed(2)}`);
-    console.log(`   Our probability: ${best.ourProbability.toFixed(1)}% | Market probability: ${best.marketImpliedProb.toFixed(1)}%`);
-    console.log(`   Edge: +${best.edge.toFixed(1)}% (min required: ${AUTO_BET_MIN_EDGE}%)`);
+    console.log(`   Market: ${best.title}`);
+    console.log(`   Token: ${best.cryptoType} | Side: ${best.betSide} | ${best.betReason || 'Model'}`);
+    console.log(`   Current: $${best.currentPrice.toFixed(2)} | Strike: $${best.strikePrice.toFixed(2)} | ${best.pctFromStrike}% from strike`);
+    console.log(`   Our prob: ${best.ourProbability.toFixed(1)}% | Market: ${(best.marketImpliedProb * 100).toFixed(1)}% | Edge: +${best.edge.toFixed(1)}%`);
+    console.log(`   ${best.isObviousBet ? '🎯 OBVIOUS MISPRICING DETECTED' : '📊 Model-based edge'}`);
 
     // Fixed $1 max bet - never exceed this
     const MAX_BET_CENTS = 100; // $1.00 max
