@@ -936,7 +936,15 @@ app.get('/api/crypto/opportunities', async (req, res) => {
 
     const opportunities = markets
       .map(m => analyzeCryptoMarket(parseMarket(m)))
-      .filter(m => m !== null && m.edge >= 0.5) // Only need 0.5% edge minimum
+      .filter(m => {
+        if (m === null) return false;
+        if (m.edge < 0.5) return false; // Need 0.5% edge minimum
+        // Only show opportunities where win probability is at least 50%
+        // This prevents showing bets on sides that are more likely to lose
+        const winProb = parseFloat(m.winProbability) || 0;
+        if (winProb < 50) return false;
+        return true;
+      })
       // SORT BY WIN PROBABILITY (safest bets first)
       .sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
 
