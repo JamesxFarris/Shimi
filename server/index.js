@@ -11,7 +11,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Global error handlers to prevent crashes
+// Global error handlers
 process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception:', err.message);
 });
@@ -32,40 +32,160 @@ let config = {
   apiKeyId: null,
   privateKey: null,
   isAuthenticated: false,
-
-  // Betting settings
   bankroll: 1000, // cents ($10.00)
-  maxBetPercent: 25, // Max 25% of bankroll per bet (conservative Kelly)
-  minBetAmount: 100, // Minimum $1 bet
-  maxTimeDays: 3, // Only bet on markets closing within 3 days
-  minProbability: 60, // Minimum 60% win probability
-  minProfit: 25, // Minimum 25% profit potential required
+  maxBetPercent: 25,
+  minBetAmount: 100, // $1 minimum
+  minEdge: 5, // Minimum 5% edge to bet
   autoBetEnabled: false,
   autoBetInterval: null
 };
 
-// Bet history tracking
 let betHistory = [];
-let portfolio = {
-  balance: 0,
-  positions: [],
-  totalDeposited: 0,
-  totalWithdrawn: 0,
-  totalWon: 0,
-  totalLost: 0
-};
+let portfolio = { balance: 0, positions: [] };
 
 // ============================================
-// KALSHI API AUTHENTICATION
+// CRYPTO PRICE TRACKING
+// ============================================
+
+const cryptoPrices = {
+  BTC: { price: 0, timestamp: 0, history: [], volatility: 0 },
+  ETH: { price: 0, timestamp: 0, history: [], volatility: 0 }
+};
+
+// Fetch current prices from Binance (free, no API key needed)
+async function fetchCryptoPrices() {
+  try {
+    const [btcRes, ethRes] = await Promise.all([
+      fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT'),
+      fetch('https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT')
+    ]);
+
+    const btcData = await btcRes.json();
+    const ethData = await ethRes.json();
+
+    const now = Date.now();
+
+    if (btcData.price) {
+      const btcPrice = parseFloat(btcData.price);
+      cryptoPrices.BTC.price = btcPrice;
+      cryptoPrices.BTC.timestamp = now;
+
+      // Keep 60 price points (about 10 minutes of data at 10s intervals)
+      cryptoPrices.BTC.history.push({ price: btcPrice, time: now });
+      if (cryptoPrices.BTC.history.length > 60) {
+        cryptoPrices.BTC.history.shift();
+      }
+
+      // Calculate 15-minute volatility from recent price movements
+      cryptoPrices.BTC.volatility = calculateVolatility(cryptoPrices.BTC.history);
+    }
+
+    if (ethData.price) {
+      const ethPrice = parseFloat(ethData.price);
+      cryptoPrices.ETH.price = ethPrice;
+      cryptoPrices.ETH.timestamp = now;
+
+      cryptoPrices.ETH.history.push({ price: ethPrice, time: now });
+      if (cryptoPrices.ETH.history.length > 60) {
+        cryptoPrices.ETH.history.shift();
+      }
+
+      cryptoPrices.ETH.volatility = calculateVolatility(cryptoPrices.ETH.history);
+    }
+
+    return { BTC: cryptoPrices.BTC.price, ETH: cryptoPrices.ETH.price };
+  } catch (error) {
+    console.error('Error fetching crypto prices:', error.message);
+    return null;
+  }
+}
+
+// Calculate annualized volatility from price history
+// Then convert to 15-minute volatility
+function calculateVolatility(history) {
+  if (history.length < 10) {
+    // Default volatility estimates (annual): BTC ~60%, ETH ~80%
+    return 0.02; // ~2% for 15 minutes (conservative)
+  }
+
+  // Calculate log returns
+  const returns = [];
+  for (let i = 1; i < history.length; i++) {
+    const logReturn = Math.log(history[i].price / history[i-1].price);
+    returns.push(logReturn);
+  }
+
+  // Standard deviation of returns
+  const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+  const variance = returns.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / returns.length;
+  const stdDev = Math.sqrt(variance);
+
+  // Scale to 15-minute volatility
+  // If data is ~10 second intervals, scale up
+  const avgInterval = (history[history.length-1].time - history[0].time) / (history.length - 1);
+  const intervalsIn15Min = (15 * 60 * 1000) / avgInterval;
+  const volatility15Min = stdDev * Math.sqrt(intervalsIn15Min);
+
+  // Cap volatility at reasonable bounds (0.5% to 5% for 15 min)
+  return Math.max(0.005, Math.min(0.05, volatility15Min));
+}
+
+// Calculate probability that price will be above/below target in given time
+// Using log-normal distribution assumption
+function calculateProbability(currentPrice, targetPrice, volatility, timeMinutes) {
+  // Time in years (for annualized volatility)
+  const timeYears = timeMinutes / (365 * 24 * 60);
+
+  // For 15-minute volatility, we already have it scaled
+  const sigma = volatility;
+
+  // Log of price ratio
+  const logRatio = Math.log(targetPrice / currentPrice);
+
+  // Standard normal CDF approximation
+  // d = (ln(target/current) - drift) / (sigma * sqrt(t))
+  // Assuming zero drift for short timeframes
+  const d = logRatio / sigma;
+
+  // Probability price will be BELOW target
+  const probBelow = normalCDF(d);
+
+  // Probability price will be ABOVE target
+  const probAbove = 1 - probBelow;
+
+  return { probAbove, probBelow };
+}
+
+// Standard normal CDF approximation (Zelen & Severo)
+function normalCDF(x) {
+  const a1 =  0.254829592;
+  const a2 = -0.284496736;
+  const a3 =  1.421413741;
+  const a4 = -1.453152027;
+  const a5 =  1.061405429;
+  const p  =  0.3275911;
+
+  const sign = x < 0 ? -1 : 1;
+  x = Math.abs(x);
+
+  const t = 1.0 / (1.0 + p * x);
+  const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x / 2);
+
+  return 0.5 * (1.0 + sign * y);
+}
+
+// Start price tracking (every 10 seconds)
+let priceInterval = setInterval(fetchCryptoPrices, 10000);
+fetchCryptoPrices(); // Initial fetch
+
+// ============================================
+// KALSHI API
 // ============================================
 
 function signRequest(method, path, timestamp) {
-  if (!config.privateKey) {
-    throw new Error('Private key not configured');
-  }
+  if (!config.privateKey) throw new Error('Private key not configured');
 
   try {
-    // Strip query params from path for signing
     const pathWithoutQuery = path.split('?')[0];
     const message = `${timestamp}${method}${pathWithoutQuery}`;
 
@@ -73,13 +193,11 @@ function signRequest(method, path, timestamp) {
     sign.update(message);
     sign.end();
 
-    const signature = sign.sign({
+    return sign.sign({
       key: config.privateKey,
       padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
       saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST
     }, 'base64');
-
-    return signature;
   } catch (err) {
     console.error('Crypto signing error:', err.message);
     throw new Error('Failed to sign request: ' + err.message);
@@ -96,7 +214,6 @@ async function kalshiRequest(method, endpoint, body = null) {
     'User-Agent': 'Shimi/1.0'
   };
 
-  // Add auth headers if configured
   if (config.isAuthenticated && config.apiKeyId && config.privateKey) {
     const signature = signRequest(method, path, timestamp);
     headers['KALSHI-ACCESS-KEY'] = config.apiKeyId;
@@ -104,11 +221,7 @@ async function kalshiRequest(method, endpoint, body = null) {
     headers['KALSHI-ACCESS-SIGNATURE'] = signature;
   }
 
-  const options = {
-    method,
-    headers
-  };
-
+  const options = { method, headers };
   if (body && (method === 'POST' || method === 'PUT')) {
     options.body = JSON.stringify(body);
   }
@@ -124,329 +237,273 @@ async function kalshiRequest(method, endpoint, body = null) {
 }
 
 // ============================================
-// MARKET DATA
+// CRYPTO MARKET ANALYSIS
 // ============================================
 
-let marketCache = {
-  data: null,
-  lastFetch: 0,
-  ttl: 10000
-};
+let marketCache = { data: null, lastFetch: 0, ttl: 15000 };
 
-async function fetchKalshiMarkets() {
+async function fetchCryptoMarkets() {
   const now = Date.now();
 
   if (marketCache.data && (now - marketCache.lastFetch) < marketCache.ttl) {
     return marketCache.data;
   }
 
-  const allMarkets = [];
-  let cursor = null;
-  let pageCount = 0;
-  const maxPages = 10;
-
   try {
-    do {
-      let endpoint = `/markets?limit=1000&status=open`;
-      if (cursor) {
-        endpoint += `&cursor=${cursor}`;
-      }
+    // Fetch markets and filter for crypto
+    const data = await kalshiRequest('GET', '/markets?limit=1000&status=open');
+    const markets = data.markets || [];
 
-      const data = await kalshiRequest('GET', endpoint);
-      allMarkets.push(...(data.markets || []));
-      cursor = data.cursor;
-      pageCount++;
+    // Filter for BTC and ETH markets (tickers usually contain INXB for BTC, INXE for ETH)
+    const cryptoMarkets = markets.filter(m => {
+      const ticker = (m.ticker || '').toUpperCase();
+      const title = (m.title || '').toUpperCase();
 
-    } while (cursor && pageCount < maxPages);
+      // Look for Bitcoin/BTC or Ethereum/ETH markets
+      const isBTC = ticker.includes('BTC') || ticker.includes('INXB') ||
+                    title.includes('BITCOIN') || title.includes('BTC');
+      const isETH = ticker.includes('ETH') || ticker.includes('INXE') ||
+                    title.includes('ETHEREUM') || title.includes('ETH');
 
-    marketCache.data = allMarkets;
+      // Check if it's a short-term market (within 1 hour)
+      const closeTime = m.close_time ? new Date(m.close_time).getTime() : null;
+      const timeRemaining = closeTime ? closeTime - now : null;
+      const isShortTerm = timeRemaining && timeRemaining > 0 && timeRemaining < 60 * 60 * 1000;
+
+      return (isBTC || isETH) && isShortTerm;
+    });
+
+    marketCache.data = cryptoMarkets;
     marketCache.lastFetch = now;
 
-    return allMarkets;
+    return cryptoMarkets;
   } catch (error) {
-    console.error('Error fetching markets:', error);
-    throw error;
+    console.error('Error fetching crypto markets:', error.message);
+    return [];
   }
 }
 
-// ============================================
-// BETTING STRATEGY
-// ============================================
+// Parse market to extract strike price and direction
+function parseMarket(market) {
+  const ticker = (market.ticker || '').toUpperCase();
+  const title = (market.title || '').toLowerCase();
 
-/**
- * Simple bet sizing based on probability and bankroll
- * Higher probability = can bet more (lower risk)
- * We use conservative sizing: 5-15% of bankroll based on probability
- */
-function calculateBetSize(probability, profitPotential, bankroll) {
-  // Base bet: higher probability = larger bet allowed
-  // 50% prob = 5% of bankroll, 90% prob = 15% of bankroll
-  const probFactor = Math.max(0, (probability - 0.5) / 0.4); // 0-1 scale
-  const betPercent = 5 + (probFactor * 10); // 5-15%
+  // Determine crypto type
+  let cryptoType = null;
+  if (ticker.includes('BTC') || ticker.includes('INXB') || title.includes('bitcoin') || title.includes('btc')) {
+    cryptoType = 'BTC';
+  } else if (ticker.includes('ETH') || ticker.includes('INXE') || title.includes('ethereum') || title.includes('eth')) {
+    cryptoType = 'ETH';
+  }
 
-  let betAmount = Math.floor(bankroll * (betPercent / 100));
+  // Extract strike price from title
+  // Common formats: "Bitcoin above $95,000", "BTC >= 95000", etc.
+  let strikePrice = null;
+  const priceMatches = title.match(/\$?([\d,]+(?:\.\d+)?)/g);
+  if (priceMatches) {
+    for (const match of priceMatches) {
+      const price = parseFloat(match.replace(/[$,]/g, ''));
+      // Sanity check: BTC should be 10k-500k, ETH should be 100-20k
+      if (cryptoType === 'BTC' && price > 10000 && price < 500000) {
+        strikePrice = price;
+        break;
+      } else if (cryptoType === 'ETH' && price > 100 && price < 20000) {
+        strikePrice = price;
+        break;
+      }
+    }
+  }
 
-  // Cap at max bet percent
-  const maxBet = Math.floor(bankroll * (config.maxBetPercent / 100));
-  betAmount = Math.min(betAmount, maxBet);
-  betAmount = Math.max(betAmount, config.minBetAmount);
+  // Determine direction (above/below)
+  let direction = null;
+  if (title.includes('above') || title.includes('>=') || title.includes('higher') || title.includes('or more')) {
+    direction = 'above';
+  } else if (title.includes('below') || title.includes('<=') || title.includes('lower') || title.includes('or less')) {
+    direction = 'below';
+  } else if (title.includes('between')) {
+    direction = 'between'; // Skip these for now
+  }
 
-  // Don't bet more than bankroll
-  betAmount = Math.min(betAmount, bankroll);
-
-  return betAmount;
-}
-
-/**
- * Score combines probability and profit potential
- * We want: high probability + decent profit
- * Score = probability * sqrt(profitPotential)
- * This favors high probability but rewards good profit potential
- */
-function calculateScore(probability, profitPotential) {
-  // probability: 0-1, profitPotential: percentage (e.g., 33 for 33%)
-  return probability * Math.sqrt(Math.max(profitPotential, 1));
-}
-
-function analyzeMarket(market) {
-  const yesBid = parseFloat(market.yes_bid) || 0;
-  const yesAsk = parseFloat(market.yes_ask) || 0;
-  const noBid = parseFloat(market.no_bid) || 0;
-  const noAsk = parseFloat(market.no_ask) || 0;
-  const lastPrice = parseFloat(market.last_price) || 0;
-  const volume = parseInt(market.volume) || 0;
-  const openInterest = parseInt(market.open_interest) || 0;
-
-  // Probability = price (market's implied probability)
-  // YES at $0.70 = 70% implied chance of YES winning
-  const yesProbability = yesAsk > 0 ? yesAsk : lastPrice;
-  const noProbability = noAsk > 0 ? noAsk : (1 - lastPrice);
-
-  // Profit potential (if you win)
-  // Buy YES at $0.70, win = $1.00, profit = $0.30 = 42.8% return
-  const yesProfitPotential = yesAsk > 0 && yesAsk < 1 ? ((1 - yesAsk) / yesAsk) * 100 : 0;
-  const noProfitPotential = noAsk > 0 && noAsk < 1 ? ((1 - noAsk) / noAsk) * 100 : 0;
-
-  // Time calculations
-  const closeTime = market.close_time ? new Date(market.close_time) : null;
-  const expirationTime = market.expiration_time ? new Date(market.expiration_time) : closeTime;
-  const timeRemaining = expirationTime ? expirationTime.getTime() - Date.now() : null;
-  const timeRemainingDays = timeRemaining ? timeRemaining / (24 * 60 * 60 * 1000) : null;
-
-  // Score for each side (probability * sqrt(profit potential))
-  const yesScore = calculateScore(yesProbability, yesProfitPotential);
-  const noScore = calculateScore(noProbability, noProfitPotential);
-
-  // Pick the better side (higher probability with decent profit)
-  // For turning $10 into $100, we want high probability bets
-  const bestBet = yesProbability >= noProbability ? 'YES' : 'NO';
-  const bestProbability = bestBet === 'YES' ? yesProbability : noProbability;
-  const bestProfitPotential = bestBet === 'YES' ? yesProfitPotential : noProfitPotential;
-  const bestAskPrice = bestBet === 'YES' ? yesAsk : noAsk;
-  const bestScore = bestBet === 'YES' ? yesScore : noScore;
-
-  // Calculate recommended bet size
-  const recommendedBet = calculateBetSize(bestProbability, bestProfitPotential, config.bankroll);
-
-  // Expected value per dollar bet (if market probability is correct)
-  // EV = (prob * payout) - cost = (prob * $1) - price
-  // Positive EV only if we think probability is higher than market price
-  // Since we're using market price as probability, EV = 0 by definition
-  // But we show "expected profit" assuming the bet wins
-  const expectedProfit = recommendedBet * (bestProfitPotential / 100);
+  // Time remaining
+  const closeTime = market.close_time ? new Date(market.close_time).getTime() : null;
+  const timeRemaining = closeTime ? closeTime - Date.now() : null;
+  const timeRemainingMinutes = timeRemaining ? timeRemaining / (60 * 1000) : null;
 
   return {
     ticker: market.ticker,
-    eventTicker: market.event_ticker,
-    title: market.title || market.ticker,
-    subtitle: market.subtitle || '',
-    status: market.status,
+    title: market.title,
+    cryptoType,
+    strikePrice,
+    direction,
     closeTime: market.close_time,
-    expirationTime: market.expiration_time || market.close_time,
     timeRemaining,
-    timeRemainingDays,
-    timeRemainingFormatted: formatTimeRemaining(timeRemaining),
+    timeRemainingMinutes,
+    yesAsk: parseFloat(market.yes_ask) || 0,
+    noAsk: parseFloat(market.no_ask) || 0,
+    yesBid: parseFloat(market.yes_bid) || 0,
+    noBid: parseFloat(market.no_bid) || 0,
+    volume: parseInt(market.volume) || 0
+  };
+}
 
-    yesBid, yesAsk, noBid, noAsk, lastPrice,
-    volume, openInterest,
+// Analyze a crypto market with real probability calculation
+function analyzeCryptoMarket(parsed) {
+  if (!parsed.cryptoType || !parsed.strikePrice || !parsed.direction || parsed.direction === 'between') {
+    return null;
+  }
 
-    yesProbability: yesProbability * 100,
-    yesProfitPotential,
+  const priceData = cryptoPrices[parsed.cryptoType];
+  if (!priceData || !priceData.price) {
+    return null;
+  }
 
-    noProbability: noProbability * 100,
-    noProfitPotential,
+  const currentPrice = priceData.price;
+  const volatility = priceData.volatility || 0.02;
+  const timeMinutes = parsed.timeRemainingMinutes || 15;
 
-    bestBet,
-    bestProbability: bestProbability * 100,
-    bestProfitPotential,
-    bestAskPrice,
-    bestScore,
+  // Calculate actual probability
+  const { probAbove, probBelow } = calculateProbability(
+    currentPrice,
+    parsed.strikePrice,
+    volatility,
+    timeMinutes
+  );
 
-    // Betting recommendation
+  // Market's implied probability (from ask price)
+  const marketProbYes = parsed.yesAsk;
+  const marketProbNo = parsed.noAsk;
+
+  // Our calculated probability based on which side the market is about
+  let ourProbability, marketImpliedProb, betSide, betPrice;
+
+  if (parsed.direction === 'above') {
+    ourProbability = probAbove;
+    marketImpliedProb = marketProbYes;
+    // If we think probability is higher than market, bet YES
+    // If we think probability is lower than market, bet NO
+    if (probAbove > marketProbYes && marketProbYes > 0) {
+      betSide = 'YES';
+      betPrice = marketProbYes;
+    } else if (probAbove < (1 - marketProbNo) && marketProbNo > 0) {
+      betSide = 'NO';
+      betPrice = marketProbNo;
+      ourProbability = probBelow;
+      marketImpliedProb = 1 - marketProbNo;
+    }
+  } else { // below
+    ourProbability = probBelow;
+    marketImpliedProb = marketProbYes;
+    if (probBelow > marketProbYes && marketProbYes > 0) {
+      betSide = 'YES';
+      betPrice = marketProbYes;
+    } else if (probBelow < (1 - marketProbNo) && marketProbNo > 0) {
+      betSide = 'NO';
+      betPrice = marketProbNo;
+      ourProbability = probAbove;
+      marketImpliedProb = 1 - marketProbNo;
+    }
+  }
+
+  if (!betSide || !betPrice || betPrice <= 0 || betPrice >= 1) {
+    return null;
+  }
+
+  // Calculate edge: our probability - market's implied probability
+  const edge = (ourProbability - marketImpliedProb) * 100;
+
+  // Only return if edge is meaningful (> 2%)
+  if (edge < 2) {
+    return null;
+  }
+
+  // Profit potential if we win
+  const profitPotential = ((1 - betPrice) / betPrice) * 100;
+
+  // Expected value per dollar
+  const expectedValue = ourProbability * (1 / betPrice) - 1;
+
+  // Recommended bet (Kelly-lite: edge / odds, capped at 15%)
+  const odds = (1 - betPrice) / betPrice;
+  const kellyFraction = Math.max(0, (odds * ourProbability - (1 - ourProbability)) / odds);
+  const betPercent = Math.min(kellyFraction * 0.25, 0.15); // Quarter Kelly, max 15%
+  const recommendedBet = Math.floor(config.bankroll * betPercent);
+
+  return {
+    ...parsed,
+    currentPrice,
+    volatility: (volatility * 100).toFixed(2) + '%',
+    ourProbability: ourProbability * 100,
+    marketImpliedProb: marketImpliedProb * 100,
+    edge,
+    betSide,
+    betPrice,
+    profitPotential,
+    expectedValue: expectedValue * 100,
     recommendedBet,
-    expectedProfit,
-
-    // For display: what you'd win if bet hits
-    potentialWin: (recommendedBet / 100) * (1 + bestProfitPotential / 100),
-
-    category: market.category || 'Other'
+    timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining)
   };
 }
 
 function formatTimeRemaining(ms) {
   if (!ms || ms < 0) return 'Expired';
-
-  const seconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-
-  if (days > 0) return `${days}d ${hours % 24}h`;
-  if (hours > 0) return `${hours}h ${minutes % 60}m`;
-  if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+  const minutes = Math.floor(ms / 60000);
+  const seconds = Math.floor((ms % 60000) / 1000);
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
   return `${seconds}s`;
 }
 
 // ============================================
-// TRADING ENDPOINTS
+// API ENDPOINTS
 // ============================================
 
-// Configure API credentials
-app.post('/api/auth/configure', async (req, res) => {
-  try {
-    const { apiKeyId, privateKey } = req.body;
-
-    if (!apiKeyId || !privateKey) {
-      return res.status(400).json({
-        success: false,
-        error: 'Both apiKeyId and privateKey are required'
-      });
-    }
-
-    // Validate the key by trying to get balance
-    config.apiKeyId = apiKeyId;
-    config.privateKey = privateKey;
-    config.isAuthenticated = true;
-
-    try {
-      const balanceData = await kalshiRequest('GET', '/portfolio/balance');
-      portfolio.balance = balanceData.balance || 0;
-      config.bankroll = portfolio.balance;
-
-      res.json({
-        success: true,
-        message: 'API credentials configured successfully',
-        balance: portfolio.balance / 100 // Convert cents to dollars
-      });
-    } catch (authError) {
-      config.apiKeyId = null;
-      config.privateKey = null;
-      config.isAuthenticated = false;
-
-      res.status(401).json({
-        success: false,
-        error: 'Invalid API credentials: ' + authError.message
-      });
-    }
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Get authentication status
-app.get('/api/auth/status', (req, res) => {
+// Get current crypto prices and status
+app.get('/api/crypto/prices', (req, res) => {
   res.json({
-    isAuthenticated: config.isAuthenticated,
-    hasApiKey: !!config.apiKeyId
+    success: true,
+    prices: {
+      BTC: {
+        price: cryptoPrices.BTC.price,
+        volatility: (cryptoPrices.BTC.volatility * 100).toFixed(2) + '%',
+        lastUpdate: cryptoPrices.BTC.timestamp,
+        dataPoints: cryptoPrices.BTC.history.length
+      },
+      ETH: {
+        price: cryptoPrices.ETH.price,
+        volatility: (cryptoPrices.ETH.volatility * 100).toFixed(2) + '%',
+        lastUpdate: cryptoPrices.ETH.timestamp,
+        dataPoints: cryptoPrices.ETH.history.length
+      }
+    },
+    timestamp: Date.now()
   });
 });
 
-// Get portfolio balance and positions
-app.get('/api/portfolio', async (req, res) => {
+// Get analyzed crypto betting opportunities
+app.get('/api/crypto/opportunities', async (req, res) => {
   try {
-    if (!config.isAuthenticated) {
-      return res.json({
-        success: true,
-        simulated: true,
-        balance: config.bankroll / 100,
-        positions: [],
-        betHistory
-      });
-    }
+    const markets = await fetchCryptoMarkets();
 
-    const [balanceData, positionsData] = await Promise.all([
-      kalshiRequest('GET', '/portfolio/balance'),
-      kalshiRequest('GET', '/portfolio/positions')
-    ]);
-
-    portfolio.balance = balanceData.balance || 0;
-    portfolio.positions = positionsData.market_positions || [];
-    config.bankroll = portfolio.balance;
+    const opportunities = markets
+      .map(m => {
+        const parsed = parseMarket(m);
+        return analyzeCryptoMarket(parsed);
+      })
+      .filter(m => m !== null)
+      .sort((a, b) => b.edge - a.edge);
 
     res.json({
       success: true,
-      simulated: false,
-      balance: portfolio.balance / 100,
-      portfolioValue: (balanceData.portfolio_value || 0) / 100,
-      positions: portfolio.positions,
-      betHistory
+      count: opportunities.length,
+      prices: {
+        BTC: cryptoPrices.BTC.price,
+        ETH: cryptoPrices.ETH.price
+      },
+      opportunities
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    console.error('Error getting opportunities:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
-});
-
-// Update betting settings
-app.post('/api/settings', (req, res) => {
-  const {
-    bankroll,
-    maxBetPercent,
-    minBetAmount,
-    maxTimeDays,
-    minProbability,
-    minProfit
-  } = req.body;
-
-  if (bankroll !== undefined) config.bankroll = Math.round(bankroll * 100);
-  if (maxBetPercent !== undefined) config.maxBetPercent = maxBetPercent;
-  if (minBetAmount !== undefined) config.minBetAmount = Math.round(minBetAmount * 100);
-  if (maxTimeDays !== undefined) config.maxTimeDays = maxTimeDays;
-  if (minProbability !== undefined) config.minProbability = minProbability;
-  if (minProfit !== undefined) config.minProfit = minProfit;
-
-  res.json({
-    success: true,
-    settings: {
-      bankroll: config.bankroll / 100,
-      maxBetPercent: config.maxBetPercent,
-      minBetAmount: config.minBetAmount / 100,
-      maxTimeDays: config.maxTimeDays,
-      minProbability: config.minProbability,
-      minProfit: config.minProfit
-    }
-  });
-});
-
-// Get current settings
-app.get('/api/settings', (req, res) => {
-  res.json({
-    success: true,
-    settings: {
-      bankroll: config.bankroll / 100,
-      maxBetPercent: config.maxBetPercent,
-      minBetAmount: config.minBetAmount / 100,
-      maxTimeDays: config.maxTimeDays,
-      minProbability: config.minProbability,
-      minEdge: config.minEdge,
-      autoBetEnabled: config.autoBetEnabled
-    }
-  });
 });
 
 // Place a bet
@@ -455,23 +512,15 @@ app.post('/api/bet', async (req, res) => {
     const { ticker, side, amount } = req.body;
 
     if (!ticker || !side || !amount) {
-      return res.status(400).json({
-        success: false,
-        error: 'ticker, side, and amount are required'
-      });
+      return res.status(400).json({ success: false, error: 'ticker, side, and amount required' });
     }
 
     const amountCents = Math.round(amount * 100);
-
-    // Calculate number of contracts based on current price
-    const markets = await fetchKalshiMarkets();
+    const markets = await fetchCryptoMarkets();
     const market = markets.find(m => m.ticker === ticker);
 
     if (!market) {
-      return res.status(404).json({
-        success: false,
-        error: 'Market not found'
-      });
+      return res.status(404).json({ success: false, error: 'Market not found' });
     }
 
     const price = side.toLowerCase() === 'yes'
@@ -479,10 +528,7 @@ app.post('/api/bet', async (req, res) => {
       : parseFloat(market.no_ask);
 
     if (!price || price <= 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Invalid market price'
-      });
+      return res.status(400).json({ success: false, error: 'Invalid market price' });
     }
 
     const priceCents = Math.round(price * 100);
@@ -491,7 +537,7 @@ app.post('/api/bet', async (req, res) => {
     if (count < 1) {
       return res.status(400).json({
         success: false,
-        error: `Amount too small. Minimum bet: $${(priceCents / 100).toFixed(2)}`
+        error: `Amount too small. Min: $${(priceCents / 100).toFixed(2)}`
       });
     }
 
@@ -508,7 +554,6 @@ app.post('/api/bet', async (req, res) => {
     };
 
     if (!config.isAuthenticated) {
-      // Simulated bet
       betRecord.status = 'simulated';
       betRecord.orderId = 'SIM-' + Date.now();
       betHistory.unshift(betRecord);
@@ -522,170 +567,91 @@ app.post('/api/bet', async (req, res) => {
       });
     }
 
-    // Real bet via Kalshi API
+    // Real bet
     const orderRequest = {
       ticker,
       action: 'buy',
       side: side.toLowerCase(),
       type: 'limit',
       count,
-      ...(side.toLowerCase() === 'yes'
-        ? { yes_price: priceCents }
-        : { no_price: priceCents }
-      )
+      ...(side.toLowerCase() === 'yes' ? { yes_price: priceCents } : { no_price: priceCents })
     };
 
     const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
 
     betRecord.status = 'placed';
     betRecord.orderId = orderResponse.order?.order_id;
-    betRecord.orderResponse = orderResponse;
     betHistory.unshift(betRecord);
 
-    // Refresh balance
     const balanceData = await kalshiRequest('GET', '/portfolio/balance');
     portfolio.balance = balanceData.balance || 0;
     config.bankroll = portfolio.balance;
 
     res.json({
       success: true,
-      simulated: false,
       bet: betRecord,
-      order: orderResponse,
       newBalance: portfolio.balance / 100
     });
 
   } catch (error) {
     console.error('Error placing bet:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Get optimal bets - high probability with good profit potential
-app.get('/api/optimal-bets', async (req, res) => {
+// Auto-bet on best opportunity
+app.post('/api/crypto/auto-bet', async (req, res) => {
   try {
-    const { maxTimeDays = config.maxTimeDays } = req.query;
+    const markets = await fetchCryptoMarkets();
 
-    const markets = await fetchKalshiMarkets();
-    let analyzed = markets.map(analyzeMarket);
+    const opportunities = markets
+      .map(m => analyzeCryptoMarket(parseMarket(m)))
+      .filter(m => m !== null && m.edge >= config.minEdge)
+      .sort((a, b) => b.edge - a.edge);
 
-    // Filter for good betting opportunities
-    analyzed = analyzed.filter(m => {
-      // Must have valid prices
-      if (m.bestAskPrice <= 0 || m.bestAskPrice >= 1) return false;
-
-      // Must be within time limit
-      if (m.timeRemainingDays === null || m.timeRemainingDays > parseFloat(maxTimeDays)) return false;
-      if (m.timeRemainingDays < 0) return false;
-
-      // Must meet minimum probability
-      if (m.bestProbability < config.minProbability) return false;
-
-      // Must have some profit potential (at least 10%)
-      if (m.bestProfitPotential < 10) return false;
-
-      return true;
-    });
-
-    // Sort by score (probability * sqrt(profit potential))
-    // This balances safety with reward
-    analyzed.sort((a, b) => b.bestScore - a.bestScore);
-
-    // Take top opportunities
-    const optimalBets = analyzed.slice(0, 15);
-
-    res.json({
-      success: true,
-      count: optimalBets.length,
-      totalAvailable: analyzed.length,
-      settings: {
-        maxTimeDays: parseFloat(maxTimeDays),
-        minProbability: config.minProbability,
-        bankroll: config.bankroll / 100
-      },
-      bets: optimalBets
-    });
-
-  } catch (error) {
-    console.error('Error getting optimal bets:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Auto-bet: place the single best bet
-app.post('/api/auto-bet', async (req, res) => {
-  try {
-    const { maxTimeDays = config.maxTimeDays, dryRun = false } = req.body;
-
-    const markets = await fetchKalshiMarkets();
-    let analyzed = markets.map(analyzeMarket);
-
-    // Filter for valid opportunities
-    analyzed = analyzed.filter(m => {
-      if (m.bestAskPrice <= 0 || m.bestAskPrice >= 1) return false;
-      if (m.timeRemainingDays === null || m.timeRemainingDays > parseFloat(maxTimeDays)) return false;
-      if (m.timeRemainingDays < 0) return false;
-      if (m.bestProbability < config.minProbability) return false;
-      if (m.bestProfitPotential < 10) return false;
-      return true;
-    });
-
-    if (analyzed.length === 0) {
+    if (opportunities.length === 0) {
       return res.json({
         success: true,
-        message: 'No optimal bets found matching criteria',
+        message: 'No opportunities with sufficient edge',
+        bet: null,
+        prices: { BTC: cryptoPrices.BTC.price, ETH: cryptoPrices.ETH.price }
+      });
+    }
+
+    const best = opportunities[0];
+
+    // Calculate bet amount
+    let betAmount = best.recommendedBet;
+    betAmount = Math.max(betAmount, config.minBetAmount);
+    betAmount = Math.min(betAmount, config.bankroll);
+
+    if (betAmount < config.minBetAmount) {
+      return res.json({
+        success: true,
+        message: 'Bankroll too low for minimum bet',
         bet: null
       });
     }
 
-    // Get the best opportunity by score
-    analyzed.sort((a, b) => b.bestScore - a.bestScore);
-    const bestOpportunity = analyzed[0];
-
-    if (dryRun) {
-      return res.json({
-        success: true,
-        dryRun: true,
-        recommendation: {
-          ticker: bestOpportunity.ticker,
-          title: bestOpportunity.title,
-          side: bestOpportunity.bestBet,
-          probability: bestOpportunity.bestProbability,
-          profitPotential: bestOpportunity.bestProfitPotential,
-          recommendedBet: bestOpportunity.recommendedBet / 100,
-          timeRemaining: bestOpportunity.timeRemainingFormatted
-        }
-      });
-    }
-
-    // Place the bet
-    const betAmount = bestOpportunity.recommendedBet / 100;
-    const priceCents = Math.round(bestOpportunity.bestAskPrice * 100);
-    const count = Math.floor(bestOpportunity.recommendedBet / priceCents);
+    const priceCents = Math.round(best.betPrice * 100);
+    const count = Math.floor(betAmount / priceCents);
 
     if (count < 1) {
-      return res.json({
-        success: false,
-        error: 'Calculated bet size too small'
-      });
+      return res.json({ success: true, message: 'Bet size too small', bet: null });
     }
 
     const betRecord = {
       id: Date.now().toString(),
-      ticker: bestOpportunity.ticker,
-      title: bestOpportunity.title,
-      side: bestOpportunity.bestBet.toLowerCase(),
+      ticker: best.ticker,
+      title: best.title,
+      side: best.betSide.toLowerCase(),
       count,
       price: priceCents,
       totalCost: count * priceCents,
-      profitPotential: bestOpportunity.bestProfitPotential,
-      probability: bestOpportunity.bestProbability,
+      edge: best.edge,
+      ourProbability: best.ourProbability,
+      cryptoPrice: best.currentPrice,
+      strikePrice: best.strikePrice,
       timestamp: new Date().toISOString(),
       status: 'pending',
       auto: true
@@ -701,21 +667,21 @@ app.post('/api/auto-bet', async (req, res) => {
         success: true,
         simulated: true,
         bet: betRecord,
+        opportunity: best,
         newBalance: config.bankroll / 100
       });
     }
 
-    // Real order
+    // Real bet
     const orderRequest = {
-      ticker: bestOpportunity.ticker,
+      ticker: best.ticker,
       action: 'buy',
-      side: bestOpportunity.bestBet.toLowerCase(),
+      side: best.betSide.toLowerCase(),
       type: 'limit',
       count,
-      ...(bestOpportunity.bestBet.toLowerCase() === 'yes'
+      ...(best.betSide.toLowerCase() === 'yes'
         ? { yes_price: priceCents }
-        : { no_price: priceCents }
-      )
+        : { no_price: priceCents })
     };
 
     const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
@@ -730,314 +696,249 @@ app.post('/api/auto-bet', async (req, res) => {
 
     res.json({
       success: true,
-      simulated: false,
       bet: betRecord,
-      order: orderResponse,
+      opportunity: best,
       newBalance: portfolio.balance / 100
     });
 
   } catch (error) {
     console.error('Error in auto-bet:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Internal auto-bet logic (called directly, not via HTTP)
-async function executeAutoBet() {
+// Toggle continuous auto-betting
+let autoBetInterval = null;
+
+async function runAutoBet() {
   try {
-    console.log('🤖 Auto-bet check running...');
+    console.log('🤖 Checking for crypto opportunities...');
 
-    const markets = await fetchKalshiMarkets();
-    let analyzed = markets.map(analyzeMarket);
+    const markets = await fetchCryptoMarkets();
+    const opportunities = markets
+      .map(m => analyzeCryptoMarket(parseMarket(m)))
+      .filter(m => m !== null && m.edge >= config.minEdge)
+      .sort((a, b) => b.edge - a.edge);
 
-    // Filter for valid opportunities
-    analyzed = analyzed.filter(m => {
-      if (m.bestAskPrice <= 0 || m.bestAskPrice >= 1) return false;
-      if (m.timeRemainingDays === null || m.timeRemainingDays > config.maxTimeDays) return false;
-      if (m.timeRemainingDays < 0) return false;
-      if (m.bestProbability < config.minProbability) return false;
-      if (m.bestProfitPotential < 10) return false;
-      return true;
-    });
-
-    if (analyzed.length === 0) {
-      console.log('🤖 No optimal bets found');
-      return { success: true, bet: null };
+    if (opportunities.length === 0) {
+      console.log('📊 No opportunities found');
+      return;
     }
 
-    // Get the best opportunity by score
-    analyzed.sort((a, b) => b.bestScore - a.bestScore);
-    const bestOpportunity = analyzed[0];
+    const best = opportunities[0];
+    console.log(`💰 Found opportunity: ${best.ticker} | Edge: ${best.edge.toFixed(1)}% | ${best.betSide}`);
 
-    const priceCents = Math.round(bestOpportunity.bestAskPrice * 100);
-    const count = Math.floor(bestOpportunity.recommendedBet / priceCents);
+    // Place bet logic (similar to auto-bet endpoint)
+    let betAmount = Math.max(best.recommendedBet, config.minBetAmount);
+    betAmount = Math.min(betAmount, config.bankroll);
+
+    const priceCents = Math.round(best.betPrice * 100);
+    const count = Math.floor(betAmount / priceCents);
 
     if (count < 1) {
-      console.log('🤖 Bet size too small');
-      return { success: false, error: 'Bet size too small' };
+      console.log('⚠️ Bet size too small');
+      return;
     }
 
     const betRecord = {
       id: Date.now().toString(),
-      ticker: bestOpportunity.ticker,
-      title: bestOpportunity.title,
-      side: bestOpportunity.bestBet.toLowerCase(),
+      ticker: best.ticker,
+      title: best.title,
+      side: best.betSide.toLowerCase(),
       count,
       price: priceCents,
       totalCost: count * priceCents,
-      profitPotential: bestOpportunity.bestProfitPotential,
-      probability: bestOpportunity.bestProbability,
+      edge: best.edge,
       timestamp: new Date().toISOString(),
-      status: 'pending',
+      status: config.isAuthenticated ? 'pending' : 'simulated',
       auto: true
     };
 
     if (!config.isAuthenticated) {
-      betRecord.status = 'simulated';
       betRecord.orderId = 'SIM-' + Date.now();
       betHistory.unshift(betRecord);
       config.bankroll -= betRecord.totalCost;
-      console.log(`🎰 Auto-bet (simulated): ${betRecord.side} on ${betRecord.ticker}`);
-      return { success: true, simulated: true, bet: betRecord };
+      console.log(`🎰 Simulated bet: ${betRecord.side} on ${betRecord.ticker} | $${(betRecord.totalCost/100).toFixed(2)}`);
+      return;
     }
 
-    // Real order
+    // Real bet
     const orderRequest = {
-      ticker: bestOpportunity.ticker,
+      ticker: best.ticker,
       action: 'buy',
-      side: bestOpportunity.bestBet.toLowerCase(),
+      side: best.betSide.toLowerCase(),
       type: 'limit',
       count,
-      ...(bestOpportunity.bestBet.toLowerCase() === 'yes'
+      ...(best.betSide.toLowerCase() === 'yes'
         ? { yes_price: priceCents }
-        : { no_price: priceCents }
-      )
+        : { no_price: priceCents })
     };
 
     const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
-
     betRecord.status = 'placed';
     betRecord.orderId = orderResponse.order?.order_id;
     betHistory.unshift(betRecord);
 
     const balanceData = await kalshiRequest('GET', '/portfolio/balance');
-    portfolio.balance = balanceData.balance || 0;
-    config.bankroll = portfolio.balance;
+    config.bankroll = balanceData.balance || 0;
 
-    console.log(`🎰 Auto-bet placed: ${betRecord.side} on ${betRecord.ticker}`);
-    return { success: true, bet: betRecord };
+    console.log(`🎰 Bet placed: ${betRecord.side} on ${betRecord.ticker}`);
 
   } catch (error) {
-    console.error('Auto-bet execution error:', error.message);
-    return { success: false, error: error.message };
+    console.error('Auto-bet error:', error.message);
   }
 }
 
-// Toggle continuous auto-betting
-app.post('/api/auto-bet/toggle', (req, res) => {
-  const { enabled, intervalMinutes = 5 } = req.body;
+app.post('/api/crypto/auto-bet/toggle', (req, res) => {
+  const { enabled, intervalSeconds = 60 } = req.body;
 
   if (enabled && !config.autoBetEnabled) {
     config.autoBetEnabled = true;
 
-    // Use direct function call instead of HTTP request to self
-    config.autoBetInterval = setInterval(() => {
-      executeAutoBet().catch(err => {
-        console.error('Auto-bet interval error:', err.message);
-      });
-    }, intervalMinutes * 60 * 1000);
+    // Run immediately, then on interval
+    runAutoBet();
+    autoBetInterval = setInterval(runAutoBet, intervalSeconds * 1000);
 
     res.json({
       success: true,
-      message: `Auto-betting enabled (every ${intervalMinutes} minutes)`,
+      message: `Auto-betting enabled (every ${intervalSeconds}s)`,
       enabled: true
     });
   } else if (!enabled && config.autoBetEnabled) {
     config.autoBetEnabled = false;
-    if (config.autoBetInterval) {
-      clearInterval(config.autoBetInterval);
-      config.autoBetInterval = null;
+    if (autoBetInterval) {
+      clearInterval(autoBetInterval);
+      autoBetInterval = null;
     }
 
-    res.json({
-      success: true,
-      message: 'Auto-betting disabled',
-      enabled: false
-    });
+    res.json({ success: true, message: 'Auto-betting disabled', enabled: false });
   } else {
     res.json({
       success: true,
-      message: `Auto-betting already ${enabled ? 'enabled' : 'disabled'}`,
+      message: `Auto-betting ${config.autoBetEnabled ? 'running' : 'stopped'}`,
       enabled: config.autoBetEnabled
     });
   }
 });
 
-// ============================================
-// EXISTING ENDPOINTS
-// ============================================
-
-app.get('/api/markets', async (req, res) => {
+// Auth endpoints
+app.post('/api/auth/configure', async (req, res) => {
   try {
-    const {
-      sortBy = 'bestDegenScore',
-      sortOrder = 'desc',
-      minProbability = 0,
-      maxProbability = 100,
-      minProfit = 0,
-      maxTimeHours = null,
-      maxTimeDays = null,
-      search = ''
-    } = req.query;
+    const { apiKeyId, privateKey } = req.body;
 
-    const markets = await fetchKalshiMarkets();
-    let analyzed = markets.map(analyzeMarket);
+    if (!apiKeyId || !privateKey) {
+      return res.status(400).json({ success: false, error: 'apiKeyId and privateKey required' });
+    }
 
-    analyzed = analyzed.filter(m => m.bestAskPrice > 0 && m.bestAskPrice < 1);
+    config.apiKeyId = apiKeyId.trim();
+    config.privateKey = privateKey.trim();
+    config.isAuthenticated = true;
 
-    analyzed = analyzed.filter(m => {
-      if (m.bestProbability < parseFloat(minProbability)) return false;
-      if (m.bestProbability > parseFloat(maxProbability)) return false;
-      if (m.bestProfitPotential < parseFloat(minProfit)) return false;
+    try {
+      const balanceData = await kalshiRequest('GET', '/portfolio/balance');
+      portfolio.balance = balanceData.balance || 0;
+      config.bankroll = portfolio.balance;
 
-      if (maxTimeHours && m.timeRemaining) {
-        const maxTimeMs = parseFloat(maxTimeHours) * 60 * 60 * 1000;
-        if (m.timeRemaining > maxTimeMs) return false;
-      }
-
-      if (maxTimeDays && m.timeRemainingDays !== null) {
-        if (m.timeRemainingDays > parseFloat(maxTimeDays)) return false;
-      }
-
-      if (search) {
-        const searchLower = search.toLowerCase();
-        return m.title.toLowerCase().includes(searchLower) ||
-               m.ticker.toLowerCase().includes(searchLower) ||
-               m.subtitle.toLowerCase().includes(searchLower);
-      }
-
-      return true;
-    });
-
-    const order = sortOrder === 'asc' ? 1 : -1;
-    analyzed.sort((a, b) => {
-      let aVal = a[sortBy];
-      let bVal = b[sortBy];
-      if (aVal === null) aVal = sortOrder === 'asc' ? Infinity : -Infinity;
-      if (bVal === null) bVal = sortOrder === 'asc' ? Infinity : -Infinity;
-      return (aVal - bVal) * order;
-    });
-
-    res.json({
-      success: true,
-      count: analyzed.length,
-      markets: analyzed
-    });
-
+      res.json({
+        success: true,
+        message: 'Connected to Kalshi',
+        balance: portfolio.balance / 100
+      });
+    } catch (authError) {
+      config.apiKeyId = null;
+      config.privateKey = null;
+      config.isAuthenticated = false;
+      res.status(401).json({ success: false, error: 'Invalid credentials: ' + authError.message });
+    }
   } catch (error) {
-    console.error('Error in /api/markets:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
-app.get('/api/quick-bets', async (req, res) => {
-  try {
-    const { maxTimeDays = 3 } = req.query;
+app.get('/api/auth/status', (req, res) => {
+  res.json({
+    isAuthenticated: config.isAuthenticated,
+    hasApiKey: !!config.apiKeyId
+  });
+});
 
-    const markets = await fetchKalshiMarkets();
-    let analyzed = markets.map(analyzeMarket);
+app.get('/api/portfolio', (req, res) => {
+  res.json({
+    success: true,
+    simulated: !config.isAuthenticated,
+    balance: config.bankroll / 100,
+    betHistory: betHistory.slice(0, 50)
+  });
+});
 
-    analyzed = analyzed.filter(m =>
-      m.bestAskPrice > 0 &&
-      m.bestAskPrice < 1 &&
-      m.bestProbability >= 60 &&
-      m.bestProfitPotential >= 10 &&
-      (m.timeRemainingDays === null || m.timeRemainingDays <= parseFloat(maxTimeDays))
-    );
+app.get('/api/settings', (req, res) => {
+  res.json({
+    success: true,
+    settings: {
+      bankroll: config.bankroll / 100,
+      minEdge: config.minEdge,
+      autoBetEnabled: config.autoBetEnabled
+    }
+  });
+});
 
-    analyzed.sort((a, b) => b.bestDegenScore - a.bestDegenScore);
+app.post('/api/settings', (req, res) => {
+  const { bankroll, minEdge } = req.body;
 
-    const quickBets = {
-      safeishBets: analyzed
-        .filter(m => m.bestProbability >= 75)
-        .sort((a, b) => b.bestProfitPotential - a.bestProfitPotential)
-        .slice(0, 5),
+  if (bankroll !== undefined) config.bankroll = Math.round(bankroll * 100);
+  if (minEdge !== undefined) config.minEdge = minEdge;
 
-      valueBets: analyzed
-        .filter(m => m.bestProbability >= 60 && m.bestProbability < 75 && m.bestProfitPotential >= 30)
-        .sort((a, b) => b.bestDegenScore - a.bestDegenScore)
-        .slice(0, 5),
-
-      closingSoon: analyzed
-        .filter(m => m.timeRemaining && m.timeRemaining < 24 * 60 * 60 * 1000 && m.timeRemaining > 0)
-        .sort((a, b) => a.timeRemaining - b.timeRemaining)
-        .slice(0, 5),
-
-      kellyPicks: analyzed
-        .filter(m => m.edge >= 5 && m.recommendedBet >= config.minBetAmount)
-        .sort((a, b) => b.edge - a.edge)
-        .slice(0, 5)
-    };
-
-    res.json({ success: true, quickBets });
-
-  } catch (error) {
-    console.error('Error in /api/quick-bets:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
+  res.json({
+    success: true,
+    settings: {
+      bankroll: config.bankroll / 100,
+      minEdge: config.minEdge
+    }
+  });
 });
 
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
-    timestamp: new Date().toISOString(),
-    authenticated: config.isAuthenticated,
-    autoBetEnabled: config.autoBetEnabled
+    cryptoPrices: {
+      BTC: cryptoPrices.BTC.price,
+      ETH: cryptoPrices.ETH.price
+    },
+    autoBetEnabled: config.autoBetEnabled,
+    authenticated: config.isAuthenticated
   });
 });
 
-// ============================================
-// SERVE STATIC FRONTEND IN PRODUCTION
-// ============================================
-
+// Serve static frontend
 const clientDistPath = path.join(__dirname, '../client/dist');
-
-// Serve static files from the React app
 try {
   if (fs.existsSync(clientDistPath)) {
     app.use(express.static(clientDistPath));
   }
-} catch (err) {
-  console.log('Static files not available:', err.message);
-}
+} catch (err) {}
 
-// Handle React routing - return index.html for all non-API routes
 app.get('*', (req, res) => {
   try {
     const indexPath = path.join(clientDistPath, 'index.html');
     if (fs.existsSync(indexPath)) {
       res.sendFile(indexPath);
     } else {
-      res.status(404).send('Frontend not built. Run: npm run build');
+      res.status(404).send('Frontend not built');
     }
   } catch (err) {
     res.status(500).send('Server error');
   }
 });
 
-// Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Express error:', err.message);
   res.status(500).json({ success: false, error: 'Internal server error' });
 });
 
 const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🎰 Shimi server running on port ${PORT}`);
-  console.log(`📊 API: http://localhost:${PORT}/api/markets`);
-  console.log(`💰 Trading: http://localhost:${PORT}/api/optimal-bets`);
+  console.log(`🎰 Shimi Crypto Bot running on port ${PORT}`);
+  console.log(`📊 Tracking BTC & ETH prices in real-time`);
+  console.log(`💰 Crypto opportunities: http://localhost:${PORT}/api/crypto/opportunities`);
 });
 
 server.on('error', (err) => {
