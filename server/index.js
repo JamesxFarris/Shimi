@@ -335,30 +335,57 @@ function predictOutcome(token, currentPrice, targetPrice, expiryMinutes = 15) {
 
   // 1. Calculate volatility-based probability (baseline)
   const volatility = cryptoPrices[token]?.volatility || 0.025;
-  const pctToTarget = (targetPrice - currentPrice) / currentPrice;
-  const zScore = pctToTarget / volatility;
+
+  // KEY INSIGHT: Scale volatility by time remaining
+  // Less time = less chance for price to move = current position more likely to hold
+  // sqrt(time) scaling because volatility scales with sqrt of time
+  const timeScaleFactor = Math.sqrt(expiryMinutes / 15);  // 1.0 at 15min, 0.58 at 5min, 0.41 at 2.5min
+  const adjustedVolatility = volatility * timeScaleFactor;
+
+  const pctFromTarget = (currentPrice - targetPrice) / targetPrice;
+  // How many "adjusted standard deviations" away is the current price?
+  const zScore = pctFromTarget / adjustedVolatility;
 
   // Base probability from normal distribution
-  // Probability of ending BELOW target
-  let probBelow = normalCDF(zScore);
-  let probAbove = 1 - probBelow;
+  // Higher z-score = more likely to stay on current side
+  let probAbove = normalCDF(zScore);
+  let probBelow = 1 - probAbove;
 
-  // 2. Adjust for momentum
+  // 2. TIME DECAY BOOST
+  // If price has moved significantly AND little time remains, boost confidence
+  // E.g., price 2% above strike with only 3 minutes left = very likely to stay above
+  const timeRemainingRatio = expiryMinutes / 15;  // 1.0 at start, 0.2 at 3min left
+  const priceDistanceRatio = Math.abs(pctFromTarget) / adjustedVolatility;
+
+  if (priceDistanceRatio > 0.5 && timeRemainingRatio < 0.5) {
+    // Price has moved AND time is running out
+    // Boost the probability of staying on current side
+    const timeDecayBoost = (1 - timeRemainingRatio) * 0.15;  // Up to +15% at expiry
+
+    if (currentPrice > targetPrice) {
+      probAbove = Math.min(0.95, probAbove + timeDecayBoost);
+      probBelow = 1 - probAbove;
+    } else {
+      probBelow = Math.min(0.95, probBelow + timeDecayBoost);
+      probAbove = 1 - probBelow;
+    }
+  }
+
+  // 3. Adjust for momentum
   const momentum = calculateMomentum(allHistory, 5);
 
-  // Momentum adjustment: if trending up, increase prob of staying above
-  // This is a Bayesian-style update
+  // Momentum adjustment: if trending in a direction, boost that side
   let momentumAdjustment = 0;
   if (momentum.strength === 'strong') {
-    momentumAdjustment = momentum.trend > 0 ? 0.08 : -0.08;  // ±8%
+    momentumAdjustment = momentum.trend > 0 ? 0.10 : -0.10;  // ±10%
   } else if (momentum.strength === 'moderate') {
-    momentumAdjustment = momentum.trend > 0 ? 0.04 : -0.04;  // ±4%
+    momentumAdjustment = momentum.trend > 0 ? 0.05 : -0.05;  // ±5%
   }
 
   probAbove = Math.max(0.05, Math.min(0.95, probAbove + momentumAdjustment));
   probBelow = 1 - probAbove;
 
-  // 3. Check historical crossing data
+  // 4. Check historical crossing data
   const crossingAnalysis = analyzeHistoricalCrossings(allHistory, currentPrice, targetPrice, expiryMinutes);
 
   if (crossingAnalysis.reliable) {
@@ -366,23 +393,24 @@ function predictOutcome(token, currentPrice, targetPrice, expiryMinutes = 15) {
     const historicalProbCross = crossingAnalysis.crossingProb;
 
     if (currentPrice > targetPrice) {
-      // Currently above - historical says X% chance of dropping below
       const blendedProbBelow = 0.3 * historicalProbCross + 0.7 * probBelow;
       probBelow = blendedProbBelow;
       probAbove = 1 - probBelow;
     } else {
-      // Currently below - historical says X% chance of rising above
       const blendedProbAbove = 0.3 * historicalProbCross + 0.7 * probAbove;
       probAbove = blendedProbAbove;
       probBelow = 1 - probAbove;
     }
   }
 
-  // 4. Calculate confidence based on data quality
-  const confidence = Math.min(
-    allHistory.length / 100,  // More data = more confidence
-    crossingAnalysis.reliable ? 0.8 : 0.5,
-    momentum.strength === 'strong' ? 0.9 : 0.7
+  // 5. Calculate confidence based on data quality AND time remaining
+  // More confident when: more data, strong momentum, less time remaining
+  const timeConfidenceBoost = (1 - timeRemainingRatio) * 0.2;  // Up to +20% confidence near expiry
+  const confidence = Math.min(0.95,
+    0.4 +  // Base confidence
+    (allHistory.length / 200) * 0.2 +  // Data quality
+    (momentum.strength === 'strong' ? 0.15 : momentum.strength === 'moderate' ? 0.08 : 0) +
+    timeConfidenceBoost
   );
 
   return {
@@ -390,13 +418,16 @@ function predictOutcome(token, currentPrice, targetPrice, expiryMinutes = 15) {
     probBelow,
     momentum,
     volatility,
+    adjustedVolatility,
     zScore,
     confidence,
+    timeRemaining: expiryMinutes,
     dataPoints: allHistory.length,
     analysis: {
       method: crossingAnalysis.reliable ? 'historical+model' : 'model',
       momentumDirection: momentum.direction,
-      momentumStrength: momentum.strength
+      momentumStrength: momentum.strength,
+      timeDecayApplied: priceDistanceRatio > 0.5 && timeRemainingRatio < 0.5
     }
   };
 }
@@ -769,40 +800,53 @@ function analyzeCryptoMarket(parsed) {
   const noEdge = (probNoWins - marketProbNo) * 100;
 
   // Build analysis description
-  const momentumDesc = prediction.momentum.direction === 'up' ? '📈 trending UP' :
-                       prediction.momentum.direction === 'down' ? '📉 trending DOWN' : '➡️ sideways';
+  const momentumDesc = prediction.momentum.direction === 'up' ? '📈 UP' :
+                       prediction.momentum.direction === 'down' ? '📉 DOWN' : '➡️ flat';
+  const timeDesc = prediction.analysis.timeDecayApplied ? '⏰ time decay' : '';
 
-  // Determine minimum edge based on confidence and probability
-  const highConfidence = prediction.confidence > 0.6 && prediction.dataPoints > 30;
-  const yesMinEdge = (probYesWins > 0.75 && highConfidence) ? OBVIOUS_BET_MIN_EDGE : MANUAL_BET_MIN_EDGE;
-  const noMinEdge = (probNoWins > 0.75 && highConfidence) ? OBVIOUS_BET_MIN_EDGE : MANUAL_BET_MIN_EDGE;
+  // DYNAMIC EDGE REQUIREMENTS
+  // Higher win probability = lower edge requirement (we're more confident)
+  // 50% win prob → need 3% edge (coin flip, need significant edge)
+  // 65% win prob → need 2% edge
+  // 75% win prob → need 1% edge (high confidence)
+  // 85% win prob → need 0.5% edge (near certainty)
+  function getMinEdge(winProb) {
+    if (winProb >= 0.85) return 0.5;
+    if (winProb >= 0.75) return 1;
+    if (winProb >= 0.65) return 2;
+    if (winProb >= 0.55) return 3;
+    return 5;  // Low probability bets need high edge
+  }
+
+  const yesMinEdge = getMinEdge(probYesWins);
+  const noMinEdge = getMinEdge(probNoWins);
 
   // FIND THE BEST SIDE based on statistical analysis
   let bestBet = null;
 
   // Check YES side
   if (yesEdge >= yesMinEdge && parsed.yesAsk > 0 && parsed.yesAsk < 0.98) {
-    const isObvious = probYesWins > 0.75 && highConfidence;
+    const isHighProb = probYesWins >= 0.65;
     bestBet = {
       side: 'YES',
       edge: yesEdge,
       prob: probYesWins,
-      isObvious,
-      reason: `${momentumDesc} | ${(probYesWins*100).toFixed(0)}% probability (${prediction.analysis.method})`
+      isObvious: isHighProb,
+      reason: `${momentumDesc} ${timeDesc} | ${(probYesWins*100).toFixed(0)}% prob`
     };
   }
 
   // Check NO side - prefer it if better edge or higher probability
   if (noEdge >= noMinEdge && parsed.noAsk > 0 && parsed.noAsk < 0.98) {
-    const isObvious = probNoWins > 0.75 && highConfidence;
-    // Use NO if: no YES bet, OR NO has better edge, OR NO is higher probability
-    if (!bestBet || noEdge > bestBet.edge || probNoWins > bestBet.prob) {
+    const isHighProb = probNoWins >= 0.65;
+    // Use NO if: no YES bet, OR NO has higher probability
+    if (!bestBet || probNoWins > bestBet.prob) {
       bestBet = {
         side: 'NO',
         edge: noEdge,
         prob: probNoWins,
-        isObvious,
-        reason: `${momentumDesc} | ${(probNoWins*100).toFixed(0)}% probability (${prediction.analysis.method})`
+        isObvious: isHighProb,
+        reason: `${momentumDesc} ${timeDesc} | ${(probNoWins*100).toFixed(0)}% prob`
       };
     }
   }
