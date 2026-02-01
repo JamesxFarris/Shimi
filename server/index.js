@@ -922,7 +922,26 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
+// ============================================
+// SERVE STATIC FRONTEND IN PRODUCTION
+// ============================================
+
+const clientDistPath = path.join(__dirname, '../client/dist');
+
+// Serve static files from the React app
+app.use(express.static(clientDistPath));
+
+// Handle React routing - return index.html for all non-API routes
+app.get('*', (req, res) => {
+  const indexPath = path.join(clientDistPath, 'index.html');
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.status(404).send('Frontend not built. Run: npm run build');
+  }
+});
+
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`🎰 Shimi server running on port ${PORT}`);
   console.log(`📊 API: http://localhost:${PORT}/api/markets`);
   console.log(`💰 Trading: http://localhost:${PORT}/api/optimal-bets`);

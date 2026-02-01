@@ -50,7 +50,7 @@ Shimi uses **fractional Kelly (25%)** to reduce variance while maintaining posit
 npm run install:all
 ```
 
-### Running
+### Running Locally
 
 ```bash
 # Start both server and client
@@ -58,6 +58,35 @@ npm run dev
 ```
 
 Then open [http://localhost:3000](http://localhost:3000)
+
+## Deploy to Cloud (Access from Phone)
+
+### Option 1: Render.com (Recommended - Free)
+
+1. Fork/push this repo to your GitHub
+2. Go to [render.com](https://render.com) and sign up with GitHub
+3. Click **"New +"** → **"Web Service"**
+4. Connect your Shimi repository
+5. Render auto-detects settings from `render.yaml`
+6. Click **"Create Web Service"**
+7. Wait ~3 minutes for build
+8. Access your app at `https://shimi-xxxx.onrender.com`
+
+### Option 2: Railway.app (Free Credits)
+
+1. Go to [railway.app](https://railway.app)
+2. Click **"New Project"** → **"Deploy from GitHub repo"**
+3. Select your Shimi repository
+4. Railway auto-deploys using `railway.json`
+5. Click **"Generate Domain"** to get your URL
+
+### After Deploying
+
+Your Shimi app will be live at a URL like:
+- **Render**: `https://shimi-xxxx.onrender.com`
+- **Railway**: `https://shimi-xxxx.up.railway.app`
+
+Open this URL on your phone and start betting!
 
 ## Configuration
 

@@ -1,21 +1,25 @@
 {
   "name": "shimi",
   "version": "1.0.0",
-  "description": "Kalshi betting optimizer - find high probability, high payout opportunities",
+  "description": "Kalshi Kelly Criterion betting optimizer - automated trading",
   "scripts": {
     "install:all": "npm install --prefix server && npm install --prefix client",
     "dev:server": "npm run dev --prefix server",
     "dev:client": "npm run dev --prefix client",
     "dev": "npm run dev:server & npm run dev:client",
-    "start:server": "npm start --prefix server",
-    "start:client": "npm run preview --prefix client",
-    "build": "npm run build --prefix client"
+    "build": "npm run build --prefix client",
+    "start": "node server/index.js",
+    "production": "npm run build && npm start"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "keywords": [
     "kalshi",
     "betting",
     "prediction-markets",
-    "trading"
+    "trading",
+    "kelly-criterion"
   ],
   "author": "",
   "license": "MIT"
