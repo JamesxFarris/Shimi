@@ -1,282 +1,11 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, memo } from 'react'
 
 const API_BASE = '/api'
 
-function App() {
-  const [markets, setMarkets] = useState([])
-  const [quickBets, setQuickBets] = useState(null)
-  const [optimalBets, setOptimalBets] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
-  const [lastUpdate, setLastUpdate] = useState(null)
-  const [activeTab, setActiveTab] = useState('trading')
-
-  // Auth & Portfolio
-  const [isAuthenticated, setIsAuthenticated] = useState(false)
-  const [portfolio, setPortfolio] = useState({ balance: 10, positions: [], betHistory: [] })
-  const [showAuthModal, setShowAuthModal] = useState(false)
-  const [apiKeyId, setApiKeyId] = useState('')
-  const [privateKey, setPrivateKey] = useState('')
-  const [authError, setAuthError] = useState('')
-
-  // Settings
-  const [settings, setSettings] = useState({
-    bankroll: 10,
-    maxBetPercent: 25,
-    minBetAmount: 1,
-    maxTimeDays: 3,
-    minProbability: 60,
-    minEdge: 5,
-    autoBetEnabled: false
-  })
-
-  // Filters
-  const [sortBy, setSortBy] = useState('edge')
-  const [sortOrder, setSortOrder] = useState('desc')
-  const [minProbability, setMinProbability] = useState(50)
-  const [minProfit, setMinProfit] = useState(10)
-  const [maxTimeDays, setMaxTimeDays] = useState(3)
-  const [search, setSearch] = useState('')
-
-  // Fetch functions
-  const fetchAuthStatus = useCallback(async () => {
-    try {
-      const response = await fetch(`${API_BASE}/auth/status`)
-      const data = await response.json()
-      setIsAuthenticated(data.isAuthenticated)
-    } catch (err) {
-      console.error('Auth status error:', err)
-    }
-  }, [])
-
-  const fetchSettings = useCallback(async () => {
-    try {
-      const response = await fetch(`${API_BASE}/settings`)
-      const data = await response.json()
-      if (data.success) {
-        setSettings(data.settings)
-        setMaxTimeDays(data.settings.maxTimeDays)
-      }
-    } catch (err) {
-      console.error('Settings error:', err)
-    }
-  }, [])
-
-  const fetchPortfolio = useCallback(async () => {
-    try {
-      const response = await fetch(`${API_BASE}/portfolio`)
-      const data = await response.json()
-      if (data.success) {
-        setPortfolio({
-          balance: data.balance,
-          portfolioValue: data.portfolioValue,
-          positions: data.positions || [],
-          betHistory: data.betHistory || [],
-          simulated: data.simulated
-        })
-      }
-    } catch (err) {
-      console.error('Portfolio error:', err)
-    }
-  }, [])
-
-  const fetchMarkets = useCallback(async () => {
-    try {
-      const params = new URLSearchParams({
-        sortBy,
-        sortOrder,
-        minProbability: minProbability.toString(),
-        minProfit: minProfit.toString(),
-        maxTimeDays: maxTimeDays.toString(),
-        ...(search && { search })
-      })
-
-      const response = await fetch(`${API_BASE}/markets?${params}`)
-      const data = await response.json()
-
-      if (data.success) {
-        setMarkets(data.markets)
-        setLastUpdate(new Date())
-        setError(null)
-      } else {
-        setError(data.error)
-      }
-    } catch (err) {
-      setError(err.message)
-    }
-  }, [sortBy, sortOrder, minProbability, minProfit, maxTimeDays, search])
-
-  const fetchQuickBets = useCallback(async () => {
-    try {
-      const response = await fetch(`${API_BASE}/quick-bets?maxTimeDays=${maxTimeDays}`)
-      const data = await response.json()
-
-      if (data.success) {
-        setQuickBets(data.quickBets)
-      }
-    } catch (err) {
-      console.error('Quick bets error:', err)
-    }
-  }, [maxTimeDays])
-
-  const fetchOptimalBets = useCallback(async () => {
-    try {
-      const response = await fetch(`${API_BASE}/optimal-bets?maxTimeDays=${maxTimeDays}`)
-      const data = await response.json()
-
-      if (data.success) {
-        setOptimalBets(data.bets)
-      }
-    } catch (err) {
-      console.error('Optimal bets error:', err)
-    }
-  }, [maxTimeDays])
-
-  const fetchData = useCallback(async () => {
-    setLoading(true)
-    await Promise.all([
-      fetchMarkets(),
-      fetchQuickBets(),
-      fetchOptimalBets(),
-      fetchPortfolio(),
-      fetchSettings()
-    ])
-    setLoading(false)
-  }, [fetchMarkets, fetchQuickBets, fetchOptimalBets, fetchPortfolio, fetchSettings])
-
-  // Initial fetch
-  useEffect(() => {
-    fetchAuthStatus()
-    fetchData()
-  }, [])
-
-  // Refetch when filters change
-  useEffect(() => {
-    fetchMarkets()
-    fetchQuickBets()
-    fetchOptimalBets()
-  }, [fetchMarkets, fetchQuickBets, fetchOptimalBets])
-
-  // Auto-refresh every 15 seconds
-  useEffect(() => {
-    const interval = setInterval(fetchData, 15000)
-    return () => clearInterval(interval)
-  }, [fetchData])
-
-  // Configure API
-  const handleConfigureApi = async (e) => {
-    e.preventDefault()
-    setAuthError('')
-
-    try {
-      const response = await fetch(`${API_BASE}/auth/configure`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKeyId, privateKey })
-      })
-      const data = await response.json()
-
-      if (data.success) {
-        setIsAuthenticated(true)
-        setShowAuthModal(false)
-        setApiKeyId('')
-        setPrivateKey('')
-        fetchPortfolio()
-        fetchSettings()
-      } else {
-        setAuthError(data.error)
-      }
-    } catch (err) {
-      setAuthError(err.message)
-    }
-  }
-
-  // Update settings
-  const handleUpdateSettings = async (newSettings) => {
-    try {
-      const response = await fetch(`${API_BASE}/settings`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newSettings)
-      })
-      const data = await response.json()
-      if (data.success) {
-        setSettings(data.settings)
-      }
-    } catch (err) {
-      console.error('Update settings error:', err)
-    }
-  }
-
-  // Place bet
-  const handlePlaceBet = async (ticker, side, amount) => {
-    try {
-      const response = await fetch(`${API_BASE}/bet`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker, side, amount })
-      })
-      const data = await response.json()
-
-      if (data.success) {
-        fetchPortfolio()
-        fetchData()
-        return data
-      } else {
-        alert('Bet failed: ' + data.error)
-        return null
-      }
-    } catch (err) {
-      alert('Bet error: ' + err.message)
-      return null
-    }
-  }
-
-  // Auto-bet
-  const handleAutoBet = async (dryRun = false) => {
-    try {
-      const response = await fetch(`${API_BASE}/auto-bet`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ maxTimeDays, dryRun })
-      })
-      const data = await response.json()
-
-      if (data.success) {
-        if (dryRun) {
-          return data.recommendation
-        } else {
-          fetchPortfolio()
-          fetchData()
-          return data.bet
-        }
-      }
-      return null
-    } catch (err) {
-      console.error('Auto-bet error:', err)
-      return null
-    }
-  }
-
-  // Toggle auto-betting
-  const handleToggleAutoBet = async (enabled) => {
-    try {
-      const response = await fetch(`${API_BASE}/auto-bet/toggle`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled, intervalMinutes: 5 })
-      })
-      const data = await response.json()
-      if (data.success) {
-        setSettings(prev => ({ ...prev, autoBetEnabled: data.enabled }))
-      }
-    } catch (err) {
-      console.error('Toggle auto-bet error:', err)
-    }
-  }
-
-  const formatCurrency = (value) => `$${value.toFixed(2)}`
-  const formatPercent = (value) => `${value.toFixed(1)}%`
+// Move components outside App to prevent re-creation on every render
+const TradingCard = memo(({ market, showKelly = true, onPlaceBet }) => {
+  const formatCurrency = (value) => `$${(value || 0).toFixed(2)}`
+  const formatPercent = (value) => `${(value || 0).toFixed(1)}%`
 
   const getProbabilityColor = (prob) => {
     if (prob >= 80) return 'prob-high'
@@ -290,11 +19,10 @@ function App() {
     return 'edge-low'
   }
 
-  // Trading Card Component
-  const TradingCard = ({ market, showKelly = true }) => (
+  return (
     <div className="market-card trading">
       <div className="market-header">
-        <span className={`bet-direction ${market.bestBet.toLowerCase()}`}>
+        <span className={`bet-direction ${market.bestBet?.toLowerCase()}`}>
           {market.bestBet}
         </span>
         <span className="market-ticker">{market.ticker}</span>
@@ -334,7 +62,7 @@ function App() {
       <div className="card-actions">
         <button
           className="bet-button small"
-          onClick={() => handlePlaceBet(market.ticker, market.bestBet, market.recommendedBet / 100 || 1)}
+          onClick={() => onPlaceBet(market.ticker, market.bestBet, market.recommendedBet / 100 || 1)}
         >
           BET {formatCurrency(market.recommendedBet / 100 || 1)}
         </button>
@@ -349,142 +77,304 @@ function App() {
       </div>
     </div>
   )
+})
 
-  // Portfolio Panel
-  const PortfolioPanel = () => (
-    <div className="portfolio-panel">
-      <div className="portfolio-header">
-        <h2>Portfolio</h2>
-        {portfolio.simulated && <span className="sim-badge">SIMULATED</span>}
-      </div>
+function App() {
+  const [markets, setMarkets] = useState([])
+  const [quickBets, setQuickBets] = useState(null)
+  const [optimalBets, setOptimalBets] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [lastUpdate, setLastUpdate] = useState(null)
+  const [activeTab, setActiveTab] = useState('trading')
+  const [apiError, setApiError] = useState(null)
 
-      <div className="balance-display">
-        <span className="balance-label">Balance</span>
-        <span className="balance-amount">{formatCurrency(portfolio.balance)}</span>
-      </div>
+  // Auth & Portfolio
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [portfolio, setPortfolio] = useState({ balance: 10, positions: [], betHistory: [] })
+  const [showAuthModal, setShowAuthModal] = useState(false)
+  const [apiKeyId, setApiKeyId] = useState('')
+  const [privateKey, setPrivateKey] = useState('')
+  const [authError, setAuthError] = useState('')
+  const [authLoading, setAuthLoading] = useState(false)
 
-      {!isAuthenticated && (
-        <button className="connect-btn" onClick={() => setShowAuthModal(true)}>
-          Connect Kalshi Account
-        </button>
-      )}
+  // Settings
+  const [settings, setSettings] = useState({
+    bankroll: 10,
+    maxBetPercent: 25,
+    minBetAmount: 1,
+    maxTimeDays: 3,
+    minProbability: 60,
+    minEdge: 5,
+    autoBetEnabled: false
+  })
 
-      <div className="portfolio-section">
-        <h3>Quick Settings</h3>
-        <div className="setting-row">
-          <label>Max Time (days)</label>
-          <input
-            type="number"
-            min="1"
-            max="30"
-            value={maxTimeDays}
-            onChange={(e) => {
-              setMaxTimeDays(Number(e.target.value))
-              handleUpdateSettings({ maxTimeDays: Number(e.target.value) })
-            }}
-          />
-        </div>
-        <div className="setting-row">
-          <label>Min Win %</label>
-          <input
-            type="number"
-            min="50"
-            max="95"
-            value={settings.minProbability}
-            onChange={(e) => handleUpdateSettings({ minProbability: Number(e.target.value) })}
-          />
-        </div>
-        <div className="setting-row">
-          <label>Min Edge %</label>
-          <input
-            type="number"
-            min="0"
-            max="50"
-            value={settings.minEdge}
-            onChange={(e) => handleUpdateSettings({ minEdge: Number(e.target.value) })}
-          />
-        </div>
-      </div>
+  // Filters - use local state that doesn't trigger API calls immediately
+  const [sortBy, setSortBy] = useState('edge')
+  const [sortOrder, setSortOrder] = useState('desc')
+  const [minProbability, setMinProbability] = useState(50)
+  const [minProfit, setMinProfit] = useState(10)
+  const [maxTimeDays, setMaxTimeDays] = useState(3)
+  const [search, setSearch] = useState('')
 
-      <div className="portfolio-section">
-        <h3>Auto-Betting</h3>
-        <button
-          className={`auto-bet-toggle ${settings.autoBetEnabled ? 'active' : ''}`}
-          onClick={() => handleToggleAutoBet(!settings.autoBetEnabled)}
-        >
-          {settings.autoBetEnabled ? 'STOP AUTO-BET' : 'START AUTO-BET'}
-        </button>
-        <button
-          className="auto-bet-once"
-          onClick={() => handleAutoBet(false)}
-        >
-          Place Best Bet Now
-        </button>
-      </div>
+  const formatCurrency = (value) => `$${(value || 0).toFixed(2)}`
 
-      {portfolio.betHistory.length > 0 && (
-        <div className="portfolio-section">
-          <h3>Recent Bets</h3>
-          <div className="bet-history">
-            {portfolio.betHistory.slice(0, 5).map(bet => (
-              <div key={bet.id} className="bet-history-item">
-                <div className="bet-info">
-                  <span className={`bet-side ${bet.side}`}>{bet.side.toUpperCase()}</span>
-                  <span className="bet-ticker">{bet.ticker}</span>
-                </div>
-                <div className="bet-details">
-                  <span>{formatCurrency(bet.totalCost / 100)}</span>
-                  <span className={`bet-status ${bet.status}`}>{bet.status}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  )
+  // Fetch functions with better error handling
+  const fetchAuthStatus = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/auth/status`)
+      if (response.ok) {
+        const data = await response.json()
+        setIsAuthenticated(data.isAuthenticated)
+      }
+    } catch (err) {
+      console.error('Auth status error:', err)
+    }
+  }, [])
 
-  // Auth Modal
-  const AuthModal = () => (
-    <div className="modal-overlay" onClick={() => setShowAuthModal(false)}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
-        <h2>Connect Kalshi Account</h2>
-        <p className="modal-desc">
-          Enter your Kalshi API credentials to enable real trading.
-          Generate keys at <a href="https://kalshi.com/account/api-keys" target="_blank" rel="noopener noreferrer">kalshi.com/account/api-keys</a>
-        </p>
+  const fetchSettings = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/settings`)
+      if (response.ok) {
+        const data = await response.json()
+        if (data.success) {
+          setSettings(data.settings)
+        }
+      }
+    } catch (err) {
+      console.error('Settings error:', err)
+    }
+  }, [])
 
-        {authError && <div className="auth-error">{authError}</div>}
+  const fetchPortfolio = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/portfolio`)
+      if (response.ok) {
+        const data = await response.json()
+        if (data.success) {
+          setPortfolio({
+            balance: data.balance || 10,
+            portfolioValue: data.portfolioValue,
+            positions: data.positions || [],
+            betHistory: data.betHistory || [],
+            simulated: data.simulated
+          })
+        }
+      }
+    } catch (err) {
+      console.error('Portfolio error:', err)
+    }
+  }, [])
 
-        <form onSubmit={handleConfigureApi}>
-          <div className="form-group">
-            <label>API Key ID</label>
-            <input
-              type="text"
-              value={apiKeyId}
-              onChange={e => setApiKeyId(e.target.value)}
-              placeholder="Enter your API Key ID"
-              required
-            />
-          </div>
-          <div className="form-group">
-            <label>Private Key (RSA)</label>
-            <textarea
-              value={privateKey}
-              onChange={e => setPrivateKey(e.target.value)}
-              placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;...&#10;-----END RSA PRIVATE KEY-----"
-              rows={6}
-              required
-            />
-          </div>
-          <div className="modal-actions">
-            <button type="button" onClick={() => setShowAuthModal(false)}>Cancel</button>
-            <button type="submit" className="primary">Connect</button>
-          </div>
-        </form>
-      </div>
-    </div>
-  )
+  const fetchMarkets = useCallback(async () => {
+    try {
+      const params = new URLSearchParams({
+        sortBy,
+        sortOrder,
+        minProbability: minProbability.toString(),
+        minProfit: minProfit.toString(),
+        maxTimeDays: maxTimeDays.toString(),
+        ...(search && { search })
+      })
+
+      const response = await fetch(`${API_BASE}/markets?${params}`)
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+      const data = await response.json()
+
+      if (data.success) {
+        setMarkets(data.markets || [])
+        setLastUpdate(new Date())
+        setApiError(null)
+      } else {
+        setApiError(data.error || 'Failed to load markets')
+      }
+    } catch (err) {
+      console.error('Markets error:', err)
+      setApiError('Failed to connect to Kalshi API. Retrying...')
+    }
+  }, [sortBy, sortOrder, minProbability, minProfit, maxTimeDays, search])
+
+  const fetchQuickBets = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/quick-bets?maxTimeDays=${maxTimeDays}`)
+      if (response.ok) {
+        const data = await response.json()
+        if (data.success) {
+          setQuickBets(data.quickBets)
+        }
+      }
+    } catch (err) {
+      console.error('Quick bets error:', err)
+    }
+  }, [maxTimeDays])
+
+  const fetchOptimalBets = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/optimal-bets?maxTimeDays=${maxTimeDays}`)
+      if (response.ok) {
+        const data = await response.json()
+        if (data.success) {
+          setOptimalBets(data.bets || [])
+        }
+      }
+    } catch (err) {
+      console.error('Optimal bets error:', err)
+    }
+  }, [maxTimeDays])
+
+  const fetchData = useCallback(async () => {
+    setLoading(true)
+    await Promise.all([
+      fetchMarkets(),
+      fetchQuickBets(),
+      fetchOptimalBets(),
+      fetchPortfolio(),
+      fetchSettings()
+    ])
+    setLoading(false)
+  }, [fetchMarkets, fetchQuickBets, fetchOptimalBets, fetchPortfolio, fetchSettings])
+
+  // Initial fetch
+  useEffect(() => {
+    fetchAuthStatus()
+    fetchData()
+  }, [])
+
+  // Debounced refetch when filters change
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchMarkets()
+      fetchQuickBets()
+      fetchOptimalBets()
+    }, 500)
+    return () => clearTimeout(timer)
+  }, [sortBy, sortOrder, minProbability, minProfit, maxTimeDays, search])
+
+  // Auto-refresh every 30 seconds (less aggressive for mobile)
+  useEffect(() => {
+    const interval = setInterval(fetchData, 30000)
+    return () => clearInterval(interval)
+  }, [fetchData])
+
+  // Configure API
+  const handleConfigureApi = async (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setAuthError('')
+    setAuthLoading(true)
+
+    try {
+      const response = await fetch(`${API_BASE}/auth/configure`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKeyId: apiKeyId.trim(), privateKey: privateKey.trim() })
+      })
+      const data = await response.json()
+
+      if (data.success) {
+        setIsAuthenticated(true)
+        setShowAuthModal(false)
+        setApiKeyId('')
+        setPrivateKey('')
+        fetchPortfolio()
+        fetchSettings()
+      } else {
+        setAuthError(data.error || 'Failed to authenticate')
+      }
+    } catch (err) {
+      setAuthError('Connection error: ' + err.message)
+    } finally {
+      setAuthLoading(false)
+    }
+  }
+
+  // Update settings with debounce
+  const handleUpdateSettings = useCallback(async (newSettings) => {
+    try {
+      const response = await fetch(`${API_BASE}/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newSettings)
+      })
+      if (response.ok) {
+        const data = await response.json()
+        if (data.success) {
+          setSettings(data.settings)
+        }
+      }
+    } catch (err) {
+      console.error('Update settings error:', err)
+    }
+  }, [])
+
+  // Place bet
+  const handlePlaceBet = useCallback(async (ticker, side, amount) => {
+    try {
+      const response = await fetch(`${API_BASE}/bet`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker, side, amount })
+      })
+      const data = await response.json()
+
+      if (data.success) {
+        fetchPortfolio()
+        fetchData()
+        return data
+      } else {
+        alert('Bet failed: ' + data.error)
+        return null
+      }
+    } catch (err) {
+      alert('Bet error: ' + err.message)
+      return null
+    }
+  }, [fetchPortfolio, fetchData])
+
+  // Auto-bet
+  const handleAutoBet = useCallback(async (dryRun = false) => {
+    try {
+      const response = await fetch(`${API_BASE}/auto-bet`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxTimeDays, dryRun })
+      })
+      const data = await response.json()
+
+      if (data.success) {
+        if (dryRun) {
+          return data.recommendation
+        } else {
+          fetchPortfolio()
+          fetchData()
+          return data.bet
+        }
+      }
+      return null
+    } catch (err) {
+      console.error('Auto-bet error:', err)
+      return null
+    }
+  }, [maxTimeDays, fetchPortfolio, fetchData])
+
+  // Toggle auto-betting
+  const handleToggleAutoBet = useCallback(async (enabled) => {
+    try {
+      const response = await fetch(`${API_BASE}/auto-bet/toggle`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled, intervalMinutes: 5 })
+      })
+      const data = await response.json()
+      if (data.success) {
+        setSettings(prev => ({ ...prev, autoBetEnabled: data.enabled }))
+      }
+    } catch (err) {
+      console.error('Toggle auto-bet error:', err)
+    }
+  }, [])
 
   return (
     <div className="app">
@@ -499,7 +389,7 @@ function App() {
         <div className="header-status">
           {lastUpdate && (
             <span className="last-update">
-              Updated: {lastUpdate.toLocaleTimeString()}
+              {lastUpdate.toLocaleTimeString()}
             </span>
           )}
           <button onClick={fetchData} className="refresh-btn" disabled={loading}>
@@ -508,10 +398,112 @@ function App() {
         </div>
       </header>
 
-      {error && <div className="error-banner">Error: {error}</div>}
+      {(error || apiError) && (
+        <div className="error-banner">
+          {error || apiError}
+        </div>
+      )}
 
       <div className="main-layout">
-        <PortfolioPanel />
+        {/* Portfolio Panel */}
+        <div className="portfolio-panel">
+          <div className="portfolio-header">
+            <h2>Portfolio</h2>
+            {portfolio.simulated && <span className="sim-badge">SIM</span>}
+          </div>
+
+          <div className="balance-display">
+            <span className="balance-label">Balance</span>
+            <span className="balance-amount">{formatCurrency(portfolio.balance)}</span>
+          </div>
+
+          {!isAuthenticated && (
+            <button className="connect-btn" onClick={() => setShowAuthModal(true)}>
+              Connect Kalshi
+            </button>
+          )}
+
+          <div className="portfolio-section">
+            <h3>Settings</h3>
+            <div className="setting-row">
+              <label>Max Days</label>
+              <input
+                type="number"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                min="1"
+                max="30"
+                value={maxTimeDays}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value) || 3
+                  setMaxTimeDays(val)
+                  handleUpdateSettings({ maxTimeDays: val })
+                }}
+              />
+            </div>
+            <div className="setting-row">
+              <label>Min Win %</label>
+              <input
+                type="number"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                min="50"
+                max="95"
+                value={settings.minProbability}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value) || 60
+                  handleUpdateSettings({ minProbability: val })
+                }}
+              />
+            </div>
+            <div className="setting-row">
+              <label>Min Edge %</label>
+              <input
+                type="number"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                min="0"
+                max="50"
+                value={settings.minEdge}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value) || 5
+                  handleUpdateSettings({ minEdge: val })
+                }}
+              />
+            </div>
+          </div>
+
+          <div className="portfolio-section">
+            <h3>Auto-Bet</h3>
+            <button
+              className={`auto-bet-toggle ${settings.autoBetEnabled ? 'active' : ''}`}
+              onClick={() => handleToggleAutoBet(!settings.autoBetEnabled)}
+            >
+              {settings.autoBetEnabled ? 'STOP' : 'START'} AUTO
+            </button>
+            <button
+              className="auto-bet-once"
+              onClick={() => handleAutoBet(false)}
+            >
+              Bet Now
+            </button>
+          </div>
+
+          {portfolio.betHistory.length > 0 && (
+            <div className="portfolio-section">
+              <h3>Recent</h3>
+              <div className="bet-history">
+                {portfolio.betHistory.slice(0, 3).map(bet => (
+                  <div key={bet.id} className="bet-history-item">
+                    <span className={`bet-side ${bet.side}`}>{bet.side?.toUpperCase()}</span>
+                    <span className="bet-ticker">{bet.ticker}</span>
+                    <span className={`bet-status ${bet.status}`}>{bet.status}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
 
         <div className="content">
           <nav className="tabs">
@@ -519,103 +511,106 @@ function App() {
               className={`tab ${activeTab === 'trading' ? 'active' : ''}`}
               onClick={() => setActiveTab('trading')}
             >
-              OPTIMAL BETS
+              OPTIMAL
             </button>
             <button
               className={`tab ${activeTab === 'quick' ? 'active' : ''}`}
               onClick={() => setActiveTab('quick')}
             >
-              QUICK PICKS
+              PICKS
             </button>
             <button
               className={`tab ${activeTab === 'all' ? 'active' : ''}`}
               onClick={() => setActiveTab('all')}
             >
-              ALL MARKETS
+              ALL
             </button>
           </nav>
+
+          {loading && markets.length === 0 && (
+            <div className="loading-state">
+              <p>Loading markets from Kalshi...</p>
+            </div>
+          )}
 
           {activeTab === 'trading' && (
             <main className="main">
               <div className="trading-header">
-                <h2>Kelly Criterion Picks</h2>
+                <h2>Kelly Picks</h2>
                 <p className="trading-desc">
-                  Mathematically optimal bets based on edge and probability.
-                  Markets closing within {maxTimeDays} day{maxTimeDays !== 1 ? 's' : ''}.
+                  Closing within {maxTimeDays} day{maxTimeDays !== 1 ? 's' : ''}
                 </p>
               </div>
 
               {optimalBets.length > 0 ? (
                 <div className="trading-grid">
                   {optimalBets.map(market => (
-                    <TradingCard key={market.ticker} market={market} />
+                    <TradingCard
+                      key={market.ticker}
+                      market={market}
+                      onPlaceBet={handlePlaceBet}
+                    />
                   ))}
                 </div>
-              ) : (
+              ) : !loading ? (
                 <div className="no-results">
-                  No optimal bets found matching your criteria.
-                  Try adjusting min probability or edge settings.
+                  No optimal bets found. Try lowering min edge or probability.
                 </div>
-              )}
+              ) : null}
             </main>
           )}
 
-          {activeTab === 'quick' && quickBets && (
+          {activeTab === 'quick' && (
             <main className="main">
-              {quickBets.kellyPicks?.length > 0 && (
+              {quickBets?.kellyPicks?.length > 0 && (
                 <div className="quick-section">
-                  <h2 className="section-title">
-                    <span className="section-icon">📊</span>
-                    KELLY PICKS
-                  </h2>
+                  <h2 className="section-title">📊 KELLY PICKS</h2>
                   <div className="quick-grid">
                     {quickBets.kellyPicks.map(market => (
-                      <TradingCard key={market.ticker} market={market} />
+                      <TradingCard
+                        key={market.ticker}
+                        market={market}
+                        onPlaceBet={handlePlaceBet}
+                      />
                     ))}
                   </div>
                 </div>
               )}
 
-              {quickBets.closingSoon?.length > 0 && (
+              {quickBets?.closingSoon?.length > 0 && (
                 <div className="quick-section">
-                  <h2 className="section-title">
-                    <span className="section-icon">⏰</span>
-                    CLOSING SOON
-                  </h2>
+                  <h2 className="section-title">⏰ CLOSING SOON</h2>
                   <div className="quick-grid">
                     {quickBets.closingSoon.map(market => (
-                      <TradingCard key={market.ticker} market={market} showKelly={false} />
+                      <TradingCard
+                        key={market.ticker}
+                        market={market}
+                        showKelly={false}
+                        onPlaceBet={handlePlaceBet}
+                      />
                     ))}
                   </div>
                 </div>
               )}
 
-              {quickBets.safeishBets?.length > 0 && (
+              {quickBets?.safeishBets?.length > 0 && (
                 <div className="quick-section">
-                  <h2 className="section-title">
-                    <span className="section-icon">🛡️</span>
-                    SAFE-ISH BETS
-                  </h2>
+                  <h2 className="section-title">🛡️ SAFE-ISH</h2>
                   <div className="quick-grid">
                     {quickBets.safeishBets.map(market => (
-                      <TradingCard key={market.ticker} market={market} showKelly={false} />
+                      <TradingCard
+                        key={market.ticker}
+                        market={market}
+                        showKelly={false}
+                        onPlaceBet={handlePlaceBet}
+                      />
                     ))}
                   </div>
                 </div>
               )}
 
-              {quickBets.valueBets?.length > 0 && (
-                <div className="quick-section">
-                  <h2 className="section-title">
-                    <span className="section-icon">💎</span>
-                    VALUE PLAYS
-                  </h2>
-                  <div className="quick-grid">
-                    {quickBets.valueBets.map(market => (
-                      <TradingCard key={market.ticker} market={market} showKelly={false} />
-                    ))}
-                  </div>
-                </div>
+              {!quickBets && !loading && (
+                <div className="no-results">Loading picks...</div>
               )}
             </main>
           )}
@@ -623,49 +618,38 @@ function App() {
           {activeTab === 'all' && (
             <main className="main">
               <div className="filters">
+                <div className="filter-group">
+                  <label>Search</label>
+                  <input
+                    type="text"
+                    inputMode="search"
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck="false"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Search..."
+                    className="filter-input"
+                  />
+                </div>
+
                 <div className="filter-row">
                   <div className="filter-group">
-                    <label>Search</label>
-                    <input
-                      type="text"
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
-                      placeholder="Search markets..."
-                      className="filter-input"
-                    />
-                  </div>
-
-                  <div className="filter-group">
-                    <label>Sort By</label>
+                    <label>Sort</label>
                     <select
                       value={sortBy}
                       onChange={(e) => setSortBy(e.target.value)}
                       className="filter-select"
                     >
                       <option value="edge">Edge</option>
-                      <option value="bestProbability">Win Probability</option>
-                      <option value="bestProfitPotential">Profit Potential</option>
-                      <option value="timeRemaining">Time Remaining</option>
-                      <option value="recommendedBet">Kelly Bet Size</option>
+                      <option value="bestProbability">Probability</option>
+                      <option value="timeRemaining">Time</option>
                     </select>
                   </div>
 
                   <div className="filter-group">
-                    <label>Order</label>
-                    <select
-                      value={sortOrder}
-                      onChange={(e) => setSortOrder(e.target.value)}
-                      className="filter-select"
-                    >
-                      <option value="desc">High to Low</option>
-                      <option value="asc">Low to High</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="filter-row">
-                  <div className="filter-group">
-                    <label>Min Win Chance: {minProbability}%</label>
+                    <label>Min Win: {minProbability}%</label>
                     <input
                       type="range"
                       min="0"
@@ -675,46 +659,26 @@ function App() {
                       className="filter-range"
                     />
                   </div>
-
-                  <div className="filter-group">
-                    <label>Min Profit: {minProfit}%</label>
-                    <input
-                      type="range"
-                      min="0"
-                      max="100"
-                      value={minProfit}
-                      onChange={(e) => setMinProfit(Number(e.target.value))}
-                      className="filter-range"
-                    />
-                  </div>
-
-                  <div className="filter-group">
-                    <label>Max Days</label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="30"
-                      value={maxTimeDays}
-                      onChange={(e) => setMaxTimeDays(Number(e.target.value))}
-                      className="filter-input small"
-                    />
-                  </div>
                 </div>
               </div>
 
               <div className="results-count">
-                Showing {markets.length} opportunities
+                {markets.length} markets
               </div>
 
               <div className="markets-grid">
                 {markets.map(market => (
-                  <TradingCard key={market.ticker} market={market} />
+                  <TradingCard
+                    key={market.ticker}
+                    market={market}
+                    onPlaceBet={handlePlaceBet}
+                  />
                 ))}
               </div>
 
               {markets.length === 0 && !loading && (
                 <div className="no-results">
-                  No markets match your filters. Try adjusting them.
+                  No markets found. Try different filters.
                 </div>
               )}
             </main>
@@ -723,10 +687,74 @@ function App() {
       </div>
 
       <footer className="footer">
-        <p>SHIMI - Kelly Criterion Betting Engine. Gamble responsibly. 🎲</p>
+        <p>SHIMI - Gamble responsibly 🎲</p>
       </footer>
 
-      {showAuthModal && <AuthModal />}
+      {/* Auth Modal - Keep it simple and outside main render logic */}
+      {showAuthModal && (
+        <div className="modal-overlay" onClick={() => !authLoading && setShowAuthModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Connect Kalshi</h2>
+            <p className="modal-desc">
+              Get API keys from{' '}
+              <a href="https://kalshi.com/account/api-keys" target="_blank" rel="noopener noreferrer">
+                kalshi.com/account/api-keys
+              </a>
+            </p>
+
+            {authError && <div className="auth-error">{authError}</div>}
+
+            <form onSubmit={handleConfigureApi}>
+              <div className="form-group">
+                <label>API Key ID</label>
+                <input
+                  type="text"
+                  inputMode="text"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck="false"
+                  value={apiKeyId}
+                  onChange={e => setApiKeyId(e.target.value)}
+                  placeholder="Your API Key ID"
+                  disabled={authLoading}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label>Private Key (RSA PEM)</label>
+                <textarea
+                  inputMode="text"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck="false"
+                  value={privateKey}
+                  onChange={e => setPrivateKey(e.target.value)}
+                  placeholder="-----BEGIN PRIVATE KEY-----
+...
+-----END PRIVATE KEY-----"
+                  rows={8}
+                  disabled={authLoading}
+                  required
+                />
+              </div>
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  onClick={() => setShowAuthModal(false)}
+                  disabled={authLoading}
+                >
+                  Cancel
+                </button>
+                <button type="submit" className="primary" disabled={authLoading}>
+                  {authLoading ? 'Connecting...' : 'Connect'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -298,24 +298,22 @@ body {
 .bet-history-item {
   background: var(--bg-card);
   border-radius: 8px;
-  padding: 0.6rem;
-  margin-bottom: 0.5rem;
-  font-size: 0.75rem;
-}
-
-.bet-info {
+  padding: 0.5rem;
+  margin-bottom: 0.4rem;
+  font-size: 0.7rem;
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.25rem;
+  gap: 0.4rem;
+  flex-wrap: wrap;
 }
 
 .bet-side {
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: 0.6rem;
   font-weight: 600;
-  padding: 0.15rem 0.35rem;
+  padding: 0.15rem 0.3rem;
   border-radius: 3px;
+  flex-shrink: 0;
 }
 
 .bet-side.yes {
@@ -331,7 +329,18 @@ body {
 .bet-ticker {
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: 0.6rem;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bet-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
 }
 
 .bet-details {
@@ -703,11 +712,21 @@ body {
   margin-bottom: 1rem;
 }
 
-.no-results {
+.no-results,
+.loading-state {
   text-align: center;
   padding: 3rem 2rem;
   color: var(--text-muted);
   font-size: 1rem;
+}
+
+.loading-state {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
 }
 
 /* Error Banner */
