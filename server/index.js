@@ -1411,13 +1411,99 @@ app.get('/api/auth/status', (req, res) => {
   });
 });
 
-app.get('/api/portfolio', (req, res) => {
-  res.json({
-    success: true,
-    simulated: !config.isAuthenticated,
-    balance: config.bankroll / 100,
-    betHistory: betHistory.slice(0, 50)
-  });
+app.get('/api/portfolio', async (req, res) => {
+  try {
+    // If authenticated, fetch real data from Kalshi
+    if (config.isAuthenticated) {
+      // Fetch balance
+      const balanceData = await kalshiRequest('GET', '/portfolio/balance');
+      portfolio.balance = balanceData.balance || 0;
+      config.bankroll = portfolio.balance;
+
+      // Fetch recent fills (completed trades) - last 20
+      let realBetHistory = [];
+      try {
+        const fillsData = await kalshiRequest('GET', '/portfolio/fills?limit=20');
+        const fills = fillsData.fills || [];
+
+        // Transform fills into our bet history format
+        realBetHistory = fills.map(fill => ({
+          id: fill.trade_id || fill.fill_id || Date.now().toString(),
+          ticker: fill.ticker,
+          title: fill.ticker, // We'll try to get market title below
+          side: fill.side,
+          count: fill.count || 1,
+          price: fill.price || 0, // in cents
+          totalCost: (fill.count || 1) * (fill.price || 0),
+          timestamp: fill.created_time || fill.ts || new Date().toISOString(),
+          status: fill.is_taker ? 'filled' : 'placed',
+          action: fill.action || 'buy',
+          orderId: fill.order_id
+        }));
+
+        // Try to get market titles for the fills
+        const uniqueTickers = [...new Set(realBetHistory.map(b => b.ticker))];
+        const marketTitles = {};
+
+        for (const ticker of uniqueTickers.slice(0, 10)) { // Limit to avoid too many requests
+          try {
+            const marketData = await kalshiRequest('GET', `/markets/${ticker}`);
+            if (marketData.market) {
+              marketTitles[ticker] = marketData.market.title || ticker;
+            }
+          } catch (e) {
+            marketTitles[ticker] = ticker;
+          }
+        }
+
+        // Update titles
+        realBetHistory = realBetHistory.map(bet => ({
+          ...bet,
+          title: marketTitles[bet.ticker] || bet.ticker
+        }));
+
+      } catch (fillError) {
+        console.error('Error fetching fills:', fillError.message);
+        // Fall back to in-memory history
+        realBetHistory = betHistory.slice(0, 20);
+      }
+
+      // Merge with in-memory history (in case fills API misses recent ones)
+      const combinedHistory = [...realBetHistory];
+      betHistory.forEach(memBet => {
+        if (!combinedHistory.some(b => b.orderId === memBet.orderId || b.id === memBet.id)) {
+          combinedHistory.push(memBet);
+        }
+      });
+
+      // Sort by timestamp descending
+      combinedHistory.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+      res.json({
+        success: true,
+        simulated: false,
+        balance: portfolio.balance / 100,
+        betHistory: combinedHistory.slice(0, 20)
+      });
+    } else {
+      // Return simulated data
+      res.json({
+        success: true,
+        simulated: true,
+        balance: config.bankroll / 100,
+        betHistory: betHistory.slice(0, 20)
+      });
+    }
+  } catch (error) {
+    console.error('Portfolio error:', error.message);
+    res.json({
+      success: true,
+      simulated: !config.isAuthenticated,
+      balance: config.bankroll / 100,
+      betHistory: betHistory.slice(0, 20),
+      error: error.message
+    });
+  }
 });
 
 app.get('/api/settings', (req, res) => {

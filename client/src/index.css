@@ -1110,20 +1110,21 @@ body {
   min-width: 0;
 }
 
+.history-cell.price {
+  width: 100px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
 .history-cell.amount {
   width: 80px;
   font-family: var(--font-mono);
   font-weight: 600;
 }
 
-.history-cell.edge {
-  width: 80px;
-  font-family: var(--font-mono);
-  color: var(--accent-green);
-}
-
 .history-cell.status {
-  width: 100px;
+  width: 90px;
   justify-content: flex-end;
 }
 
@@ -1177,9 +1178,19 @@ body {
   color: var(--accent-green);
 }
 
+.status-badge.filled {
+  background: rgba(16, 185, 129, 0.2);
+  color: var(--accent-green);
+}
+
 .status-badge.pending {
   background: rgba(59, 130, 246, 0.2);
   color: var(--accent-blue);
+}
+
+.status-badge.canceled {
+  background: rgba(107, 114, 128, 0.2);
+  color: var(--text-muted);
 }
 
 /* ============================================
@@ -1684,7 +1695,7 @@ body {
   }
 
   /* History table */
-  .history-cell.edge {
+  .history-cell.price {
     display: none;
   }
 
@@ -1693,7 +1704,7 @@ body {
   }
 
   .history-cell.status {
-    width: 80px;
+    width: 70px;
   }
 }
 

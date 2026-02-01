@@ -168,22 +168,41 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
 })
 
 // History Item
-const HistoryItem = memo(({ bet }) => (
-  <div className="history-row">
-    <div className="history-cell side">
-      <span className={`side-badge ${bet.side}`}>{bet.side?.toUpperCase()}</span>
+const HistoryItem = memo(({ bet }) => {
+  // Calculate cost - handle both old format (totalCost in cents) and new Kalshi format
+  const totalCostCents = bet.totalCost || (bet.count * bet.price) || 0
+  const priceDisplay = bet.price ? `${bet.price}¢` : '-'
+  const countDisplay = bet.count || 1
+
+  // Determine status display
+  const statusMap = {
+    'filled': 'filled',
+    'placed': 'placed',
+    'pending': 'pending',
+    'simulated': 'simulated',
+    'resting': 'pending',
+    'canceled': 'canceled',
+    'executed': 'filled'
+  }
+  const displayStatus = statusMap[bet.status?.toLowerCase()] || bet.status || 'placed'
+
+  return (
+    <div className="history-row">
+      <div className="history-cell side">
+        <span className={`side-badge ${bet.side}`}>{bet.side?.toUpperCase()}</span>
+      </div>
+      <div className="history-cell title">
+        <span className="history-title">{bet.title}</span>
+        <span className="history-time">{new Date(bet.timestamp).toLocaleString()}</span>
+      </div>
+      <div className="history-cell price">{priceDisplay} × {countDisplay}</div>
+      <div className="history-cell amount">{formatCurrency(totalCostCents / 100)}</div>
+      <div className="history-cell status">
+        <span className={`status-badge ${displayStatus}`}>{displayStatus}</span>
+      </div>
     </div>
-    <div className="history-cell title">
-      <span className="history-title">{bet.title}</span>
-      <span className="history-time">{new Date(bet.timestamp).toLocaleString()}</span>
-    </div>
-    <div className="history-cell amount">{formatCurrency(bet.totalCost / 100)}</div>
-    <div className="history-cell edge">{bet.edge ? `+${formatPercent(bet.edge)}` : '-'}</div>
-    <div className="history-cell status">
-      <span className={`status-badge ${bet.status}`}>{bet.status}</span>
-    </div>
-  </div>
-))
+  )
+})
 
 // Stats Card
 const StatsCard = ({ title, value, subtitle, icon, color }) => (
@@ -654,8 +673,8 @@ function App() {
                   <div className="history-header">
                     <div className="history-cell side">Side</div>
                     <div className="history-cell title">Market</div>
-                    <div className="history-cell amount">Amount</div>
-                    <div className="history-cell edge">Edge</div>
+                    <div className="history-cell price">Price</div>
+                    <div className="history-cell amount">Total</div>
                     <div className="history-cell status">Status</div>
                   </div>
                   <div className="history-body">
