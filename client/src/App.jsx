@@ -21,8 +21,8 @@ const formatPrice = (val) => {
 }
 
 // Opportunity Card
-const OpportunityCard = memo(({ opp, onBet }) => (
-  <div className="opp-card">
+const OpportunityCard = memo(({ opp, onBet, isPlacing }) => (
+  <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''}`}>
     <div className="opp-header">
       <span
         className="crypto-badge"
@@ -30,6 +30,7 @@ const OpportunityCard = memo(({ opp, onBet }) => (
       >
         {opp.cryptoType}
       </span>
+      {opp.isObviousBet && <span className="safe-badge">✅ SAFE</span>}
       <span className="time-badge">{opp.timeRemainingFormatted}</span>
     </div>
 
@@ -45,19 +46,21 @@ const OpportunityCard = memo(({ opp, onBet }) => (
         <span className="value">{formatPrice(opp.strikePrice)}</span>
       </div>
       <div className="price-row">
-        <span className="label">Direction:</span>
-        <span className="value">{opp.direction?.toUpperCase()}</span>
+        <span className="label">From Strike:</span>
+        <span className={`value ${parseFloat(opp.pctFromStrike) > 0 ? 'up' : 'down'}`}>
+          {opp.pctFromStrike > 0 ? '+' : ''}{opp.pctFromStrike}%
+        </span>
       </div>
     </div>
 
     <div className="opp-stats">
       <div className="stat">
-        <span className="stat-label">Our Prob</span>
-        <span className="stat-value">{formatPercent(opp.ourProbability)}</span>
+        <span className="stat-label">Win Prob</span>
+        <span className="stat-value">{opp.winProbability}%</span>
       </div>
       <div className="stat">
-        <span className="stat-label">Market</span>
-        <span className="stat-value dim">{formatPercent(opp.marketImpliedProb)}</span>
+        <span className="stat-label">Price</span>
+        <span className="stat-value dim">{(opp.betPrice * 100).toFixed(0)}¢</span>
       </div>
       <div className="stat edge-stat">
         <span className="stat-label">Edge</span>
@@ -65,7 +68,7 @@ const OpportunityCard = memo(({ opp, onBet }) => (
       </div>
       <div className="stat">
         <span className="stat-label">Profit</span>
-        <span className="stat-value">{formatPercent(opp.profitPotential)}</span>
+        <span className="stat-value">{opp.profitIfWin}¢</span>
       </div>
     </div>
 
@@ -73,11 +76,15 @@ const OpportunityCard = memo(({ opp, onBet }) => (
       <span className={`bet-side ${opp.betSide?.toLowerCase()}`}>
         BET {opp.betSide}
       </span>
-      <span className="bet-amount">@ {formatCurrency(opp.betPrice)}</span>
+      <span className="bet-reason">{opp.betReason}</span>
     </div>
 
-    <button className="bet-button" onClick={() => onBet(opp)}>
-      BET {formatCurrency((opp.recommendedBet || 100) / 100)}
+    <button
+      className={`bet-button ${isPlacing ? 'loading' : ''}`}
+      onClick={() => onBet(opp)}
+      disabled={isPlacing}
+    >
+      {isPlacing ? '⏳ PLACING...' : `BET $1 → Win ${opp.profitIfWin}¢`}
     </button>
   </div>
 ))
@@ -111,6 +118,8 @@ function App() {
   const [authForm, setAuthForm] = useState({ apiKeyId: '', privateKey: '' })
   const [authError, setAuthError] = useState(null)
   const [authLoading, setAuthLoading] = useState(false)
+  const [betStatus, setBetStatus] = useState(null)  // { type: 'success'|'error', message: string }
+  const [placingBet, setPlacingBet] = useState(null)  // ticker of bet being placed
 
   // Fetch opportunities
   const fetchOpportunities = useCallback(async () => {
@@ -172,6 +181,9 @@ function App() {
 
   // Place a bet
   const placeBet = async (opp) => {
+    setPlacingBet(opp.ticker)
+    setBetStatus(null)
+
     try {
       const res = await fetch(`${API_BASE}/api/bet`, {
         method: 'POST',
@@ -186,18 +198,29 @@ function App() {
 
       if (data.success) {
         setBalance(data.newBalance)
+        setBetStatus({
+          type: 'success',
+          message: `✅ BET PLACED: ${opp.betSide} on ${opp.cryptoType} @ ${(opp.betPrice * 100).toFixed(0)}¢${data.simulated ? ' (simulated)' : ''}`
+        })
         fetchPortfolio()
         fetchOpportunities()
       } else {
-        alert(data.error || 'Bet failed')
+        setBetStatus({ type: 'error', message: `❌ ${data.error || 'Bet failed'}` })
       }
     } catch (err) {
-      alert('Error placing bet')
+      setBetStatus({ type: 'error', message: '❌ Error placing bet - check connection' })
+    } finally {
+      setPlacingBet(null)
+      // Clear status after 5 seconds
+      setTimeout(() => setBetStatus(null), 5000)
     }
   }
 
   // Auto-bet
   const placeAutoBet = async () => {
+    setPlacingBet('auto')
+    setBetStatus(null)
+
     try {
       const res = await fetch(`${API_BASE}/api/crypto/auto-bet`, {
         method: 'POST',
@@ -207,13 +230,21 @@ function App() {
 
       if (data.success && data.bet) {
         setBalance(data.newBalance)
+        const bet = data.bet
+        setBetStatus({
+          type: 'success',
+          message: `✅ BET PLACED: ${bet.side.toUpperCase()} on ${bet.cryptoType} @ ${bet.price}¢ | Edge: +${bet.edge?.toFixed(1)}%${data.simulated ? ' (simulated)' : ''}`
+        })
         fetchPortfolio()
         fetchOpportunities()
       } else if (data.message) {
-        alert(data.message)
+        setBetStatus({ type: 'info', message: `ℹ️ ${data.message}` })
       }
     } catch (err) {
-      alert('Error in auto-bet')
+      setBetStatus({ type: 'error', message: '❌ Error in auto-bet' })
+    } finally {
+      setPlacingBet(null)
+      setTimeout(() => setBetStatus(null), 5000)
     }
   }
 
@@ -333,6 +364,13 @@ function App() {
         </div>
       )}
 
+      {/* Bet Status Banner */}
+      {betStatus && (
+        <div className={`bet-status-banner ${betStatus.type}`} onClick={() => setBetStatus(null)}>
+          {betStatus.message}
+        </div>
+      )}
+
       {/* Main Content */}
       <main className="main">
         {/* Bets Tab */}
@@ -341,11 +379,11 @@ function App() {
             {/* Auto-bet controls */}
             <div className="auto-controls">
               <button
-                className="auto-bet-now"
+                className={`auto-bet-now ${placingBet === 'auto' ? 'loading' : ''}`}
                 onClick={placeAutoBet}
-                disabled={opportunities.length === 0}
+                disabled={opportunities.length === 0 || placingBet}
               >
-                PLACE BEST BET NOW
+                {placingBet === 'auto' ? '⏳ PLACING...' : 'PLACE BEST BET NOW'}
               </button>
               <button
                 className={`auto-toggle ${autoBetEnabled ? 'active' : ''}`}
@@ -381,6 +419,7 @@ function App() {
                     key={opp.ticker}
                     opp={opp}
                     onBet={placeBet}
+                    isPlacing={placingBet === opp.ticker}
                   />
                 ))}
               </div>

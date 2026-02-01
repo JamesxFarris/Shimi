@@ -825,3 +825,92 @@ body {
     font-size: 16px !important;
   }
 }
+
+/* Bet Status Banner */
+.bet-status-banner {
+  position: fixed;
+  top: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 90%;
+  padding: 0.75rem 1.25rem;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 0.85rem;
+  z-index: 1000;
+  animation: slideDown 0.3s ease-out;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+
+.bet-status-banner.success {
+  background: linear-gradient(135deg, #00ff88 0%, #00cc6a 100%);
+  color: #0a0a0f;
+}
+
+.bet-status-banner.error {
+  background: linear-gradient(135deg, #ff4757 0%, #c0392b 100%);
+  color: white;
+}
+
+.bet-status-banner.info {
+  background: linear-gradient(135deg, #4da6ff 0%, #2980b9 100%);
+  color: white;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+/* Safe Bet Card */
+.opp-card.safe-bet {
+  border: 2px solid var(--accent-green);
+  background: linear-gradient(135deg, rgba(0, 255, 136, 0.05) 0%, var(--bg-card) 100%);
+}
+
+.safe-badge {
+  font-size: 0.6rem;
+  background: var(--accent-green);
+  color: var(--bg-primary);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-weight: 700;
+}
+
+/* Price direction colors */
+.value.up {
+  color: var(--accent-green);
+}
+
+.value.down {
+  color: var(--accent-red);
+}
+
+/* Bet reason text */
+.bet-reason {
+  font-size: 0.65rem;
+  color: var(--text-secondary);
+  max-width: 60%;
+  text-align: right;
+}
+
+/* Loading button state */
+.bet-button.loading,
+.auto-bet-now.loading {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  cursor: wait;
+}
+
+.bet-button:disabled,
+.auto-bet-now:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
