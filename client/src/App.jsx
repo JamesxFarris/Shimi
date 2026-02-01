@@ -41,17 +41,22 @@ const formatPrice = (val, token) => {
   return `$${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
-// Price Ticker Item
-const PriceTickerItem = memo(({ token, price }) => {
+// Price Ticker Item - shows price with change indicator
+const PriceTickerItem = memo(({ token, price, prevPrice }) => {
   const config = TOKEN_CONFIG[token] || { color: '#888', name: token, icon: '?' }
 
+  // Determine price change direction
+  const priceChange = prevPrice ? price - prevPrice : 0
+  const changeClass = priceChange > 0 ? 'up' : priceChange < 0 ? 'down' : ''
+
   return (
-    <div className="ticker-item" style={{ '--token-color': config.color }}>
+    <div className={`ticker-item ${changeClass}`} style={{ '--token-color': config.color }}>
       <div className="ticker-icon">{config.icon}</div>
       <div className="ticker-info">
         <span className="ticker-symbol">{token}</span>
-        <span className="ticker-price">{formatPrice(price, token)}</span>
+        <span className={`ticker-price ${changeClass}`}>{formatPrice(price, token)}</span>
       </div>
+      {changeClass && <span className="ticker-change-indicator">{priceChange > 0 ? '▲' : '▼'}</span>}
     </div>
   )
 })
@@ -167,45 +172,67 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
   )
 })
 
-// History Item
+// History Item - Shows bet with clear win/loss and profit/loss
 const HistoryItem = memo(({ bet }) => {
   const totalCostCents = bet.totalCost || (bet.count * bet.price) || 0
-  const priceDisplay = bet.price ? `${bet.price}¢` : '-'
-  const countDisplay = bet.count || 1
   const profitCents = bet.profit || 0
 
   // Determine outcome display
   const hasOutcome = bet.outcome === 'won' || bet.outcome === 'lost'
   const isWin = bet.outcome === 'won'
-  const isLoss = bet.outcome === 'lost'
+
+  // Calculate payout for wins (cost + profit)
+  const payoutCents = isWin ? totalCostCents + profitCents : 0
 
   return (
-    <div className={`history-row ${hasOutcome ? (isWin ? 'won' : 'lost') : ''}`}>
-      <div className="history-cell outcome">
+    <div className={`history-card ${hasOutcome ? (isWin ? 'won' : 'lost') : 'pending'}`}>
+      {/* Result Banner */}
+      <div className={`result-banner ${hasOutcome ? (isWin ? 'won' : 'lost') : 'pending'}`}>
         {hasOutcome ? (
-          <span className={`outcome-badge ${bet.outcome}`}>
-            {isWin ? '✓ WON' : '✗ LOST'}
-          </span>
+          <>
+            <span className="result-icon">{isWin ? '✓' : '✗'}</span>
+            <span className="result-text">{isWin ? 'WON' : 'LOST'}</span>
+            <span className={`result-amount ${isWin ? 'positive' : 'negative'}`}>
+              {isWin ? '+' : '-'}{formatCurrency(Math.abs(profitCents) / 100)}
+            </span>
+          </>
         ) : (
-          <span className="outcome-badge pending">OPEN</span>
+          <>
+            <span className="result-icon">⏳</span>
+            <span className="result-text">PENDING</span>
+            <span className="result-amount">Awaiting result</span>
+          </>
         )}
       </div>
-      <div className="history-cell side">
-        <span className={`side-badge ${bet.side}`}>{bet.side?.toUpperCase()}</span>
-      </div>
-      <div className="history-cell title">
-        <span className="history-title">{bet.title}</span>
-        <span className="history-time">{new Date(bet.timestamp).toLocaleString()}</span>
-      </div>
-      <div className="history-cell cost">{formatCurrency(totalCostCents / 100)}</div>
-      <div className="history-cell profit">
-        {hasOutcome ? (
-          <span className={`profit-display ${isWin ? 'positive' : 'negative'}`}>
-            {isWin ? '+' : ''}{formatCurrency(profitCents / 100)}
-          </span>
-        ) : (
-          <span className="profit-display pending">-</span>
-        )}
+
+      {/* Bet Details */}
+      <div className="bet-details">
+        <div className="bet-market">
+          <span className="bet-title">{bet.title}</span>
+          <span className="bet-time">{new Date(bet.timestamp).toLocaleString()}</span>
+        </div>
+        <div className="bet-info-row">
+          <div className="bet-info-item">
+            <span className="bet-info-label">Side</span>
+            <span className={`side-badge ${bet.side}`}>{bet.side?.toUpperCase()}</span>
+          </div>
+          <div className="bet-info-item">
+            <span className="bet-info-label">Cost</span>
+            <span className="bet-info-value">{formatCurrency(totalCostCents / 100)}</span>
+          </div>
+          <div className="bet-info-item">
+            <span className="bet-info-label">Contracts</span>
+            <span className="bet-info-value">{bet.count || 1}</span>
+          </div>
+          {hasOutcome && (
+            <div className="bet-info-item">
+              <span className="bet-info-label">{isWin ? 'Payout' : 'Lost'}</span>
+              <span className={`bet-info-value ${isWin ? 'positive' : 'negative'}`}>
+                {isWin ? formatCurrency(payoutCents / 100) : formatCurrency(totalCostCents / 100)}
+              </span>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -227,6 +254,8 @@ function App() {
   const [tab, setTab] = useState('dashboard')
   const [opportunities, setOpportunities] = useState([])
   const [prices, setPrices] = useState({})
+  const [prevPrices, setPrevPrices] = useState({})
+  const [priceLastUpdated, setPriceLastUpdated] = useState(null)
   const [balance, setBalance] = useState(10)
   const [betHistory, setBetHistory] = useState([])
   const [betStats, setBetStats] = useState({ totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 })
@@ -240,6 +269,39 @@ function App() {
   const [authLoading, setAuthLoading] = useState(false)
   const [betStatus, setBetStatus] = useState(null)
   const [placingBet, setPlacingBet] = useState(null)
+  const [tickerTime, setTickerTime] = useState(Date.now())
+
+  // Fetch prices directly (faster updates)
+  const fetchPrices = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/crypto/prices`)
+      const data = await res.json()
+
+      if (data.success && data.prices) {
+        // Extract just the price values
+        const newPrices = {}
+        for (const [token, info] of Object.entries(data.prices)) {
+          newPrices[token] = info.price
+        }
+
+        // Store previous prices before updating
+        setPrevPrices(prev => {
+          const updated = { ...prev }
+          for (const token of Object.keys(newPrices)) {
+            if (prices[token] !== undefined) {
+              updated[token] = prices[token]
+            }
+          }
+          return updated
+        })
+
+        setPrices(newPrices)
+        setPriceLastUpdated(Date.now())
+      }
+    } catch (err) {
+      console.error('Price fetch error:', err)
+    }
+  }, [prices])
 
   // Fetch opportunities
   const fetchOpportunities = useCallback(async () => {
@@ -249,7 +311,11 @@ function App() {
 
       if (data.success) {
         setOpportunities(data.opportunities || [])
-        setPrices(data.prices || {})
+        // Also update prices from opportunities as backup
+        if (data.prices) {
+          setPrices(prev => ({ ...prev, ...data.prices }))
+          setPriceLastUpdated(Date.now())
+        }
         setError(null)
       }
     } catch (err) {
@@ -287,12 +353,19 @@ function App() {
 
   // Initial load
   useEffect(() => {
+    // Fetch everything on initial load
+    fetchPrices()
     fetchOpportunities()
     fetchPortfolio()
     checkAuth()
 
-    // Refresh every 5 seconds for live updates
-    const interval = setInterval(() => {
+    // Fetch prices every 3 seconds for live ticker updates
+    const priceInterval = setInterval(() => {
+      fetchPrices()
+    }, 3000)
+
+    // Refresh opportunities every 5 seconds
+    const oppInterval = setInterval(() => {
       fetchOpportunities()
     }, 5000)
 
@@ -301,11 +374,18 @@ function App() {
       fetchPortfolio()
     }, 30000)
 
+    // Update ticker time display every second
+    const tickerTimeInterval = setInterval(() => {
+      setTickerTime(Date.now())
+    }, 1000)
+
     return () => {
-      clearInterval(interval)
+      clearInterval(priceInterval)
+      clearInterval(oppInterval)
       clearInterval(portfolioInterval)
+      clearInterval(tickerTimeInterval)
     }
-  }, [fetchOpportunities, fetchPortfolio, checkAuth])
+  }, [fetchPrices, fetchOpportunities, fetchPortfolio, checkAuth])
 
   // Place a bet
   const placeBet = async (opp) => {
@@ -500,14 +580,22 @@ function App() {
                 return order.indexOf(a) - order.indexOf(b)
               })
               .map(([token, price]) => (
-                <PriceTickerItem key={token} token={token} price={price} />
+                <PriceTickerItem
+                  key={`${token}-${price}`}
+                  token={token}
+                  price={price}
+                  prevPrice={prevPrices[token]}
+                />
               ))}
           </div>
           <div className="ticker-fade-left"></div>
           <div className="ticker-fade-right"></div>
           <div className="ticker-status">
-            <span className={`status-indicator ${loading ? '' : 'live'}`}></span>
-            <span className="status-text">{Object.keys(prices).filter(k => prices[k] > 0).length} tokens live</span>
+            <span className={`status-indicator ${priceLastUpdated ? 'live' : ''}`}></span>
+            <span className="status-text">
+              {Object.keys(prices).filter(k => prices[k] > 0).length} tokens
+              {priceLastUpdated && ` • ${Math.floor((tickerTime - priceLastUpdated) / 1000)}s ago`}
+            </span>
           </div>
         </div>
 
@@ -710,19 +798,10 @@ function App() {
                   <p>Place your first bet to see history here</p>
                 </div>
               ) : (
-                <div className="history-table">
-                  <div className="history-header">
-                    <div className="history-cell outcome">Result</div>
-                    <div className="history-cell side">Side</div>
-                    <div className="history-cell title">Market</div>
-                    <div className="history-cell cost">Cost</div>
-                    <div className="history-cell profit">P/L</div>
-                  </div>
-                  <div className="history-body">
-                    {betHistory.map(bet => (
-                      <HistoryItem key={bet.id} bet={bet} />
-                    ))}
-                  </div>
+                <div className="history-list">
+                  {betHistory.map(bet => (
+                    <HistoryItem key={bet.id} bet={bet} />
+                  ))}
                 </div>
               )}
             </div>

@@ -364,6 +364,56 @@ body {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
+  transition: color 0.3s ease;
+}
+
+/* Price change animations */
+.ticker-item.up {
+  animation: flashGreen 0.5s ease;
+}
+
+.ticker-item.down {
+  animation: flashRed 0.5s ease;
+}
+
+.ticker-price.up {
+  color: var(--accent-green-bright);
+}
+
+.ticker-price.down {
+  color: var(--accent-red);
+}
+
+.ticker-change-indicator {
+  font-size: 10px;
+  margin-left: 2px;
+  animation: fadeInOut 1s ease;
+}
+
+.ticker-item.up .ticker-change-indicator {
+  color: var(--accent-green-bright);
+}
+
+.ticker-item.down .ticker-change-indicator {
+  color: var(--accent-red);
+}
+
+@keyframes flashGreen {
+  0% { background: var(--bg-secondary); }
+  30% { background: rgba(16, 185, 129, 0.2); border-color: var(--accent-green); }
+  100% { background: var(--bg-secondary); }
+}
+
+@keyframes flashRed {
+  0% { background: var(--bg-secondary); }
+  30% { background: rgba(239, 68, 68, 0.2); border-color: var(--accent-red); }
+  100% { background: var(--bg-secondary); }
+}
+
+@keyframes fadeInOut {
+  0% { opacity: 1; }
+  70% { opacity: 1; }
+  100% { opacity: 0; }
 }
 
 .ticker-fade-left,
@@ -382,7 +432,7 @@ body {
 }
 
 .ticker-fade-right {
-  right: 120px;
+  right: 145px;
   background: linear-gradient(-90deg, var(--bg-card) 0%, transparent 100%);
 }
 
@@ -391,7 +441,7 @@ body {
   right: 0;
   top: 0;
   bottom: 0;
-  width: 120px;
+  width: 145px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1118,154 +1168,200 @@ body {
   color: var(--accent-red);
 }
 
-/* History Table */
-.history-table {
+/* History List (Card Layout) */
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* History Card */
+.history-card {
   background: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
   overflow: hidden;
+  transition: all 0.2s;
 }
 
-.history-header {
+.history-card:hover {
+  border-color: var(--border-light);
+}
+
+.history-card.won {
+  border-left: 4px solid var(--accent-green);
+}
+
+.history-card.lost {
+  border-left: 4px solid var(--accent-red);
+}
+
+.history-card.pending {
+  border-left: 4px solid var(--accent-blue);
+}
+
+/* Result Banner - The prominent win/loss display */
+.result-banner {
   display: flex;
-  padding: 12px 16px;
-  background: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-color);
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  font-weight: 700;
 }
 
-.history-header .history-cell {
+.result-banner.won {
+  background: linear-gradient(90deg, rgba(16, 185, 129, 0.15) 0%, transparent 100%);
+}
+
+.result-banner.lost {
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.15) 0%, transparent 100%);
+}
+
+.result-banner.pending {
+  background: linear-gradient(90deg, rgba(59, 130, 246, 0.1) 0%, transparent 100%);
+}
+
+.result-icon {
+  font-size: 20px;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+
+.result-banner.won .result-icon {
+  background: rgba(16, 185, 129, 0.2);
+  color: var(--accent-green-bright);
+}
+
+.result-banner.lost .result-icon {
+  background: rgba(239, 68, 68, 0.2);
+  color: var(--accent-red);
+}
+
+.result-banner.pending .result-icon {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent-blue);
+  font-size: 16px;
+}
+
+.result-text {
+  font-size: 16px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.result-banner.won .result-text {
+  color: var(--accent-green-bright);
+}
+
+.result-banner.lost .result-text {
+  color: var(--accent-red);
+}
+
+.result-banner.pending .result-text {
+  color: var(--accent-blue);
+}
+
+.result-amount {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 20px;
+}
+
+.result-amount.positive {
+  color: var(--accent-green-bright);
+}
+
+.result-amount.negative {
+  color: var(--accent-red);
+}
+
+.result-banner.pending .result-amount {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/* Bet Details Section */
+.bet-details {
+  padding: 14px 16px;
+  border-top: 1px solid var(--border-color);
+}
+
+.bet-market {
+  margin-bottom: 12px;
+}
+
+.bet-title {
+  display: block;
+  font-size: 14px;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.bet-time {
   font-size: 11px;
-  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.bet-info-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.bet-info-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bet-info-label {
+  font-size: 10px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
-.history-body {
-  max-height: 600px;
-  overflow-y: auto;
-}
-
-.history-row {
-  display: flex;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--border-color);
-  transition: background 0.2s;
-}
-
-.history-row:last-child {
-  border-bottom: none;
-}
-
-.history-row:hover {
-  background: var(--bg-card-hover);
-}
-
-.history-row.won {
-  background: rgba(16, 185, 129, 0.05);
-}
-
-.history-row.lost {
-  background: rgba(239, 68, 68, 0.05);
-}
-
-.history-cell {
-  display: flex;
-  align-items: center;
-}
-
-.history-cell.outcome {
-  width: 90px;
-}
-
-.history-cell.side {
-  width: 60px;
-}
-
-.history-cell.title {
-  flex: 1;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  min-width: 0;
-}
-
-.history-cell.cost {
-  width: 70px;
+.bet-info-value {
   font-family: var(--font-mono);
-  font-size: 13px;
-  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
-.history-cell.profit {
-  width: 80px;
-  justify-content: flex-end;
-}
-
-/* Outcome Badge */
-.outcome-badge {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 700;
-  padding: 5px 10px;
-  border-radius: 4px;
-}
-
-.outcome-badge.won {
-  background: rgba(16, 185, 129, 0.2);
+.bet-info-value.positive {
   color: var(--accent-green-bright);
 }
 
-.outcome-badge.lost {
-  background: rgba(239, 68, 68, 0.2);
+.bet-info-value.negative {
   color: var(--accent-red);
-}
-
-.outcome-badge.pending {
-  background: rgba(59, 130, 246, 0.15);
-  color: var(--accent-blue);
-  font-size: 10px;
 }
 
 /* Side Badge */
 .side-badge {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
-  padding: 3px 8px;
+  padding: 4px 10px;
   border-radius: 4px;
+  display: inline-block;
 }
 
 .side-badge.yes {
-  background: rgba(16, 185, 129, 0.15);
-  color: var(--accent-green);
-}
-
-.side-badge.no {
-  background: rgba(239, 68, 68, 0.15);
-  color: var(--accent-red);
-}
-
-/* Profit Display */
-.profit-display {
-  font-family: var(--font-mono);
-  font-size: 14px;
-  font-weight: 700;
-}
-
-.profit-display.positive {
+  background: rgba(16, 185, 129, 0.2);
   color: var(--accent-green-bright);
 }
 
-.profit-display.negative {
+.side-badge.no {
+  background: rgba(239, 68, 68, 0.2);
   color: var(--accent-red);
 }
 
-.profit-display.pending {
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
+/* Legacy support for old table styles (if needed) */
 .history-title {
   font-size: 13px;
   color: var(--text-primary);
