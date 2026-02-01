@@ -282,12 +282,20 @@ function App() {
     fetchPortfolio()
     checkAuth()
 
+    // Refresh every 5 seconds for live updates
     const interval = setInterval(() => {
       fetchOpportunities()
-      fetchPortfolio()
-    }, 15000)
+    }, 5000)
 
-    return () => clearInterval(interval)
+    // Refresh portfolio less frequently (every 30 seconds)
+    const portfolioInterval = setInterval(() => {
+      fetchPortfolio()
+    }, 30000)
+
+    return () => {
+      clearInterval(interval)
+      clearInterval(portfolioInterval)
+    }
   }, [fetchOpportunities, fetchPortfolio, checkAuth])
 
   // Place a bet
