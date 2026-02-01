@@ -43,6 +43,13 @@ let config = {
 let betHistory = [];
 let portfolio = { balance: 0, positions: [] };
 
+// Track markets we've already bet on to avoid duplicate bets
+// Key: ticker, Value: { timestamp, side }
+const recentBets = new Map();
+
+// Minimum edge for auto-betting (higher than manual to be more conservative)
+const AUTO_BET_MIN_EDGE = 3; // 3% minimum edge for auto mode
+
 // ============================================
 // CRYPTO PRICE TRACKING - EXPANDED TOKENS
 // ============================================
@@ -654,20 +661,35 @@ app.post('/api/bet', async (req, res) => {
   }
 });
 
-// Auto-bet on best opportunity
+// Auto-bet on best opportunity (Place Best Bet button)
 app.post('/api/crypto/auto-bet', async (req, res) => {
   try {
     const markets = await fetchCryptoMarkets();
+    const now = Date.now();
+
+    // Clean up old bets from tracking (older than 30 min)
+    for (const [ticker, bet] of recentBets.entries()) {
+      if (now - bet.timestamp > 30 * 60 * 1000) {
+        recentBets.delete(ticker);
+      }
+    }
 
     const opportunities = markets
       .map(m => analyzeCryptoMarket(parseMarket(m)))
-      .filter(m => m !== null && m.edge >= config.minEdge)
+      .filter(m => {
+        if (m === null) return false;
+        // Must have minimum edge (use config.minEdge for manual, default 1%)
+        if (m.edge < config.minEdge) return false;
+        // Skip if we already bet on this exact market
+        if (recentBets.has(m.ticker)) return false;
+        return true;
+      })
       .sort((a, b) => b.edge - a.edge);
 
     if (opportunities.length === 0) {
       return res.json({
         success: true,
-        message: 'No opportunities with sufficient edge',
+        message: 'No opportunities with sufficient edge (or already bet on available markets)',
         bet: null,
         scanned: markets.length
       });
@@ -675,9 +697,8 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
 
     const best = opportunities[0];
 
-    // Fixed $1 bets
-    let betAmount = config.fixedBetAmount || 100;
-    betAmount = Math.min(betAmount, config.bankroll);
+    // Fixed $1 max bet - never exceed this
+    const MAX_BET_CENTS = 100; // $1.00 max
 
     if (config.bankroll < 100) {
       return res.json({
@@ -688,11 +709,15 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     }
 
     const priceCents = Math.round(best.betPrice * 100);
-    const count = Math.floor(betAmount / priceCents);
 
+    // Calculate contracts but cap total cost at $1
+    let count = Math.floor(MAX_BET_CENTS / priceCents);
     if (count < 1) {
       return res.json({ success: true, message: 'Bet size too small', bet: null });
     }
+
+    // Ensure we don't exceed $1 total
+    const totalCost = count * priceCents;
 
     const betRecord = {
       id: Date.now().toString(),
@@ -702,7 +727,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       side: best.betSide.toLowerCase(),
       count,
       price: priceCents,
-      totalCost: count * priceCents,
+      totalCost,
       edge: best.edge,
       ourProbability: best.ourProbability,
       currentPrice: best.currentPrice,
@@ -711,6 +736,9 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       status: 'pending',
       auto: true
     };
+
+    // Mark this market as bet on
+    recentBets.set(best.ticker, { timestamp: now, side: best.betSide });
 
     if (!config.isAuthenticated) {
       betRecord.status = 'simulated';
@@ -770,30 +798,57 @@ async function runAutoBet() {
     console.log('🤖 Scanning for opportunities...');
 
     const markets = await fetchCryptoMarkets();
+    const now = Date.now();
+
+    // Clean up old bets (remove bets older than 30 minutes)
+    for (const [ticker, bet] of recentBets.entries()) {
+      if (now - bet.timestamp > 30 * 60 * 1000) {
+        recentBets.delete(ticker);
+      }
+    }
+
     const opportunities = markets
       .map(m => analyzeCryptoMarket(parseMarket(m)))
-      .filter(m => m !== null && m.edge >= config.minEdge)
+      .filter(m => {
+        if (m === null) return false;
+        // Must have good edge (use higher threshold for auto)
+        if (m.edge < AUTO_BET_MIN_EDGE) return false;
+        // Skip if we already bet on this exact market
+        if (recentBets.has(m.ticker)) {
+          console.log(`⏭️ Skipping ${m.ticker} - already bet on this market`);
+          return false;
+        }
+        return true;
+      })
       .sort((a, b) => b.edge - a.edge);
 
-    console.log(`📊 Found ${markets.length} markets, ${opportunities.length} with edge`);
+    console.log(`📊 Found ${markets.length} markets, ${opportunities.length} with good edge (>${AUTO_BET_MIN_EDGE}%)`);
 
     if (opportunities.length === 0) {
+      console.log('⏳ No new opportunities - waiting for next scan...');
       return;
     }
 
     const best = opportunities[0];
     console.log(`💰 Best: ${best.cryptoType} | ${best.betSide} | Edge: +${best.edge.toFixed(1)}%`);
 
-    // Fixed $1 bets for sustainable growth
-    let betAmount = config.fixedBetAmount || 100;
-    betAmount = Math.min(betAmount, config.bankroll);
+    // Fixed $1 max bet - never exceed this
+    const MAX_BET_CENTS = 100; // $1.00 max
+    let betAmount = Math.min(MAX_BET_CENTS, config.bankroll);
 
     const priceCents = Math.round(best.betPrice * 100);
-    const count = Math.floor(betAmount / priceCents);
 
+    // Calculate contracts but cap total cost at $1
+    let count = Math.floor(betAmount / priceCents);
     if (count < 1) {
       console.log('⚠️ Bet size too small');
       return;
+    }
+
+    // Ensure we don't exceed $1 total
+    const totalCost = count * priceCents;
+    if (totalCost > MAX_BET_CENTS) {
+      count = Math.floor(MAX_BET_CENTS / priceCents);
     }
 
     const betRecord = {
@@ -811,11 +866,14 @@ async function runAutoBet() {
       auto: true
     };
 
+    // Mark this market as bet on BEFORE placing the bet
+    recentBets.set(best.ticker, { timestamp: now, side: best.betSide });
+
     if (!config.isAuthenticated) {
       betRecord.orderId = 'SIM-' + Date.now();
       betHistory.unshift(betRecord);
       config.bankroll -= betRecord.totalCost;
-      console.log(`🎰 Simulated: ${betRecord.side.toUpperCase()} on ${best.cryptoType} | $${(betRecord.totalCost/100).toFixed(2)}`);
+      console.log(`🎰 Simulated: ${betRecord.side.toUpperCase()} on ${best.cryptoType} | $${(betRecord.totalCost/100).toFixed(2)} | Edge: ${best.edge.toFixed(1)}%`);
       return;
     }
 
@@ -839,7 +897,7 @@ async function runAutoBet() {
     const balanceData = await kalshiRequest('GET', '/portfolio/balance');
     config.bankroll = balanceData.balance || 0;
 
-    console.log(`🎰 Placed: ${betRecord.side.toUpperCase()} on ${best.cryptoType}`);
+    console.log(`🎰 Placed: ${betRecord.side.toUpperCase()} on ${best.cryptoType} | $${(betRecord.totalCost/100).toFixed(2)} | Edge: ${best.edge.toFixed(1)}%`);
 
   } catch (error) {
     console.error('Auto-bet error:', error.message);
