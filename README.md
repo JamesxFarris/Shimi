@@ -1,108 +1,157 @@
-# SHIMI - Kalshi Betting Optimizer
+# SHIMI - Kalshi Kelly Criterion Betting Engine
 
-A real-time Kalshi prediction market analyzer that finds high-probability bets with the best potential payouts. Built for degenerates who want action.
+An automated Kalshi trading system that uses the Kelly Criterion to find mathematically optimal bets. Start with $10 and let math do the work.
 
 ## Features
 
-- **Real-time Market Data**: Auto-refreshes every 15 seconds from Kalshi API
-- **Degen Score**: Custom algorithm combining win probability and profit potential
-- **Quick Picks**: Curated categories for fast decision-making:
-  - Safe-ish Bets (75%+ win chance)
-  - Value Plays (good risk/reward ratio)
-  - Closing Soon (expiring within 24 hours)
-  - Moonshots (highest profit potential)
-- **Advanced Filtering**: Sort by probability, profit, time remaining, volume
-- **Time-Based Sorting**: Find bets closing soon for quick action
-- **Direct Links**: One-click to place bets on Kalshi
+### Kelly Criterion Strategy
+The [Kelly Criterion](https://en.wikipedia.org/wiki/Kelly_criterion) is a formula that determines the optimal bet size to maximize long-term growth:
+
+```
+f* = (bp - q) / b
+
+where:
+  f* = fraction of bankroll to bet
+  b  = odds (profit per $1 wagered)
+  p  = probability of winning
+  q  = probability of losing (1 - p)
+```
+
+Shimi uses **fractional Kelly (25%)** to reduce variance while maintaining positive expected value.
+
+### Automated Trading
+- **Connect your Kalshi account** with API keys for real trading
+- **Auto-bet mode**: Automatically places the best bet every 5 minutes
+- **One-click betting**: Place Kelly-optimized bets instantly
+- **Simulated mode**: Test strategies without risking real money
+
+### Smart Filtering
+- **Time-based filtering**: Focus on bets closing within X days (default: 3 days)
+- **Minimum probability**: Only bet when win chance exceeds threshold (default: 60%)
+- **Minimum edge**: Only bet when mathematical edge exceeds threshold (default: 5%)
+- **Real-time updates**: Data refreshes every 15 seconds
+
+### Views
+- **Optimal Bets**: Top Kelly Criterion picks sorted by edge
+- **Quick Picks**: Curated categories (Kelly Picks, Closing Soon, Safe-ish, Value Plays)
+- **All Markets**: Full market browser with advanced filtering
 
 ## Quick Start
 
 ### Prerequisites
-
 - Node.js 18+
 - npm
+- Kalshi account (optional, for real trading)
 
 ### Installation
 
 ```bash
-# Install all dependencies
+# Install dependencies
 npm run install:all
 ```
 
-### Running the App
+### Running
 
 ```bash
-# Start both server and client in development mode
+# Start both server and client
 npm run dev
 ```
 
-Or run them separately:
+Then open [http://localhost:3000](http://localhost:3000)
 
-```bash
-# Terminal 1 - Start the server (port 3001)
-npm run dev:server
+## Configuration
 
-# Terminal 2 - Start the client (port 3000)
-npm run dev:client
-```
+### Connecting Your Kalshi Account
 
-Then open [http://localhost:3000](http://localhost:3000) in your browser.
+1. Go to [kalshi.com/account/api-keys](https://kalshi.com/account/api-keys)
+2. Create a new API key
+3. Save your **Key ID** and **Private Key** (RSA format)
+4. Click "Connect Kalshi Account" in Shimi
+5. Enter your credentials
 
-## How It Works
+### Betting Settings
 
-### Degen Score Algorithm
-
-The "Degen Score" combines:
-- **Win Probability**: How likely the bet is to win (based on current market prices)
-- **Profit Potential**: How much you'd make per dollar risked if you win
-
-```
-Degen Score = Probability * Profit Potential
-```
-
-Higher scores indicate opportunities where you have a good chance of winning AND decent returns.
-
-### Market Analysis
-
-For each market, Shimi analyzes:
-- YES and NO positions
-- Current bid/ask prices
-- Time until expiration
-- Trading volume
-- Calculates the best direction to bet (YES or NO)
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Max Time (days) | 3 | Only show bets closing within this timeframe |
+| Min Win % | 60 | Minimum probability to consider a bet |
+| Min Edge % | 5 | Minimum mathematical edge required |
+| Max Bet % | 25 | Maximum % of bankroll per bet (Kelly fraction) |
 
 ## API Endpoints
 
-### GET /api/markets
+### Trading
 
-Returns analyzed markets with filtering and sorting.
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/auth/configure` | POST | Configure Kalshi API credentials |
+| `/api/auth/status` | GET | Check authentication status |
+| `/api/portfolio` | GET | Get balance, positions, bet history |
+| `/api/settings` | GET/POST | Get/update betting settings |
+| `/api/bet` | POST | Place a bet |
+| `/api/auto-bet` | POST | Place the best available bet |
+| `/api/auto-bet/toggle` | POST | Enable/disable continuous auto-betting |
+| `/api/optimal-bets` | GET | Get top Kelly Criterion opportunities |
 
-Query params:
-- `sortBy`: `bestDegenScore` | `bestProbability` | `bestProfitPotential` | `timeRemaining` | `volume`
-- `sortOrder`: `asc` | `desc`
-- `minProbability`: Minimum win probability (0-100)
-- `minProfit`: Minimum profit potential percentage
-- `maxTimeHours`: Maximum time until close (in hours)
-- `search`: Search term for market titles
+### Market Data
 
-### GET /api/quick-bets
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/markets` | GET | Get all markets with filtering |
+| `/api/quick-bets` | GET | Get curated bet categories |
+| `/api/health` | GET | Server health check |
 
-Returns curated bet categories:
-- `safeishBets`: High probability plays (75%+)
-- `valueBets`: Good risk/reward ratio
-- `closingSoon`: Expiring within 24 hours
-- `moonshots`: Highest profit potential
+## How It Works
+
+### Edge Calculation
+
+For each market, Shimi calculates:
+
+1. **Implied Probability**: From current ask price (e.g., $0.70 = 70% implied probability)
+2. **Odds**: Profit potential = (1 - price) / price
+3. **Kelly Bet**: Optimal bet size using the Kelly formula
+4. **Edge**: Expected return = p(1 + b) - 1
+
+Example:
+- Ask price: $0.75 (75% implied probability)
+- Odds: 0.25 / 0.75 = 0.333 (33% profit if you win)
+- If true probability is 80%, edge = 0.80 * 1.333 - 1 = 6.7%
+
+### Bet Selection
+
+Shimi filters for opportunities that meet ALL criteria:
+- Closing within your max time setting
+- Win probability >= your minimum
+- Mathematical edge >= your minimum
+- Kelly recommends a bet >= minimum bet size
+
+Then ranks by edge (highest first) to find the best mathematical opportunities.
+
+## Security Notes
+
+- API credentials are stored in server memory only (not persisted)
+- Private keys are never logged or transmitted elsewhere
+- Use a dedicated API key with limited permissions
+- Consider setting deposit/withdrawal limits on Kalshi
+
+## Disclaimer
+
+This software is for educational and entertainment purposes. Prediction market trading involves risk. The Kelly Criterion assumes you know the true probabilities, which you don't - you're estimating based on market prices.
+
+**Gamble responsibly. Never bet more than you can afford to lose.**
 
 ## Tech Stack
 
 - **Backend**: Node.js, Express
 - **Frontend**: React, Vite
-- **API**: Kalshi REST API
-
-## Disclaimer
-
-This tool is for entertainment and informational purposes only. Gambling involves risk. Please gamble responsibly and never bet more than you can afford to lose.
+- **API**: Kalshi REST API with RSA-PSS authentication
 
 ## License
 
 MIT
+
+## Sources
+
+- [Kalshi API Documentation](https://docs.kalshi.com)
+- [Kalshi API Keys Guide](https://docs.kalshi.com/getting_started/api_keys)
+- [Create Order API](https://docs.kalshi.com/api-reference/orders/create-order)
