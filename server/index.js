@@ -11,6 +11,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Global error handlers to prevent crashes
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err.message);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled Rejection:', err);
+});
+
 app.use(cors());
 app.use(express.json());
 
@@ -56,21 +64,26 @@ function signRequest(method, path, timestamp) {
     throw new Error('Private key not configured');
   }
 
-  // Strip query params from path for signing
-  const pathWithoutQuery = path.split('?')[0];
-  const message = `${timestamp}${method}${pathWithoutQuery}`;
+  try {
+    // Strip query params from path for signing
+    const pathWithoutQuery = path.split('?')[0];
+    const message = `${timestamp}${method}${pathWithoutQuery}`;
 
-  const sign = crypto.createSign('RSA-SHA256');
-  sign.update(message);
-  sign.end();
+    const sign = crypto.createSign('RSA-SHA256');
+    sign.update(message);
+    sign.end();
 
-  const signature = sign.sign({
-    key: config.privateKey,
-    padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
-    saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST
-  }, 'base64');
+    const signature = sign.sign({
+      key: config.privateKey,
+      padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+      saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST
+    }, 'base64');
 
-  return signature;
+    return signature;
+  } catch (err) {
+    console.error('Crypto signing error:', err.message);
+    throw new Error('Failed to sign request: ' + err.message);
+  }
 }
 
 async function kalshiRequest(method, endpoint, body = null) {
@@ -929,21 +942,40 @@ app.get('/api/health', (req, res) => {
 const clientDistPath = path.join(__dirname, '../client/dist');
 
 // Serve static files from the React app
-app.use(express.static(clientDistPath));
+try {
+  if (fs.existsSync(clientDistPath)) {
+    app.use(express.static(clientDistPath));
+  }
+} catch (err) {
+  console.log('Static files not available:', err.message);
+}
 
 // Handle React routing - return index.html for all non-API routes
 app.get('*', (req, res) => {
-  const indexPath = path.join(clientDistPath, 'index.html');
-  if (fs.existsSync(indexPath)) {
-    res.sendFile(indexPath);
-  } else {
-    res.status(404).send('Frontend not built. Run: npm run build');
+  try {
+    const indexPath = path.join(clientDistPath, 'index.html');
+    if (fs.existsSync(indexPath)) {
+      res.sendFile(indexPath);
+    } else {
+      res.status(404).send('Frontend not built. Run: npm run build');
+    }
+  } catch (err) {
+    res.status(500).send('Server error');
   }
 });
 
-app.listen(PORT, '0.0.0.0', () => {
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Express error:', err.message);
+  res.status(500).json({ success: false, error: 'Internal server error' });
+});
+
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`🎰 Shimi server running on port ${PORT}`);
   console.log(`📊 API: http://localhost:${PORT}/api/markets`);
   console.log(`💰 Trading: http://localhost:${PORT}/api/optimal-bets`);
-  console.log(`\n⚠️  Configure API keys to enable real trading`);
+});
+
+server.on('error', (err) => {
+  console.error('Server error:', err.message);
 });
