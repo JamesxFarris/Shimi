@@ -762,28 +762,110 @@ app.post('/api/auto-bet', async (req, res) => {
   }
 });
 
+// Internal auto-bet logic (called directly, not via HTTP)
+async function executeAutoBet() {
+  try {
+    console.log('🤖 Auto-bet check running...');
+
+    const markets = await fetchKalshiMarkets();
+    let analyzed = markets.map(analyzeMarket);
+
+    // Filter for valid opportunities
+    analyzed = analyzed.filter(m => {
+      if (m.bestAskPrice <= 0 || m.bestAskPrice >= 1) return false;
+      if (m.timeRemainingDays === null || m.timeRemainingDays > config.maxTimeDays) return false;
+      if (m.timeRemainingDays < 0) return false;
+      if (m.bestProbability < config.minProbability) return false;
+      if (m.edge < config.minEdge) return false;
+      if (m.recommendedBet < config.minBetAmount) return false;
+      return true;
+    });
+
+    if (analyzed.length === 0) {
+      console.log('🤖 No optimal bets found');
+      return { success: true, bet: null };
+    }
+
+    // Get the best opportunity by edge
+    analyzed.sort((a, b) => b.edge - a.edge);
+    const bestOpportunity = analyzed[0];
+
+    const priceCents = Math.round(bestOpportunity.bestAskPrice * 100);
+    const count = Math.floor(bestOpportunity.recommendedBet / priceCents);
+
+    if (count < 1) {
+      console.log('🤖 Bet size too small');
+      return { success: false, error: 'Bet size too small' };
+    }
+
+    const betRecord = {
+      id: Date.now().toString(),
+      ticker: bestOpportunity.ticker,
+      title: bestOpportunity.title,
+      side: bestOpportunity.bestBet.toLowerCase(),
+      count,
+      price: priceCents,
+      totalCost: count * priceCents,
+      edge: bestOpportunity.edge,
+      probability: bestOpportunity.bestProbability,
+      timestamp: new Date().toISOString(),
+      status: 'pending',
+      auto: true
+    };
+
+    if (!config.isAuthenticated) {
+      betRecord.status = 'simulated';
+      betRecord.orderId = 'SIM-' + Date.now();
+      betHistory.unshift(betRecord);
+      config.bankroll -= betRecord.totalCost;
+      console.log(`🎰 Auto-bet (simulated): ${betRecord.side} on ${betRecord.ticker}`);
+      return { success: true, simulated: true, bet: betRecord };
+    }
+
+    // Real order
+    const orderRequest = {
+      ticker: bestOpportunity.ticker,
+      action: 'buy',
+      side: bestOpportunity.bestBet.toLowerCase(),
+      type: 'limit',
+      count,
+      ...(bestOpportunity.bestBet.toLowerCase() === 'yes'
+        ? { yes_price: priceCents }
+        : { no_price: priceCents }
+      )
+    };
+
+    const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
+
+    betRecord.status = 'placed';
+    betRecord.orderId = orderResponse.order?.order_id;
+    betHistory.unshift(betRecord);
+
+    const balanceData = await kalshiRequest('GET', '/portfolio/balance');
+    portfolio.balance = balanceData.balance || 0;
+    config.bankroll = portfolio.balance;
+
+    console.log(`🎰 Auto-bet placed: ${betRecord.side} on ${betRecord.ticker}`);
+    return { success: true, bet: betRecord };
+
+  } catch (error) {
+    console.error('Auto-bet execution error:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
 // Toggle continuous auto-betting
 app.post('/api/auto-bet/toggle', (req, res) => {
   const { enabled, intervalMinutes = 5 } = req.body;
 
   if (enabled && !config.autoBetEnabled) {
     config.autoBetEnabled = true;
-    config.autoBetInterval = setInterval(async () => {
-      console.log('🤖 Auto-bet check running...');
-      try {
-        // Simulate the auto-bet endpoint internally
-        const response = await fetch(`http://localhost:${PORT}/api/auto-bet`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ maxTimeDays: config.maxTimeDays })
-        });
-        const result = await response.json();
-        if (result.bet) {
-          console.log(`🎰 Auto-bet placed: ${result.bet.ticker} ${result.bet.side}`);
-        }
-      } catch (error) {
-        console.error('Auto-bet error:', error);
-      }
+
+    // Use direct function call instead of HTTP request to self
+    config.autoBetInterval = setInterval(() => {
+      executeAutoBet().catch(err => {
+        console.error('Auto-bet interval error:', err.message);
+      });
     }, intervalMinutes * 60 * 1000);
 
     res.json({
