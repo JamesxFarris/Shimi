@@ -99,10 +99,11 @@ async function loadCredentialsFromEnv() {
 // Key: ticker, Value: { timestamp, side }
 const recentBets = new Map();
 
-// Minimum edge requirements - must be HIGH because our model has uncertainty
-// The bid-ask spread alone costs ~2-5%, so we need edge above that
-const AUTO_BET_MIN_EDGE = 10;  // 10% minimum edge for auto mode
-const MANUAL_BET_MIN_EDGE = 5; // 5% minimum edge for manual "best bet"
+// Edge requirements - lower for "obvious" high-probability bets
+// Strategy: Safe growth from $10 → $100 by taking high-probability bets
+const AUTO_BET_MIN_EDGE = 3;      // 3% edge for auto (lower for safe bets)
+const MANUAL_BET_MIN_EDGE = 2;    // 2% edge for manual
+const OBVIOUS_BET_MIN_EDGE = 1;   // 1% edge OK if probability is >90% (free money)
 
 // ============================================
 // CRYPTO PRICE TRACKING - EXPANDED TOKENS
@@ -577,73 +578,105 @@ function analyzeCryptoMarket(parsed) {
   const edgeYes = (probYesWins - marketProbYes) * 100;
   const edgeNo = (probNoWins - marketProbNo) * 100;
 
-  // ALSO check for "obvious" mispricings based on distance from strike
-  // If price is far from strike, one side should be heavily favored
+  // FIND "FREE MONEY" - high probability bets where we're very confident
+  // Strategy: Take safe bets with small profits over risky bets with big profits
+  // Even $0.10 profit on a 95% win rate = steady growth
   let obviousBet = null;
+  let estimatedWinProb = 0;
 
   // For "above/up" markets:
-  // - If current price is ABOVE strike by 1.5+ volatility, YES should win ~90%+
-  // - If current price is BELOW strike by 1.5+ volatility, NO should win ~90%+
+  // - If current price is ABOVE strike, YES is likely (price just needs to stay up)
+  // - If current price is BELOW strike, NO is likely (price just needs to stay down)
   if (parsed.marketType === 'above') {
-    if (zScore >= 1.5) {
-      // Price well above strike - YES is very likely
-      const impliedProb = normalCDF(zScore);  // ~93% for z=1.5
-      const obviousEdge = (impliedProb - marketProbYes) * 100;
-      if (obviousEdge > 5 && marketProbYes < 0.90) {
-        obviousBet = { side: 'YES', edge: obviousEdge, reason: `Price ${pctFromStrike.toFixed(1)}% above strike` };
+    if (zScore >= 1.0) {
+      // Price above strike - YES is favored
+      estimatedWinProb = normalCDF(zScore);  // z=1 → 84%, z=1.5 → 93%, z=2 → 97%
+      const obviousEdge = (estimatedWinProb - marketProbYes) * 100;
+      // Accept smaller edge for high probability bets (free money)
+      const minEdgeRequired = estimatedWinProb > 0.90 ? OBVIOUS_BET_MIN_EDGE : 3;
+      if (obviousEdge >= minEdgeRequired && parsed.yesAsk > 0 && parsed.yesAsk < 0.98) {
+        obviousBet = {
+          side: 'YES',
+          edge: obviousEdge,
+          prob: estimatedWinProb,
+          reason: `Price ${pctFromStrike.toFixed(1)}% above strike (${(estimatedWinProb*100).toFixed(0)}% win rate)`
+        };
       }
-    } else if (zScore <= -1.5) {
-      // Price well below strike - NO is very likely
-      const impliedProb = normalCDF(-zScore);  // ~93% for z=-1.5
-      const obviousEdge = (impliedProb - marketProbNo) * 100;
-      if (obviousEdge > 5 && marketProbNo < 0.90) {
-        obviousBet = { side: 'NO', edge: obviousEdge, reason: `Price ${Math.abs(pctFromStrike).toFixed(1)}% below strike` };
+    } else if (zScore <= -1.0) {
+      // Price below strike - NO is favored
+      estimatedWinProb = normalCDF(-zScore);
+      const obviousEdge = (estimatedWinProb - marketProbNo) * 100;
+      const minEdgeRequired = estimatedWinProb > 0.90 ? OBVIOUS_BET_MIN_EDGE : 3;
+      if (obviousEdge >= minEdgeRequired && parsed.noAsk > 0 && parsed.noAsk < 0.98) {
+        obviousBet = {
+          side: 'NO',
+          edge: obviousEdge,
+          prob: estimatedWinProb,
+          reason: `Price ${Math.abs(pctFromStrike).toFixed(1)}% below strike (${(estimatedWinProb*100).toFixed(0)}% win rate)`
+        };
       }
     }
   } else {
     // For "below" markets, logic is reversed
-    if (zScore <= -1.5) {
-      const impliedProb = normalCDF(-zScore);
-      const obviousEdge = (impliedProb - marketProbYes) * 100;
-      if (obviousEdge > 5 && marketProbYes < 0.90) {
-        obviousBet = { side: 'YES', edge: obviousEdge, reason: `Price ${Math.abs(pctFromStrike).toFixed(1)}% below strike` };
+    if (zScore <= -1.0) {
+      estimatedWinProb = normalCDF(-zScore);
+      const obviousEdge = (estimatedWinProb - marketProbYes) * 100;
+      const minEdgeRequired = estimatedWinProb > 0.90 ? OBVIOUS_BET_MIN_EDGE : 3;
+      if (obviousEdge >= minEdgeRequired && parsed.yesAsk > 0 && parsed.yesAsk < 0.98) {
+        obviousBet = {
+          side: 'YES',
+          edge: obviousEdge,
+          prob: estimatedWinProb,
+          reason: `Price ${Math.abs(pctFromStrike).toFixed(1)}% below strike (${(estimatedWinProb*100).toFixed(0)}% win rate)`
+        };
       }
-    } else if (zScore >= 1.5) {
-      const impliedProb = normalCDF(zScore);
-      const obviousEdge = (impliedProb - marketProbNo) * 100;
-      if (obviousEdge > 5 && marketProbNo < 0.90) {
-        obviousBet = { side: 'NO', edge: obviousEdge, reason: `Price ${pctFromStrike.toFixed(1)}% above strike` };
+    } else if (zScore >= 1.0) {
+      estimatedWinProb = normalCDF(zScore);
+      const obviousEdge = (estimatedWinProb - marketProbNo) * 100;
+      const minEdgeRequired = estimatedWinProb > 0.90 ? OBVIOUS_BET_MIN_EDGE : 3;
+      if (obviousEdge >= minEdgeRequired && parsed.noAsk > 0 && parsed.noAsk < 0.98) {
+        obviousBet = {
+          side: 'NO',
+          edge: obviousEdge,
+          prob: estimatedWinProb,
+          reason: `Price ${pctFromStrike.toFixed(1)}% above strike (${(estimatedWinProb*100).toFixed(0)}% win rate)`
+        };
       }
     }
   }
 
-  // Pick the best bet: prefer obvious bets, then highest edge
+  // Pick the best bet: PRIORITIZE high probability "free money" over high edge risky bets
+  // Strategy: Safe steady growth > gambling on uncertain edges
   let betSide = null;
   let betPrice = 0;
   let ourProbability = 0;
   let marketImpliedProb = 0;
   let edge = 0;
   let betReason = '';
+  let winProbability = 0;
 
-  if (obviousBet && obviousBet.edge > Math.max(edgeYes, edgeNo)) {
-    // Use the obvious bet
+  if (obviousBet) {
+    // PREFER obvious high-probability bets - this is the safe money strategy
     betSide = obviousBet.side;
     betPrice = obviousBet.side === 'YES' ? parsed.yesAsk : parsed.noAsk;
-    ourProbability = obviousBet.side === 'YES' ? probYesWins : probNoWins;
+    ourProbability = obviousBet.prob * 100;
+    winProbability = obviousBet.prob;
     marketImpliedProb = betPrice;
     edge = obviousBet.edge;
-    betReason = obviousBet.reason + ' (obvious mispricing)';
-  } else if (edgeYes > edgeNo && edgeYes > 0 && parsed.yesAsk > 0 && parsed.yesAsk < 0.95) {
+    betReason = '🎯 ' + obviousBet.reason;
+  } else if (edgeYes > edgeNo && edgeYes >= MANUAL_BET_MIN_EDGE && parsed.yesAsk > 0 && parsed.yesAsk < 0.95) {
     betSide = 'YES';
     betPrice = parsed.yesAsk;
-    ourProbability = probYesWins;
+    ourProbability = probYesWins * 100;
+    winProbability = probYesWins;
     marketImpliedProb = marketProbYes;
     edge = edgeYes;
     betReason = 'Model edge';
-  } else if (edgeNo > 0 && parsed.noAsk > 0 && parsed.noAsk < 0.95) {
+  } else if (edgeNo >= MANUAL_BET_MIN_EDGE && parsed.noAsk > 0 && parsed.noAsk < 0.95) {
     betSide = 'NO';
     betPrice = parsed.noAsk;
-    ourProbability = probNoWins;
+    ourProbability = probNoWins * 100;
+    winProbability = probNoWins;
     marketImpliedProb = marketProbNo;
     edge = edgeNo;
     betReason = 'Model edge';
@@ -654,7 +687,13 @@ function analyzeCryptoMarket(parsed) {
     return null;
   }
 
-  // Profit potential if we win
+  // Calculate expected profit per $1 bet
+  // E.g., buy at 95¢, win = 5¢ profit, so EV = 0.95 * $0.05 - 0.05 * $0.95
+  const profitPerContract = 1 - betPrice;  // What we get if we win (payout - cost)
+  const expectedProfit = (winProbability * profitPerContract - (1 - winProbability) * betPrice) * 100; // in cents per $1
+
+  // Profit if we win (per contract at $1 payout)
+  const profitIfWin = ((1 - betPrice) * 100).toFixed(0);  // cents
   const profitPotential = ((1 - betPrice) / betPrice) * 100;
 
   // Fixed bet amount ($1) for sustainable growth
@@ -668,7 +707,8 @@ function analyzeCryptoMarket(parsed) {
     zScore: zScore.toFixed(2),
     probYesWins: probYesWins * 100,
     probNoWins: probNoWins * 100,
-    ourProbability: ourProbability * 100,
+    ourProbability,  // Already in percentage
+    winProbability: (winProbability * 100).toFixed(1),
     marketImpliedProb: marketImpliedProb * 100,
     edgeYes,
     edgeNo,
@@ -676,6 +716,8 @@ function analyzeCryptoMarket(parsed) {
     betSide,
     betPrice,
     betReason,
+    profitIfWin,  // cents profit per contract if we win
+    expectedProfit: expectedProfit.toFixed(1),  // expected cents per $1 bet
     profitPotential,
     recommendedBet,
     isObviousBet: !!obviousBet,
@@ -857,18 +899,24 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       .map(m => analyzeCryptoMarket(parseMarket(m)))
       .filter(m => {
         if (m === null) return false;
-        // Must have high edge - our model is uncertain, need buffer above spread costs
-        if (m.edge < MANUAL_BET_MIN_EDGE) return false;
         // Skip if we already bet on this exact market
         if (recentBets.has(m.ticker)) return false;
+        // Allow lower edge for obvious high-probability bets (free money)
+        const minEdge = m.isObviousBet ? OBVIOUS_BET_MIN_EDGE : MANUAL_BET_MIN_EDGE;
+        if (m.edge < minEdge) return false;
         return true;
       })
-      .sort((a, b) => b.edge - a.edge);
+      // Sort by: obvious bets first, then by edge
+      .sort((a, b) => {
+        if (a.isObviousBet && !b.isObviousBet) return -1;
+        if (!a.isObviousBet && b.isObviousBet) return 1;
+        return b.edge - a.edge;
+      });
 
     if (opportunities.length === 0) {
       return res.json({
         success: true,
-        message: `No opportunities with sufficient edge (need >${MANUAL_BET_MIN_EDGE}%) or already bet on available markets`,
+        message: `No opportunities found. Need >${OBVIOUS_BET_MIN_EDGE}% edge for safe bets or >${MANUAL_BET_MIN_EDGE}% for model bets.`,
         bet: null,
         scanned: markets.length
       });
@@ -990,31 +1038,38 @@ async function runAutoBet() {
       .map(m => analyzeCryptoMarket(parseMarket(m)))
       .filter(m => {
         if (m === null) return false;
-        // Must have good edge (use higher threshold for auto)
-        if (m.edge < AUTO_BET_MIN_EDGE) return false;
         // Skip if we already bet on this exact market
         if (recentBets.has(m.ticker)) {
-          console.log(`⏭️ Skipping ${m.ticker} - already bet on this market`);
           return false;
         }
+        // Allow lower edge for obvious high-probability "free money" bets
+        const minEdge = m.isObviousBet ? OBVIOUS_BET_MIN_EDGE : AUTO_BET_MIN_EDGE;
+        if (m.edge < minEdge) return false;
         return true;
       })
-      .sort((a, b) => b.edge - a.edge);
+      // Sort: obvious safe bets first, then by edge
+      .sort((a, b) => {
+        if (a.isObviousBet && !b.isObviousBet) return -1;
+        if (!a.isObviousBet && b.isObviousBet) return 1;
+        return b.edge - a.edge;
+      });
 
-    console.log(`📊 Found ${markets.length} markets, ${opportunities.length} with good edge (>${AUTO_BET_MIN_EDGE}%)`);
+    const obviousCount = opportunities.filter(o => o.isObviousBet).length;
+    console.log(`📊 Found ${markets.length} markets, ${opportunities.length} opportunities (${obviousCount} safe bets)`);
 
     if (opportunities.length === 0) {
-      console.log('⏳ No new opportunities - waiting for next scan...');
+      console.log('⏳ No opportunities - waiting for next scan...');
       return;
     }
 
     const best = opportunities[0];
-    console.log(`💰 Best opportunity found:`);
-    console.log(`   Market: ${best.title}`);
-    console.log(`   Token: ${best.cryptoType} | Side: ${best.betSide} | ${best.betReason || 'Model'}`);
-    console.log(`   Current: $${best.currentPrice.toFixed(2)} | Strike: $${best.strikePrice.toFixed(2)} | ${best.pctFromStrike}% from strike`);
-    console.log(`   Our prob: ${best.ourProbability.toFixed(1)}% | Market: ${(best.marketImpliedProb * 100).toFixed(1)}% | Edge: +${best.edge.toFixed(1)}%`);
-    console.log(`   ${best.isObviousBet ? '🎯 OBVIOUS MISPRICING DETECTED' : '📊 Model-based edge'}`);
+    console.log(`\n💰 BEST OPPORTUNITY:`);
+    console.log(`   ${best.title}`);
+    console.log(`   ${best.betReason}`);
+    console.log(`   Side: ${best.betSide} @ ${(best.betPrice * 100).toFixed(0)}¢ | Win prob: ${best.winProbability}%`);
+    console.log(`   Current: $${best.currentPrice.toFixed(2)} | Strike: $${best.strikePrice.toFixed(2)} (${best.pctFromStrike}% away)`);
+    console.log(`   Edge: +${best.edge.toFixed(1)}% | Profit if win: ${best.profitIfWin}¢ per contract`);
+    console.log(`   ${best.isObviousBet ? '✅ HIGH CONFIDENCE - Safe bet' : '⚠️ Model-based - Use caution'}`);
 
     // Fixed $1 max bet - never exceed this
     const MAX_BET_CENTS = 100; // $1.00 max
