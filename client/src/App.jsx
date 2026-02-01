@@ -288,24 +288,17 @@ function App() {
           newPrices[token] = info.price
         }
 
-        // Store previous prices before updating
-        setPrevPrices(prev => {
-          const updated = { ...prev }
-          for (const token of Object.keys(newPrices)) {
-            if (prices[token] !== undefined) {
-              updated[token] = prices[token]
-            }
-          }
-          return updated
+        // Store previous prices before updating (use functional update to avoid dependency)
+        setPrices(currentPrices => {
+          setPrevPrices(currentPrices)
+          return newPrices
         })
-
-        setPrices(newPrices)
         setPriceLastUpdated(Date.now())
       }
     } catch (err) {
       console.error('Price fetch error:', err)
     }
-  }, [prices])
+  }, []) // No dependencies - prevents infinite loop
 
   // Fetch opportunities
   const fetchOpportunities = useCallback(async () => {
@@ -355,28 +348,18 @@ function App() {
     } catch (err) {}
   }, [])
 
-  // Initial load
+  // Initial load - runs once
   useEffect(() => {
     // Fetch everything on initial load
-    fetchPrices()
     fetchOpportunities()
     fetchPortfolio()
     checkAuth()
 
-    // Fetch prices every 3 seconds for live ticker updates
-    const priceInterval = setInterval(() => {
-      fetchPrices()
-    }, 3000)
+    // Refresh opportunities every 10 seconds (includes prices)
+    const oppInterval = setInterval(fetchOpportunities, 10000)
 
-    // Refresh opportunities every 5 seconds
-    const oppInterval = setInterval(() => {
-      fetchOpportunities()
-    }, 5000)
-
-    // Refresh portfolio less frequently (every 30 seconds)
-    const portfolioInterval = setInterval(() => {
-      fetchPortfolio()
-    }, 30000)
+    // Refresh portfolio every 30 seconds
+    const portfolioInterval = setInterval(fetchPortfolio, 30000)
 
     // Update ticker time display every second
     const tickerTimeInterval = setInterval(() => {
@@ -384,99 +367,98 @@ function App() {
     }, 1000)
 
     return () => {
-      clearInterval(priceInterval)
       clearInterval(oppInterval)
       clearInterval(portfolioInterval)
       clearInterval(tickerTimeInterval)
     }
-  }, [fetchPrices, fetchOpportunities, fetchPortfolio, checkAuth])
+  }, []) // Empty dependency - only runs on mount
 
   // Place a bet
   const placeBet = async (opp) => {
+    if (placingBet) return // Prevent double-clicks
+
     setPlacingBet(opp.ticker)
     setBetStatus(null)
 
     try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 15000) // 15s timeout
+
       const res = await fetch(`${API_BASE}/api/bet`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ticker: opp.ticker,
-          side: opp.betSide,
-          amount: (opp.recommendedBet || 100) / 100
-        })
+          side: opp.betSide
+        }),
+        signal: controller.signal
       })
 
-      // Try to parse JSON response
-      let data
-      try {
-        data = await res.json()
-      } catch (parseErr) {
-        setBetStatus({ type: 'error', message: `Server error (${res.status})` })
-        return
-      }
+      clearTimeout(timeoutId)
+      const data = await res.json()
 
       if (data.success) {
         setBalance(data.newBalance)
         setBetStatus({
           type: 'success',
-          message: `Bet placed: ${opp.betSide} on ${opp.cryptoType} @ ${(opp.betPrice * 100).toFixed(0)}¢${data.simulated ? ' (simulated)' : ''}`
+          message: `Bet placed: ${opp.betSide} on ${opp.cryptoType}${data.simulated ? ' (simulated)' : ''}`
         })
-        fetchPortfolio()
-        fetchOpportunities()
       } else {
         setBetStatus({ type: 'error', message: data.error || 'Bet failed' })
       }
     } catch (err) {
-      console.error('Bet error:', err)
-      setBetStatus({ type: 'error', message: `Network error: ${err.message}` })
-    } finally {
-      setPlacingBet(null)
-      setTimeout(() => setBetStatus(null), 8000)
+      if (err.name === 'AbortError') {
+        setBetStatus({ type: 'error', message: 'Request timed out' })
+      } else {
+        setBetStatus({ type: 'error', message: err.message || 'Network error' })
+      }
     }
+
+    setPlacingBet(null)
+    setTimeout(() => setBetStatus(null), 5000)
   }
 
   // Auto-bet
   const placeAutoBet = async () => {
+    if (placingBet) return // Prevent double-clicks
+
     setPlacingBet('auto')
     setBetStatus(null)
 
     try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 15000) // 15s timeout
+
       const res = await fetch(`${API_BASE}/api/crypto/auto-bet`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal
       })
 
-      // Try to parse JSON response
-      let data
-      try {
-        data = await res.json()
-      } catch (parseErr) {
-        setBetStatus({ type: 'error', message: `Server error (${res.status})` })
-        return
-      }
+      clearTimeout(timeoutId)
+      const data = await res.json()
 
       if (data.success && data.bet) {
         setBalance(data.newBalance)
-        const bet = data.bet
         setBetStatus({
           type: 'success',
-          message: `Bet placed: ${bet.side.toUpperCase()} on ${bet.cryptoType} @ ${bet.price}¢${data.simulated ? ' (simulated)' : ''}`
+          message: `Bet placed: ${data.bet.side.toUpperCase()} on ${data.bet.cryptoType}${data.simulated ? ' (simulated)' : ''}`
         })
-        fetchPortfolio()
-        fetchOpportunities()
       } else if (data.error) {
         setBetStatus({ type: 'error', message: data.error })
       } else if (data.message) {
         setBetStatus({ type: 'info', message: data.message })
       }
     } catch (err) {
-      console.error('Auto-bet error:', err)
-      setBetStatus({ type: 'error', message: `Network error: ${err.message}` })
-    } finally {
-      setPlacingBet(null)
-      setTimeout(() => setBetStatus(null), 8000)
+      if (err.name === 'AbortError') {
+        setBetStatus({ type: 'error', message: 'Request timed out' })
+      } else {
+        setBetStatus({ type: 'error', message: err.message || 'Network error' })
+      }
     }
+
+    setPlacingBet(null)
+    setTimeout(() => setBetStatus(null), 5000)
   }
 
   // Toggle continuous auto-betting

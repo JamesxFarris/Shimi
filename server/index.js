@@ -1432,7 +1432,8 @@ app.get('/api/portfolio', async (req, res) => {
           // Total cost = number of contracts × price per contract (in cents)
           const totalCost = count * priceCents;
 
-          console.log(`Fill: ${fill.ticker} | count=${count} | price=${fill.price} | priceCents=${priceCents} | totalCost=${totalCost}`);
+          // Debug logging disabled for performance
+          // console.log(`Fill: ${fill.ticker} | count=${count} | price=${fill.price} | priceCents=${priceCents} | totalCost=${totalCost}`);
 
           return {
             id: fill.trade_id || fill.fill_id || Date.now().toString(),
@@ -1452,25 +1453,33 @@ app.get('/api/portfolio', async (req, res) => {
           };
         });
 
-        // Get market data including settlement results
-        const uniqueTickers = [...new Set(realBetHistory.map(b => b.ticker))];
+        // Get market data including settlement results - FETCH IN PARALLEL for speed
+        const uniqueTickers = [...new Set(realBetHistory.map(b => b.ticker))].slice(0, 10);
         const marketData = {};
 
-        for (const ticker of uniqueTickers.slice(0, 15)) {
+        // Fetch all market data in parallel
+        const marketPromises = uniqueTickers.map(async (ticker) => {
           try {
             const data = await kalshiRequest('GET', `/markets/${ticker}`);
             if (data.market) {
-              marketData[ticker] = {
+              return {
+                ticker,
                 title: data.market.title || ticker,
-                result: data.market.result, // 'yes', 'no', or null if not settled
-                status: data.market.status, // 'open', 'closed', 'settled'
+                result: data.market.result,
+                status: data.market.status,
                 closeTime: data.market.close_time
               };
             }
           } catch (e) {
-            marketData[ticker] = { title: ticker, result: null, status: 'unknown' };
+            return { ticker, title: ticker, result: null, status: 'unknown' };
           }
-        }
+          return { ticker, title: ticker, result: null, status: 'unknown' };
+        });
+
+        const marketResults = await Promise.all(marketPromises);
+        marketResults.forEach(m => {
+          if (m) marketData[m.ticker] = m;
+        });
 
         // Update bets with market data and calculate outcomes
         realBetHistory = realBetHistory.map(bet => {
@@ -1505,7 +1514,7 @@ app.get('/api/portfolio', async (req, res) => {
               profit = -bet.totalCost;
             }
 
-            console.log(`Outcome: ${bet.ticker} | side=${betSide} | result=${result} | won=${wonBet} | cost=${bet.totalCost} | profit=${profit}`);
+            // Debug logging disabled for performance
           } else if (marketStatus === 'closed') {
             status = 'closed';
           } else {
