@@ -33,9 +33,10 @@ let config = {
   privateKey: null,
   isAuthenticated: false,
   bankroll: 1000, // cents ($10.00)
-  maxBetPercent: 15, // Conservative 15% max per bet
-  minBetAmount: 100, // $1 minimum
-  minEdge: 3, // Minimum 3% edge to bet (lowered for more volume)
+  maxBetPercent: 15,
+  minBetAmount: 100, // $1 fixed bets
+  fixedBetAmount: 100, // Always bet $1
+  minEdge: 1, // Lowered to 1% for more volume
   autoBetEnabled: false
 };
 
@@ -267,10 +268,10 @@ async function fetchCryptoMarkets() {
                    title.includes('COIN');
       }
 
-      // Check time - within 2 hours
+      // Check time - within 4 hours for more opportunities
       const closeTime = m.close_time ? new Date(m.close_time).getTime() : null;
       const timeRemaining = closeTime ? closeTime - now : null;
-      const isShortTerm = timeRemaining && timeRemaining > 60000 && timeRemaining < 2 * 60 * 60 * 1000;
+      const isShortTerm = timeRemaining && timeRemaining > 30000 && timeRemaining < 4 * 60 * 60 * 1000;
 
       return isCrypto && isShortTerm;
     });
@@ -408,18 +409,16 @@ function analyzeCryptoMarket(parsed) {
     edge = edgeNo;
   }
 
-  if (!betSide || edge < 1) {
+  // Show opportunities with any positive edge (filtering happens at API level)
+  if (!betSide || edge < 0.5) {
     return null;
   }
 
   // Profit potential if we win
   const profitPotential = ((1 - betPrice) / betPrice) * 100;
 
-  // Kelly-based bet sizing (quarter Kelly, capped at 15%)
-  const odds = (1 - betPrice) / betPrice;
-  const kellyFraction = Math.max(0, (odds * ourProbability - (1 - ourProbability)) / odds);
-  const betPercent = Math.min(kellyFraction * 0.25, config.maxBetPercent / 100);
-  const recommendedBet = Math.max(config.minBetAmount, Math.floor(config.bankroll * betPercent));
+  // Fixed bet amount ($1) for sustainable growth
+  const recommendedBet = config.fixedBetAmount || config.minBetAmount;
 
   return {
     ...parsed,
@@ -619,13 +618,14 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
 
     const best = opportunities[0];
 
-    let betAmount = Math.max(best.recommendedBet, config.minBetAmount);
+    // Fixed $1 bets
+    let betAmount = config.fixedBetAmount || 100;
     betAmount = Math.min(betAmount, config.bankroll);
 
-    if (betAmount < config.minBetAmount) {
+    if (config.bankroll < 100) {
       return res.json({
         success: true,
-        message: 'Bankroll too low',
+        message: 'Bankroll too low (need $1 minimum)',
         bet: null
       });
     }
@@ -727,7 +727,8 @@ async function runAutoBet() {
     const best = opportunities[0];
     console.log(`💰 Best: ${best.cryptoType} | ${best.betSide} | Edge: +${best.edge.toFixed(1)}%`);
 
-    let betAmount = Math.max(best.recommendedBet, config.minBetAmount);
+    // Fixed $1 bets for sustainable growth
+    let betAmount = config.fixedBetAmount || 100;
     betAmount = Math.min(betAmount, config.bankroll);
 
     const priceCents = Math.round(best.betPrice * 100);
@@ -789,7 +790,7 @@ async function runAutoBet() {
 }
 
 app.post('/api/crypto/auto-bet/toggle', (req, res) => {
-  const { enabled, intervalSeconds = 30 } = req.body;
+  const { enabled, intervalSeconds = 15 } = req.body; // Check every 15 seconds
 
   if (enabled && !config.autoBetEnabled) {
     config.autoBetEnabled = true;

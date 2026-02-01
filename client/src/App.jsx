@@ -225,7 +225,7 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           enabled: !autoBetEnabled,
-          intervalSeconds: 60
+          intervalSeconds: 15  // Check every 15 seconds
         })
       })
       const data = await res.json()
@@ -351,7 +351,7 @@ function App() {
                 className={`auto-toggle ${autoBetEnabled ? 'active' : ''}`}
                 onClick={toggleAutoBet}
               >
-                {autoBetEnabled ? 'STOP AUTO' : 'AUTO 1m'}
+                {autoBetEnabled ? 'STOP AUTO' : 'AUTO 15s'}
               </button>
             </div>
 
@@ -449,11 +449,15 @@ function App() {
                 </div>
                 <div className="setting-item">
                   <span>Min Edge Required</span>
-                  <span>5%</span>
+                  <span>1%</span>
+                </div>
+                <div className="setting-item">
+                  <span>Bet Amount</span>
+                  <span>$1.00 fixed</span>
                 </div>
                 <div className="setting-item">
                   <span>Auto-bet Status</span>
-                  <span>{autoBetEnabled ? 'Running (1m)' : 'Stopped'}</span>
+                  <span>{autoBetEnabled ? 'Running (every 15s)' : 'Stopped'}</span>
                 </div>
                 <div className="setting-item">
                   <span>Mode</span>
