@@ -1036,14 +1036,13 @@ app.post('/api/bet', async (req, res) => {
       });
     }
 
-    // Real bet
+    // Real bet - use market order for immediate fill
     const orderRequest = {
       ticker,
       action: 'buy',
       side: side.toLowerCase(),
-      type: 'limit',
-      count,
-      ...(side.toLowerCase() === 'yes' ? { yes_price: priceCents } : { no_price: priceCents })
+      type: 'market',
+      count
     };
 
     console.log('Placing order:', JSON.stringify(orderRequest));
@@ -1052,8 +1051,28 @@ app.post('/api/bet', async (req, res) => {
       const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
       console.log('Order response:', JSON.stringify(orderResponse));
 
-      betRecord.status = 'placed';
-      betRecord.orderId = orderResponse.order?.order_id;
+      const order = orderResponse.order;
+      if (!order) {
+        return res.status(400).json({ success: false, error: 'No order in response' });
+      }
+
+      // Check if order was filled
+      const status = order.status;
+      const filledCount = order.filled_count || 0;
+
+      if (status === 'canceled' || filledCount === 0) {
+        return res.status(400).json({
+          success: false,
+          error: `Order not filled. Status: ${status}. No liquidity at current price.`
+        });
+      }
+
+      // Update bet record with actual fill info
+      betRecord.status = status === 'filled' ? 'filled' : 'partial';
+      betRecord.orderId = order.order_id;
+      betRecord.filledCount = filledCount;
+      betRecord.avgPrice = order.average_fill_price || priceCents;
+      betRecord.totalCost = filledCount * (order.average_fill_price || priceCents);
       betHistory.unshift(betRecord);
 
       const balanceData = await kalshiRequest('GET', '/portfolio/balance');
@@ -1062,6 +1081,9 @@ app.post('/api/bet', async (req, res) => {
 
       res.json({
         success: true,
+        filled: filledCount,
+        requested: count,
+        avgPrice: betRecord.avgPrice,
         bet: betRecord,
         newBalance: portfolio.balance / 100
       });
@@ -1173,16 +1195,13 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       });
     }
 
-    // Real bet
+    // Real bet - use market order for immediate fill
     const orderRequest = {
       ticker: best.ticker,
       action: 'buy',
       side: best.betSide.toLowerCase(),
-      type: 'limit',
-      count,
-      ...(best.betSide.toLowerCase() === 'yes'
-        ? { yes_price: priceCents }
-        : { no_price: priceCents })
+      type: 'market',
+      count
     };
 
     console.log('Auto-bet placing order:', JSON.stringify(orderRequest));
@@ -1191,8 +1210,30 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
       console.log('Auto-bet order response:', JSON.stringify(orderResponse));
 
-      betRecord.status = 'placed';
-      betRecord.orderId = orderResponse.order?.order_id;
+      const order = orderResponse.order;
+      if (!order) {
+        return res.status(400).json({ success: false, error: 'No order in response' });
+      }
+
+      // Check if order was filled
+      const status = order.status;
+      const filledCount = order.filled_count || 0;
+
+      if (status === 'canceled' || filledCount === 0) {
+        // Remove from recent bets so we can try again
+        recentBets.delete(best.ticker);
+        return res.status(400).json({
+          success: false,
+          error: `Order not filled. Status: ${status}. No liquidity at current price.`
+        });
+      }
+
+      // Update bet record with actual fill info
+      betRecord.status = status === 'filled' ? 'filled' : 'partial';
+      betRecord.orderId = order.order_id;
+      betRecord.filledCount = filledCount;
+      betRecord.avgPrice = order.average_fill_price || priceCents;
+      betRecord.totalCost = filledCount * (order.average_fill_price || priceCents);
       betHistory.unshift(betRecord);
 
       const balanceData = await kalshiRequest('GET', '/portfolio/balance');
@@ -1201,12 +1242,17 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
 
       res.json({
         success: true,
+        filled: filledCount,
+        requested: count,
+        avgPrice: betRecord.avgPrice,
         bet: betRecord,
         opportunity: best,
         newBalance: portfolio.balance / 100
       });
     } catch (orderError) {
       console.error('Kalshi auto-bet order error:', orderError.message);
+      // Remove from recent bets on error so we can try again
+      recentBets.delete(best.ticker);
       res.status(400).json({ success: false, error: `Kalshi: ${orderError.message}` });
     }
 
@@ -1311,27 +1357,46 @@ async function runAutoBet() {
       return;
     }
 
-    // Real bet
+    // Real bet - use market order for immediate fill
     const orderRequest = {
       ticker: best.ticker,
       action: 'buy',
       side: best.betSide.toLowerCase(),
-      type: 'limit',
-      count,
-      ...(best.betSide.toLowerCase() === 'yes'
-        ? { yes_price: priceCents }
-        : { no_price: priceCents })
+      type: 'market',
+      count
     };
 
     const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
-    betRecord.status = 'placed';
-    betRecord.orderId = orderResponse.order?.order_id;
+
+    const order = orderResponse.order;
+    if (!order) {
+      console.error('❌ No order in response');
+      recentBets.delete(best.ticker);
+      return;
+    }
+
+    // Check if order was filled
+    const status = order.status;
+    const filledCount = order.filled_count || 0;
+
+    if (status === 'canceled' || filledCount === 0) {
+      console.error(`❌ Order not filled. Status: ${status}. No liquidity.`);
+      recentBets.delete(best.ticker);
+      return;
+    }
+
+    // Update bet record with actual fill info
+    betRecord.status = status === 'filled' ? 'filled' : 'partial';
+    betRecord.orderId = order.order_id;
+    betRecord.filledCount = filledCount;
+    betRecord.avgPrice = order.average_fill_price || priceCents;
+    betRecord.totalCost = filledCount * (order.average_fill_price || priceCents);
     betHistory.unshift(betRecord);
 
     const balanceData = await kalshiRequest('GET', '/portfolio/balance');
     config.bankroll = balanceData.balance || 0;
 
-    console.log(`🎰 Placed: ${betRecord.side.toUpperCase()} on ${best.cryptoType} | $${(betRecord.totalCost/100).toFixed(2)} | Edge: ${best.edge.toFixed(1)}%`);
+    console.log(`🎰 FILLED: ${betRecord.side.toUpperCase()} on ${best.cryptoType} | ${filledCount} @ ${betRecord.avgPrice}¢ | Edge: ${best.edge.toFixed(1)}%`);
 
   } catch (error) {
     console.error('Auto-bet error:', error.message);
