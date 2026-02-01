@@ -33,79 +33,91 @@ let config = {
   privateKey: null,
   isAuthenticated: false,
   bankroll: 1000, // cents ($10.00)
-  maxBetPercent: 25,
+  maxBetPercent: 15, // Conservative 15% max per bet
   minBetAmount: 100, // $1 minimum
-  minEdge: 5, // Minimum 5% edge to bet
-  autoBetEnabled: false,
-  autoBetInterval: null
+  minEdge: 3, // Minimum 3% edge to bet (lowered for more volume)
+  autoBetEnabled: false
 };
 
 let betHistory = [];
 let portfolio = { balance: 0, positions: [] };
 
 // ============================================
-// CRYPTO PRICE TRACKING
+// CRYPTO PRICE TRACKING - EXPANDED TOKENS
 // ============================================
 
-const cryptoPrices = {
-  BTC: { price: 0, timestamp: 0, history: [], volatility: 0 },
-  ETH: { price: 0, timestamp: 0, history: [], volatility: 0 }
+// All tokens we track - Binance symbols
+const TRACKED_TOKENS = {
+  BTC: { symbol: 'BTCUSDT', name: 'Bitcoin', minPrice: 10000, maxPrice: 500000 },
+  ETH: { symbol: 'ETHUSDT', name: 'Ethereum', minPrice: 100, maxPrice: 20000 },
+  SOL: { symbol: 'SOLUSDT', name: 'Solana', minPrice: 1, maxPrice: 1000 },
+  XRP: { symbol: 'XRPUSDT', name: 'XRP', minPrice: 0.1, maxPrice: 100 },
+  DOGE: { symbol: 'DOGEUSDT', name: 'Dogecoin', minPrice: 0.01, maxPrice: 10 },
+  ADA: { symbol: 'ADAUSDT', name: 'Cardano', minPrice: 0.1, maxPrice: 50 },
+  AVAX: { symbol: 'AVAXUSDT', name: 'Avalanche', minPrice: 1, maxPrice: 500 },
+  LINK: { symbol: 'LINKUSDT', name: 'Chainlink', minPrice: 1, maxPrice: 200 },
+  MATIC: { symbol: 'MATICUSDT', name: 'Polygon', minPrice: 0.1, maxPrice: 50 },
+  DOT: { symbol: 'DOTUSDT', name: 'Polkadot', minPrice: 1, maxPrice: 200 },
+  SHIB: { symbol: 'SHIBUSDT', name: 'Shiba Inu', minPrice: 0.000001, maxPrice: 0.001 },
+  LTC: { symbol: 'LTCUSDT', name: 'Litecoin', minPrice: 10, maxPrice: 1000 },
+  UNI: { symbol: 'UNIUSDT', name: 'Uniswap', minPrice: 1, maxPrice: 100 },
+  ATOM: { symbol: 'ATOMUSDT', name: 'Cosmos', minPrice: 1, maxPrice: 100 },
+  APT: { symbol: 'APTUSDT', name: 'Aptos', minPrice: 1, maxPrice: 100 }
 };
 
-// Fetch current prices from Binance (free, no API key needed)
+// Price data storage
+const cryptoPrices = {};
+Object.keys(TRACKED_TOKENS).forEach(token => {
+  cryptoPrices[token] = { price: 0, timestamp: 0, history: [], volatility: 0.02 };
+});
+
+// Fetch all prices from Binance in one call
 async function fetchCryptoPrices() {
   try {
-    const [btcRes, ethRes] = await Promise.all([
-      fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT'),
-      fetch('https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT')
-    ]);
-
-    const btcData = await btcRes.json();
-    const ethData = await ethRes.json();
+    // Fetch all prices at once
+    const res = await fetch('https://api.binance.com/api/v3/ticker/price');
+    const allPrices = await res.json();
 
     const now = Date.now();
+    const priceMap = {};
+    allPrices.forEach(p => { priceMap[p.symbol] = parseFloat(p.price); });
 
-    if (btcData.price) {
-      const btcPrice = parseFloat(btcData.price);
-      cryptoPrices.BTC.price = btcPrice;
-      cryptoPrices.BTC.timestamp = now;
+    // Update each tracked token
+    for (const [token, config] of Object.entries(TRACKED_TOKENS)) {
+      const price = priceMap[config.symbol];
+      if (price && price > 0) {
+        cryptoPrices[token].price = price;
+        cryptoPrices[token].timestamp = now;
 
-      // Keep 60 price points (about 10 minutes of data at 10s intervals)
-      cryptoPrices.BTC.history.push({ price: btcPrice, time: now });
-      if (cryptoPrices.BTC.history.length > 60) {
-        cryptoPrices.BTC.history.shift();
+        // Keep 60 price points for volatility calculation
+        cryptoPrices[token].history.push({ price, time: now });
+        if (cryptoPrices[token].history.length > 60) {
+          cryptoPrices[token].history.shift();
+        }
+
+        // Calculate volatility
+        cryptoPrices[token].volatility = calculateVolatility(cryptoPrices[token].history, token);
       }
-
-      // Calculate 15-minute volatility from recent price movements
-      cryptoPrices.BTC.volatility = calculateVolatility(cryptoPrices.BTC.history);
     }
 
-    if (ethData.price) {
-      const ethPrice = parseFloat(ethData.price);
-      cryptoPrices.ETH.price = ethPrice;
-      cryptoPrices.ETH.timestamp = now;
-
-      cryptoPrices.ETH.history.push({ price: ethPrice, time: now });
-      if (cryptoPrices.ETH.history.length > 60) {
-        cryptoPrices.ETH.history.shift();
-      }
-
-      cryptoPrices.ETH.volatility = calculateVolatility(cryptoPrices.ETH.history);
-    }
-
-    return { BTC: cryptoPrices.BTC.price, ETH: cryptoPrices.ETH.price };
+    return cryptoPrices;
   } catch (error) {
     console.error('Error fetching crypto prices:', error.message);
     return null;
   }
 }
 
-// Calculate annualized volatility from price history
-// Then convert to 15-minute volatility
-function calculateVolatility(history) {
+// Calculate 15-minute volatility from price history
+function calculateVolatility(history, token) {
+  // Default volatilities by token type (15-min estimate)
+  const defaultVol = {
+    BTC: 0.015, ETH: 0.02, SOL: 0.03, XRP: 0.025, DOGE: 0.04,
+    ADA: 0.03, AVAX: 0.03, LINK: 0.025, MATIC: 0.03, DOT: 0.025,
+    SHIB: 0.05, LTC: 0.02, UNI: 0.03, ATOM: 0.025, APT: 0.035
+  };
+
   if (history.length < 10) {
-    // Default volatility estimates (annual): BTC ~60%, ETH ~80%
-    return 0.02; // ~2% for 15 minutes (conservative)
+    return defaultVol[token] || 0.025;
   }
 
   // Calculate log returns
@@ -115,55 +127,37 @@ function calculateVolatility(history) {
     returns.push(logReturn);
   }
 
-  // Standard deviation of returns
+  // Standard deviation
   const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
   const variance = returns.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / returns.length;
   const stdDev = Math.sqrt(variance);
 
   // Scale to 15-minute volatility
-  // If data is ~10 second intervals, scale up
   const avgInterval = (history[history.length-1].time - history[0].time) / (history.length - 1);
   const intervalsIn15Min = (15 * 60 * 1000) / avgInterval;
   const volatility15Min = stdDev * Math.sqrt(intervalsIn15Min);
 
-  // Cap volatility at reasonable bounds (0.5% to 5% for 15 min)
-  return Math.max(0.005, Math.min(0.05, volatility15Min));
+  // Cap at reasonable bounds
+  return Math.max(0.005, Math.min(0.08, volatility15Min));
 }
 
-// Calculate probability that price will be above/below target in given time
-// Using log-normal distribution assumption
-function calculateProbability(currentPrice, targetPrice, volatility, timeMinutes) {
-  // Time in years (for annualized volatility)
-  const timeYears = timeMinutes / (365 * 24 * 60);
-
-  // For 15-minute volatility, we already have it scaled
+// Calculate probability using log-normal distribution
+function calculateProbability(currentPrice, targetPrice, volatility) {
   const sigma = volatility;
-
-  // Log of price ratio
   const logRatio = Math.log(targetPrice / currentPrice);
-
-  // Standard normal CDF approximation
-  // d = (ln(target/current) - drift) / (sigma * sqrt(t))
-  // Assuming zero drift for short timeframes
   const d = logRatio / sigma;
 
   // Probability price will be BELOW target
   const probBelow = normalCDF(d);
-
-  // Probability price will be ABOVE target
   const probAbove = 1 - probBelow;
 
   return { probAbove, probBelow };
 }
 
-// Standard normal CDF approximation (Zelen & Severo)
+// Standard normal CDF
 function normalCDF(x) {
-  const a1 =  0.254829592;
-  const a2 = -0.284496736;
-  const a3 =  1.421413741;
-  const a4 = -1.453152027;
-  const a5 =  1.061405429;
-  const p  =  0.3275911;
+  const a1 =  0.254829592, a2 = -0.284496736, a3 =  1.421413741;
+  const a4 = -1.453152027, a5 =  1.061405429, p  =  0.3275911;
 
   const sign = x < 0 ? -1 : 1;
   x = Math.abs(x);
@@ -176,7 +170,7 @@ function normalCDF(x) {
 
 // Start price tracking (every 10 seconds)
 let priceInterval = setInterval(fetchCryptoPrices, 10000);
-fetchCryptoPrices(); // Initial fetch
+fetchCryptoPrices();
 
 // ============================================
 // KALSHI API
@@ -199,7 +193,6 @@ function signRequest(method, path, timestamp) {
       saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST
     }, 'base64');
   } catch (err) {
-    console.error('Crypto signing error:', err.message);
     throw new Error('Failed to sign request: ' + err.message);
   }
 }
@@ -237,7 +230,7 @@ async function kalshiRequest(method, endpoint, body = null) {
 }
 
 // ============================================
-// CRYPTO MARKET ANALYSIS
+// MARKET ANALYSIS
 // ============================================
 
 let marketCache = { data: null, lastFetch: 0, ttl: 15000 };
@@ -250,27 +243,36 @@ async function fetchCryptoMarkets() {
   }
 
   try {
-    // Fetch markets and filter for crypto
     const data = await kalshiRequest('GET', '/markets?limit=1000&status=open');
     const markets = data.markets || [];
 
-    // Filter for BTC and ETH markets (tickers usually contain INXB for BTC, INXE for ETH)
+    // Filter for crypto markets closing within 2 hours
     const cryptoMarkets = markets.filter(m => {
       const ticker = (m.ticker || '').toUpperCase();
       const title = (m.title || '').toUpperCase();
 
-      // Look for Bitcoin/BTC or Ethereum/ETH markets
-      const isBTC = ticker.includes('BTC') || ticker.includes('INXB') ||
-                    title.includes('BITCOIN') || title.includes('BTC');
-      const isETH = ticker.includes('ETH') || ticker.includes('INXE') ||
-                    title.includes('ETHEREUM') || title.includes('ETH');
+      // Check if it's a crypto market
+      let isCrypto = false;
+      for (const [token, cfg] of Object.entries(TRACKED_TOKENS)) {
+        if (ticker.includes(token) || title.includes(token) || title.includes(cfg.name.toUpperCase())) {
+          isCrypto = true;
+          break;
+        }
+      }
 
-      // Check if it's a short-term market (within 1 hour)
+      // Also check for common crypto ticker patterns
+      if (!isCrypto) {
+        isCrypto = ticker.includes('INX') || // Kalshi crypto index
+                   title.includes('CRYPTO') ||
+                   title.includes('COIN');
+      }
+
+      // Check time - within 2 hours
       const closeTime = m.close_time ? new Date(m.close_time).getTime() : null;
       const timeRemaining = closeTime ? closeTime - now : null;
-      const isShortTerm = timeRemaining && timeRemaining > 0 && timeRemaining < 60 * 60 * 1000;
+      const isShortTerm = timeRemaining && timeRemaining > 60000 && timeRemaining < 2 * 60 * 60 * 1000;
 
-      return (isBTC || isETH) && isShortTerm;
+      return isCrypto && isShortTerm;
     });
 
     marketCache.data = cryptoMarkets;
@@ -278,50 +280,49 @@ async function fetchCryptoMarkets() {
 
     return cryptoMarkets;
   } catch (error) {
-    console.error('Error fetching crypto markets:', error.message);
+    console.error('Error fetching markets:', error.message);
     return [];
   }
 }
 
-// Parse market to extract strike price and direction
+// Parse market to extract token, strike price, and determine both sides
 function parseMarket(market) {
   const ticker = (market.ticker || '').toUpperCase();
   const title = (market.title || '').toLowerCase();
 
-  // Determine crypto type
+  // Find which token this market is for
   let cryptoType = null;
-  if (ticker.includes('BTC') || ticker.includes('INXB') || title.includes('bitcoin') || title.includes('btc')) {
-    cryptoType = 'BTC';
-  } else if (ticker.includes('ETH') || ticker.includes('INXE') || title.includes('ethereum') || title.includes('eth')) {
-    cryptoType = 'ETH';
+  for (const [token, cfg] of Object.entries(TRACKED_TOKENS)) {
+    if (ticker.includes(token) || title.includes(token.toLowerCase()) || title.includes(cfg.name.toLowerCase())) {
+      cryptoType = token;
+      break;
+    }
   }
 
   // Extract strike price from title
-  // Common formats: "Bitcoin above $95,000", "BTC >= 95000", etc.
   let strikePrice = null;
   const priceMatches = title.match(/\$?([\d,]+(?:\.\d+)?)/g);
-  if (priceMatches) {
+  if (priceMatches && cryptoType) {
+    const cfg = TRACKED_TOKENS[cryptoType];
     for (const match of priceMatches) {
       const price = parseFloat(match.replace(/[$,]/g, ''));
-      // Sanity check: BTC should be 10k-500k, ETH should be 100-20k
-      if (cryptoType === 'BTC' && price > 10000 && price < 500000) {
-        strikePrice = price;
-        break;
-      } else if (cryptoType === 'ETH' && price > 100 && price < 20000) {
+      if (price >= cfg.minPrice && price <= cfg.maxPrice) {
         strikePrice = price;
         break;
       }
     }
   }
 
-  // Determine direction (above/below)
-  let direction = null;
-  if (title.includes('above') || title.includes('>=') || title.includes('higher') || title.includes('or more')) {
-    direction = 'above';
-  } else if (title.includes('below') || title.includes('<=') || title.includes('lower') || title.includes('or less')) {
-    direction = 'below';
+  // Determine market type (above/below/between)
+  let marketType = null;
+  if (title.includes('above') || title.includes('>=') || title.includes('higher') ||
+      title.includes('or more') || title.includes('over')) {
+    marketType = 'above'; // YES = price above strike
+  } else if (title.includes('below') || title.includes('<=') || title.includes('lower') ||
+             title.includes('or less') || title.includes('under')) {
+    marketType = 'below'; // YES = price below strike
   } else if (title.includes('between')) {
-    direction = 'between'; // Skip these for now
+    marketType = 'between';
   }
 
   // Time remaining
@@ -334,7 +335,7 @@ function parseMarket(market) {
     title: market.title,
     cryptoType,
     strikePrice,
-    direction,
+    marketType,
     closeTime: market.close_time,
     timeRemaining,
     timeRemainingMinutes,
@@ -346,9 +347,9 @@ function parseMarket(market) {
   };
 }
 
-// Analyze a crypto market with real probability calculation
+// Analyze market and find the best side to bet (YES or NO)
 function analyzeCryptoMarket(parsed) {
-  if (!parsed.cryptoType || !parsed.strikePrice || !parsed.direction || parsed.direction === 'between') {
+  if (!parsed.cryptoType || !parsed.strikePrice || !parsed.marketType || parsed.marketType === 'between') {
     return null;
   }
 
@@ -358,87 +359,82 @@ function analyzeCryptoMarket(parsed) {
   }
 
   const currentPrice = priceData.price;
-  const volatility = priceData.volatility || 0.02;
+  const volatility = priceData.volatility;
   const timeMinutes = parsed.timeRemainingMinutes || 15;
 
-  // Calculate actual probability
-  const { probAbove, probBelow } = calculateProbability(
-    currentPrice,
-    parsed.strikePrice,
-    volatility,
-    timeMinutes
-  );
+  // Calculate probabilities
+  const { probAbove, probBelow } = calculateProbability(currentPrice, parsed.strikePrice, volatility);
 
-  // Market's implied probability (from ask price)
+  // For "above" markets: YES wins if price > strike
+  // For "below" markets: YES wins if price < strike
+  let probYesWins, probNoWins;
+  if (parsed.marketType === 'above') {
+    probYesWins = probAbove;
+    probNoWins = probBelow;
+  } else { // below
+    probYesWins = probBelow;
+    probNoWins = probAbove;
+  }
+
+  // Market implied probabilities from prices
+  // YES ask = price to buy YES, implies market thinks YES probability is roughly YES ask
+  // NO ask = price to buy NO, implies market thinks NO probability is roughly NO ask
   const marketProbYes = parsed.yesAsk;
   const marketProbNo = parsed.noAsk;
 
-  // Our calculated probability based on which side the market is about
-  let ourProbability, marketImpliedProb, betSide, betPrice;
+  // Calculate edge for both sides
+  // Edge = our probability - market's implied probability
+  const edgeYes = (probYesWins - marketProbYes) * 100;
+  const edgeNo = (probNoWins - marketProbNo) * 100;
 
-  if (parsed.direction === 'above') {
-    ourProbability = probAbove;
+  // Pick the side with better edge (if either has positive edge)
+  let betSide = null;
+  let betPrice = 0;
+  let ourProbability = 0;
+  let marketImpliedProb = 0;
+  let edge = 0;
+
+  if (edgeYes > edgeNo && edgeYes > 0 && parsed.yesAsk > 0 && parsed.yesAsk < 0.98) {
+    betSide = 'YES';
+    betPrice = parsed.yesAsk;
+    ourProbability = probYesWins;
     marketImpliedProb = marketProbYes;
-    // If we think probability is higher than market, bet YES
-    // If we think probability is lower than market, bet NO
-    if (probAbove > marketProbYes && marketProbYes > 0) {
-      betSide = 'YES';
-      betPrice = marketProbYes;
-    } else if (probAbove < (1 - marketProbNo) && marketProbNo > 0) {
-      betSide = 'NO';
-      betPrice = marketProbNo;
-      ourProbability = probBelow;
-      marketImpliedProb = 1 - marketProbNo;
-    }
-  } else { // below
-    ourProbability = probBelow;
-    marketImpliedProb = marketProbYes;
-    if (probBelow > marketProbYes && marketProbYes > 0) {
-      betSide = 'YES';
-      betPrice = marketProbYes;
-    } else if (probBelow < (1 - marketProbNo) && marketProbNo > 0) {
-      betSide = 'NO';
-      betPrice = marketProbNo;
-      ourProbability = probAbove;
-      marketImpliedProb = 1 - marketProbNo;
-    }
+    edge = edgeYes;
+  } else if (edgeNo > 0 && parsed.noAsk > 0 && parsed.noAsk < 0.98) {
+    betSide = 'NO';
+    betPrice = parsed.noAsk;
+    ourProbability = probNoWins;
+    marketImpliedProb = marketProbNo;
+    edge = edgeNo;
   }
 
-  if (!betSide || !betPrice || betPrice <= 0 || betPrice >= 1) {
-    return null;
-  }
-
-  // Calculate edge: our probability - market's implied probability
-  const edge = (ourProbability - marketImpliedProb) * 100;
-
-  // Only return if edge is meaningful (> 2%)
-  if (edge < 2) {
+  if (!betSide || edge < 1) {
     return null;
   }
 
   // Profit potential if we win
   const profitPotential = ((1 - betPrice) / betPrice) * 100;
 
-  // Expected value per dollar
-  const expectedValue = ourProbability * (1 / betPrice) - 1;
-
-  // Recommended bet (Kelly-lite: edge / odds, capped at 15%)
+  // Kelly-based bet sizing (quarter Kelly, capped at 15%)
   const odds = (1 - betPrice) / betPrice;
   const kellyFraction = Math.max(0, (odds * ourProbability - (1 - ourProbability)) / odds);
-  const betPercent = Math.min(kellyFraction * 0.25, 0.15); // Quarter Kelly, max 15%
-  const recommendedBet = Math.floor(config.bankroll * betPercent);
+  const betPercent = Math.min(kellyFraction * 0.25, config.maxBetPercent / 100);
+  const recommendedBet = Math.max(config.minBetAmount, Math.floor(config.bankroll * betPercent));
 
   return {
     ...parsed,
     currentPrice,
     volatility: (volatility * 100).toFixed(2) + '%',
+    probYesWins: probYesWins * 100,
+    probNoWins: probNoWins * 100,
     ourProbability: ourProbability * 100,
     marketImpliedProb: marketImpliedProb * 100,
+    edgeYes,
+    edgeNo,
     edge,
     betSide,
     betPrice,
     profitPotential,
-    expectedValue: expectedValue * 100,
     recommendedBet,
     timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining)
   };
@@ -456,48 +452,51 @@ function formatTimeRemaining(ms) {
 // API ENDPOINTS
 // ============================================
 
-// Get current crypto prices and status
+// Get current prices for all tokens
 app.get('/api/crypto/prices', (req, res) => {
+  const prices = {};
+  for (const [token, data] of Object.entries(cryptoPrices)) {
+    if (data.price > 0) {
+      prices[token] = {
+        price: data.price,
+        volatility: (data.volatility * 100).toFixed(2) + '%',
+        lastUpdate: data.timestamp,
+        dataPoints: data.history.length
+      };
+    }
+  }
+
   res.json({
     success: true,
-    prices: {
-      BTC: {
-        price: cryptoPrices.BTC.price,
-        volatility: (cryptoPrices.BTC.volatility * 100).toFixed(2) + '%',
-        lastUpdate: cryptoPrices.BTC.timestamp,
-        dataPoints: cryptoPrices.BTC.history.length
-      },
-      ETH: {
-        price: cryptoPrices.ETH.price,
-        volatility: (cryptoPrices.ETH.volatility * 100).toFixed(2) + '%',
-        lastUpdate: cryptoPrices.ETH.timestamp,
-        dataPoints: cryptoPrices.ETH.history.length
-      }
-    },
+    prices,
+    trackedTokens: Object.keys(TRACKED_TOKENS),
     timestamp: Date.now()
   });
 });
 
-// Get analyzed crypto betting opportunities
+// Get betting opportunities
 app.get('/api/crypto/opportunities', async (req, res) => {
   try {
     const markets = await fetchCryptoMarkets();
 
     const opportunities = markets
-      .map(m => {
-        const parsed = parseMarket(m);
-        return analyzeCryptoMarket(parsed);
-      })
-      .filter(m => m !== null)
+      .map(m => analyzeCryptoMarket(parseMarket(m)))
+      .filter(m => m !== null && m.edge >= config.minEdge)
       .sort((a, b) => b.edge - a.edge);
+
+    // Get simplified price object for display
+    const priceDisplay = {};
+    for (const token of Object.keys(cryptoPrices)) {
+      if (cryptoPrices[token].price > 0) {
+        priceDisplay[token] = cryptoPrices[token].price;
+      }
+    }
 
     res.json({
       success: true,
       count: opportunities.length,
-      prices: {
-        BTC: cryptoPrices.BTC.price,
-        ETH: cryptoPrices.ETH.price
-      },
+      minEdge: config.minEdge,
+      prices: priceDisplay,
       opportunities
     });
   } catch (error) {
@@ -614,21 +613,19 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
         success: true,
         message: 'No opportunities with sufficient edge',
         bet: null,
-        prices: { BTC: cryptoPrices.BTC.price, ETH: cryptoPrices.ETH.price }
+        scanned: markets.length
       });
     }
 
     const best = opportunities[0];
 
-    // Calculate bet amount
-    let betAmount = best.recommendedBet;
-    betAmount = Math.max(betAmount, config.minBetAmount);
+    let betAmount = Math.max(best.recommendedBet, config.minBetAmount);
     betAmount = Math.min(betAmount, config.bankroll);
 
     if (betAmount < config.minBetAmount) {
       return res.json({
         success: true,
-        message: 'Bankroll too low for minimum bet',
+        message: 'Bankroll too low',
         bet: null
       });
     }
@@ -644,13 +641,14 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       id: Date.now().toString(),
       ticker: best.ticker,
       title: best.title,
+      cryptoType: best.cryptoType,
       side: best.betSide.toLowerCase(),
       count,
       price: priceCents,
       totalCost: count * priceCents,
       edge: best.edge,
       ourProbability: best.ourProbability,
-      cryptoPrice: best.currentPrice,
+      currentPrice: best.currentPrice,
       strikePrice: best.strikePrice,
       timestamp: new Date().toISOString(),
       status: 'pending',
@@ -707,12 +705,12 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
   }
 });
 
-// Toggle continuous auto-betting
+// Toggle auto-betting
 let autoBetInterval = null;
 
 async function runAutoBet() {
   try {
-    console.log('🤖 Checking for crypto opportunities...');
+    console.log('🤖 Scanning for opportunities...');
 
     const markets = await fetchCryptoMarkets();
     const opportunities = markets
@@ -720,15 +718,15 @@ async function runAutoBet() {
       .filter(m => m !== null && m.edge >= config.minEdge)
       .sort((a, b) => b.edge - a.edge);
 
+    console.log(`📊 Found ${markets.length} markets, ${opportunities.length} with edge`);
+
     if (opportunities.length === 0) {
-      console.log('📊 No opportunities found');
       return;
     }
 
     const best = opportunities[0];
-    console.log(`💰 Found opportunity: ${best.ticker} | Edge: ${best.edge.toFixed(1)}% | ${best.betSide}`);
+    console.log(`💰 Best: ${best.cryptoType} | ${best.betSide} | Edge: +${best.edge.toFixed(1)}%`);
 
-    // Place bet logic (similar to auto-bet endpoint)
     let betAmount = Math.max(best.recommendedBet, config.minBetAmount);
     betAmount = Math.min(betAmount, config.bankroll);
 
@@ -744,6 +742,7 @@ async function runAutoBet() {
       id: Date.now().toString(),
       ticker: best.ticker,
       title: best.title,
+      cryptoType: best.cryptoType,
       side: best.betSide.toLowerCase(),
       count,
       price: priceCents,
@@ -758,7 +757,7 @@ async function runAutoBet() {
       betRecord.orderId = 'SIM-' + Date.now();
       betHistory.unshift(betRecord);
       config.bankroll -= betRecord.totalCost;
-      console.log(`🎰 Simulated bet: ${betRecord.side} on ${betRecord.ticker} | $${(betRecord.totalCost/100).toFixed(2)}`);
+      console.log(`🎰 Simulated: ${betRecord.side.toUpperCase()} on ${best.cryptoType} | $${(betRecord.totalCost/100).toFixed(2)}`);
       return;
     }
 
@@ -782,7 +781,7 @@ async function runAutoBet() {
     const balanceData = await kalshiRequest('GET', '/portfolio/balance');
     config.bankroll = balanceData.balance || 0;
 
-    console.log(`🎰 Bet placed: ${betRecord.side} on ${betRecord.ticker}`);
+    console.log(`🎰 Placed: ${betRecord.side.toUpperCase()} on ${best.cryptoType}`);
 
   } catch (error) {
     console.error('Auto-bet error:', error.message);
@@ -790,12 +789,11 @@ async function runAutoBet() {
 }
 
 app.post('/api/crypto/auto-bet/toggle', (req, res) => {
-  const { enabled, intervalSeconds = 60 } = req.body;
+  const { enabled, intervalSeconds = 30 } = req.body;
 
   if (enabled && !config.autoBetEnabled) {
     config.autoBetEnabled = true;
 
-    // Run immediately, then on interval
     runAutoBet();
     autoBetInterval = setInterval(runAutoBet, intervalSeconds * 1000);
 
@@ -877,33 +875,38 @@ app.get('/api/settings', (req, res) => {
     settings: {
       bankroll: config.bankroll / 100,
       minEdge: config.minEdge,
+      maxBetPercent: config.maxBetPercent,
       autoBetEnabled: config.autoBetEnabled
     }
   });
 });
 
 app.post('/api/settings', (req, res) => {
-  const { bankroll, minEdge } = req.body;
+  const { bankroll, minEdge, maxBetPercent } = req.body;
 
   if (bankroll !== undefined) config.bankroll = Math.round(bankroll * 100);
   if (minEdge !== undefined) config.minEdge = minEdge;
+  if (maxBetPercent !== undefined) config.maxBetPercent = maxBetPercent;
 
   res.json({
     success: true,
     settings: {
       bankroll: config.bankroll / 100,
-      minEdge: config.minEdge
+      minEdge: config.minEdge,
+      maxBetPercent: config.maxBetPercent
     }
   });
 });
 
 app.get('/api/health', (req, res) => {
+  const activePrices = Object.entries(cryptoPrices)
+    .filter(([_, d]) => d.price > 0)
+    .map(([t, d]) => `${t}: $${d.price.toFixed(2)}`);
+
   res.json({
     status: 'ok',
-    cryptoPrices: {
-      BTC: cryptoPrices.BTC.price,
-      ETH: cryptoPrices.ETH.price
-    },
+    trackedTokens: Object.keys(TRACKED_TOKENS).length,
+    activePrices: activePrices.length,
     autoBetEnabled: config.autoBetEnabled,
     authenticated: config.isAuthenticated
   });
@@ -937,8 +940,8 @@ app.use((err, req, res, next) => {
 
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`🎰 Shimi Crypto Bot running on port ${PORT}`);
-  console.log(`📊 Tracking BTC & ETH prices in real-time`);
-  console.log(`💰 Crypto opportunities: http://localhost:${PORT}/api/crypto/opportunities`);
+  console.log(`📊 Tracking ${Object.keys(TRACKED_TOKENS).length} tokens: ${Object.keys(TRACKED_TOKENS).join(', ')}`);
+  console.log(`💰 Min edge: ${config.minEdge}% | Max bet: ${config.maxBetPercent}%`);
 });
 
 server.on('error', (err) => {

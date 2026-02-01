@@ -3,6 +3,14 @@ import './index.css'
 
 const API_BASE = import.meta.env.PROD ? '' : 'http://localhost:3001'
 
+// Token colors
+const TOKEN_COLORS = {
+  BTC: '#f7931a', ETH: '#627eea', SOL: '#14f195', XRP: '#23292f',
+  DOGE: '#c2a633', ADA: '#0033ad', AVAX: '#e84142', LINK: '#2a5ada',
+  MATIC: '#8247e5', DOT: '#e6007a', SHIB: '#ffa409', LTC: '#345d9d',
+  UNI: '#ff007a', ATOM: '#2e3148', APT: '#4cd8af'
+}
+
 // Format helpers
 const formatCurrency = (val) => `$${parseFloat(val || 0).toFixed(2)}`
 const formatPercent = (val) => `${parseFloat(val || 0).toFixed(1)}%`
@@ -16,7 +24,10 @@ const formatPrice = (val) => {
 const OpportunityCard = memo(({ opp, onBet }) => (
   <div className="opp-card">
     <div className="opp-header">
-      <span className={`crypto-badge ${opp.cryptoType?.toLowerCase()}`}>
+      <span
+        className="crypto-badge"
+        style={{ background: `${TOKEN_COLORS[opp.cryptoType] || '#888'}30`, color: TOKEN_COLORS[opp.cryptoType] || '#888' }}
+      >
         {opp.cryptoType}
       </span>
       <span className="time-badge">{opp.timeRemainingFormatted}</span>
@@ -272,19 +283,23 @@ function App() {
         </div>
       </header>
 
-      {/* Live Prices */}
+      {/* Live Prices - Scrollable */}
       <div className="price-ticker">
-        <div className="ticker-item btc">
-          <span className="ticker-label">BTC</span>
-          <span className="ticker-price">{formatPrice(prices.BTC)}</span>
-        </div>
-        <div className="ticker-item eth">
-          <span className="ticker-label">ETH</span>
-          <span className="ticker-price">{formatPrice(prices.ETH)}</span>
+        <div className="ticker-scroll">
+          {Object.entries(prices).filter(([_, p]) => p > 0).slice(0, 8).map(([token, price]) => (
+            <div
+              key={token}
+              className="ticker-item"
+              style={{ '--token-color': TOKEN_COLORS[token] || '#888' }}
+            >
+              <span className="ticker-label">{token}</span>
+              <span className="ticker-price">{formatPrice(price)}</span>
+            </div>
+          ))}
         </div>
         <div className="ticker-status">
           <span className={`status-dot ${loading ? '' : 'live'}`}></span>
-          LIVE
+          {Object.keys(prices).length}
         </div>
       </div>
 

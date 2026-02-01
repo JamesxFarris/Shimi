@@ -113,54 +113,62 @@ body {
 .price-ticker {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  padding: 0.6rem 1rem;
+  padding: 0.5rem 0.75rem;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
+  gap: 0.5rem;
+}
+
+.ticker-scroll {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  flex: 1;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.ticker-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .ticker-item {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.25rem;
+  flex-shrink: 0;
 }
 
 .ticker-label {
-  font-size: 0.7rem;
+  font-size: 0.6rem;
   font-weight: 700;
-  padding: 0.15rem 0.3rem;
+  padding: 0.1rem 0.25rem;
   border-radius: 3px;
-}
-
-.ticker-item.btc .ticker-label {
-  background: rgba(247, 147, 26, 0.2);
-  color: var(--btc-color);
-}
-
-.ticker-item.eth .ticker-label {
-  background: rgba(98, 126, 234, 0.2);
-  color: var(--eth-color);
+  background: color-mix(in srgb, var(--token-color, #888) 20%, transparent);
+  color: var(--token-color, #888);
 }
 
 .ticker-price {
   font-family: var(--font-mono);
-  font-size: 0.85rem;
+  font-size: 0.75rem;
   font-weight: 600;
   color: var(--text-primary);
 }
 
 .ticker-status {
-  margin-left: auto;
   display: flex;
   align-items: center;
-  gap: 0.3rem;
-  font-size: 0.65rem;
+  gap: 0.25rem;
+  font-size: 0.6rem;
   color: var(--text-muted);
+  flex-shrink: 0;
+  padding-left: 0.5rem;
+  border-left: 1px solid var(--border-color);
 }
 
 .status-dot {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   background: var(--text-muted);
 }
@@ -336,16 +344,6 @@ body {
   font-weight: 700;
   padding: 0.2rem 0.4rem;
   border-radius: 4px;
-}
-
-.crypto-badge.btc {
-  background: rgba(247, 147, 26, 0.2);
-  color: var(--btc-color);
-}
-
-.crypto-badge.eth {
-  background: rgba(98, 126, 234, 0.2);
-  color: var(--eth-color);
 }
 
 .time-badge {
