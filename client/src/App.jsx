@@ -519,26 +519,26 @@ function App() {
       <aside className="sidebar">
         <div className="sidebar-header">
           <h1 className="logo">SHIMI</h1>
-          <span className="logo-subtitle">Crypto Prediction Bot</span>
+          <span className="logo-subtitle">neural_trading_v2.0</span>
         </div>
 
         <nav className="sidebar-nav">
           <button className={`nav-item ${tab === 'dashboard' ? 'active' : ''}`} onClick={() => setTab('dashboard')}>
-            <span className="nav-icon">📊</span>
+            <span className="nav-icon">◈</span>
             <span className="nav-text">Dashboard</span>
           </button>
           <button className={`nav-item ${tab === 'opportunities' ? 'active' : ''}`} onClick={() => setTab('opportunities')}>
-            <span className="nav-icon">🎯</span>
-            <span className="nav-text">Opportunities</span>
+            <span className="nav-icon">⬡</span>
+            <span className="nav-text">Signals</span>
             {opportunities.length > 0 && <span className="nav-badge">{opportunities.length}</span>}
           </button>
           <button className={`nav-item ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
-            <span className="nav-icon">📜</span>
+            <span className="nav-icon">◰</span>
             <span className="nav-text">History</span>
           </button>
           <button className={`nav-item ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>
-            <span className="nav-icon">⚙️</span>
-            <span className="nav-text">Settings</span>
+            <span className="nav-icon">⚙</span>
+            <span className="nav-text">Config</span>
           </button>
         </nav>
 
