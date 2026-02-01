@@ -1025,21 +1025,29 @@ app.post('/api/bet', async (req, res) => {
       ...(side.toLowerCase() === 'yes' ? { yes_price: priceCents } : { no_price: priceCents })
     };
 
-    const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
+    console.log('Placing order:', JSON.stringify(orderRequest));
 
-    betRecord.status = 'placed';
-    betRecord.orderId = orderResponse.order?.order_id;
-    betHistory.unshift(betRecord);
+    try {
+      const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
+      console.log('Order response:', JSON.stringify(orderResponse));
 
-    const balanceData = await kalshiRequest('GET', '/portfolio/balance');
-    portfolio.balance = balanceData.balance || 0;
-    config.bankroll = portfolio.balance;
+      betRecord.status = 'placed';
+      betRecord.orderId = orderResponse.order?.order_id;
+      betHistory.unshift(betRecord);
 
-    res.json({
-      success: true,
-      bet: betRecord,
-      newBalance: portfolio.balance / 100
-    });
+      const balanceData = await kalshiRequest('GET', '/portfolio/balance');
+      portfolio.balance = balanceData.balance || 0;
+      config.bankroll = portfolio.balance;
+
+      res.json({
+        success: true,
+        bet: betRecord,
+        newBalance: portfolio.balance / 100
+      });
+    } catch (orderError) {
+      console.error('Kalshi order error:', orderError.message);
+      res.status(400).json({ success: false, error: `Kalshi: ${orderError.message}` });
+    }
 
   } catch (error) {
     console.error('Error placing bet:', error);
@@ -1154,22 +1162,30 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
         : { no_price: priceCents })
     };
 
-    const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
+    console.log('Auto-bet placing order:', JSON.stringify(orderRequest));
 
-    betRecord.status = 'placed';
-    betRecord.orderId = orderResponse.order?.order_id;
-    betHistory.unshift(betRecord);
+    try {
+      const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
+      console.log('Auto-bet order response:', JSON.stringify(orderResponse));
 
-    const balanceData = await kalshiRequest('GET', '/portfolio/balance');
-    portfolio.balance = balanceData.balance || 0;
-    config.bankroll = portfolio.balance;
+      betRecord.status = 'placed';
+      betRecord.orderId = orderResponse.order?.order_id;
+      betHistory.unshift(betRecord);
 
-    res.json({
-      success: true,
-      bet: betRecord,
-      opportunity: best,
-      newBalance: portfolio.balance / 100
-    });
+      const balanceData = await kalshiRequest('GET', '/portfolio/balance');
+      portfolio.balance = balanceData.balance || 0;
+      config.bankroll = portfolio.balance;
+
+      res.json({
+        success: true,
+        bet: betRecord,
+        opportunity: best,
+        newBalance: portfolio.balance / 100
+      });
+    } catch (orderError) {
+      console.error('Kalshi auto-bet order error:', orderError.message);
+      res.status(400).json({ success: false, error: `Kalshi: ${orderError.message}` });
+    }
 
   } catch (error) {
     console.error('Error in auto-bet:', error);

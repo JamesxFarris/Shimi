@@ -406,7 +406,15 @@ function App() {
           amount: (opp.recommendedBet || 100) / 100
         })
       })
-      const data = await res.json()
+
+      // Try to parse JSON response
+      let data
+      try {
+        data = await res.json()
+      } catch (parseErr) {
+        setBetStatus({ type: 'error', message: `Server error (${res.status})` })
+        return
+      }
 
       if (data.success) {
         setBalance(data.newBalance)
@@ -420,10 +428,11 @@ function App() {
         setBetStatus({ type: 'error', message: data.error || 'Bet failed' })
       }
     } catch (err) {
-      setBetStatus({ type: 'error', message: 'Error placing bet - check connection' })
+      console.error('Bet error:', err)
+      setBetStatus({ type: 'error', message: `Network error: ${err.message}` })
     } finally {
       setPlacingBet(null)
-      setTimeout(() => setBetStatus(null), 5000)
+      setTimeout(() => setBetStatus(null), 8000)
     }
   }
 
@@ -437,7 +446,15 @@ function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       })
-      const data = await res.json()
+
+      // Try to parse JSON response
+      let data
+      try {
+        data = await res.json()
+      } catch (parseErr) {
+        setBetStatus({ type: 'error', message: `Server error (${res.status})` })
+        return
+      }
 
       if (data.success && data.bet) {
         setBalance(data.newBalance)
@@ -448,14 +465,17 @@ function App() {
         })
         fetchPortfolio()
         fetchOpportunities()
+      } else if (data.error) {
+        setBetStatus({ type: 'error', message: data.error })
       } else if (data.message) {
         setBetStatus({ type: 'info', message: data.message })
       }
     } catch (err) {
-      setBetStatus({ type: 'error', message: 'Error in auto-bet' })
+      console.error('Auto-bet error:', err)
+      setBetStatus({ type: 'error', message: `Network error: ${err.message}` })
     } finally {
       setPlacingBet(null)
-      setTimeout(() => setBetStatus(null), 5000)
+      setTimeout(() => setBetStatus(null), 8000)
     }
   }
 
