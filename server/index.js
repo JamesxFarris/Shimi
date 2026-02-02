@@ -1948,17 +1948,25 @@ app.get('/api/opportunities/all', async (req, res) => {
       .sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
 
     // Refresh positions before calculating risk
+    console.log(`🔐 Auth status: ${config.isAuthenticated ? 'AUTHENTICATED' : 'NOT AUTHENTICATED'}`);
     if (config.isAuthenticated) {
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
         portfolio.positions = posData.positions || [];
+        console.log(`📊 Fetched ${portfolio.positions.length} positions from Kalshi`);
+        portfolio.positions.forEach(p => {
+          console.log(`   - ${p.ticker}: ${p.position} contracts @ ${p.average_price}¢`);
+        });
       } catch (e) {
-        console.log('Could not refresh positions:', e.message);
+        console.log('❌ Could not refresh positions:', e.message);
       }
+    } else {
+      console.log('⚠️ Not authenticated - using local betHistory only');
     }
 
     // Get current risk info
     const currentRisk = getCurrentRiskFromPortfolio();
+    console.log(`💰 Calculated risk: $${(currentRisk/100).toFixed(2)}`);
     const remainingBudget = getRemainingRiskBudget();
 
     // Price display
