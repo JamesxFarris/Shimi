@@ -1513,9 +1513,6 @@ function analyzeIndexMarket(parsed) {
     }
   }
 
-  // Get news boost
-  const newsBoost = getNewsBoost('index', 'SPX');
-
   // Market implied probabilities
   const marketProbYes = parsed.yesAsk;
   const marketProbNo = parsed.noAsk;
@@ -1523,15 +1520,6 @@ function analyzeIndexMarket(parsed) {
   // Calculate edge
   let yesEdge = (probYesWins - marketProbYes) * 100;
   let noEdge = (probNoWins - marketProbNo) * 100;
-
-  // Apply news boost to edge
-  if (newsBoost.boost > 0) {
-    if (newsBoost.direction === 'bullish') {
-      yesEdge += newsBoost.boost;
-    } else if (newsBoost.direction === 'bearish') {
-      noEdge += newsBoost.boost;
-    }
-  }
 
   // Find best bet (highest win probability with positive edge)
   let bestBet = null;
@@ -1562,7 +1550,6 @@ function analyzeIndexMarket(parsed) {
 
   // Build reason string
   const momentumDesc = momentum.direction === 'bullish' ? '📈' : momentum.direction === 'bearish' ? '📉' : '➡️';
-  const newsDesc = newsBoost.boost > 0 ? ` | 📰 +${newsBoost.boost.toFixed(1)}%` : '';
 
   return {
     ...parsed,
@@ -1581,7 +1568,7 @@ function analyzeIndexMarket(parsed) {
     betPriceCents: priceCents,
     contractsFor1Dollar,
     profitIfWin: profitIfWinCents,
-    betReason: `${momentumDesc} S&P ${pctFromStrike > 0 ? 'above' : 'below'} by ${Math.abs(pctFromStrike).toFixed(1)}%${newsDesc}`,
+    betReason: `${momentumDesc} S&P ${pctFromStrike > 0 ? 'above' : 'below'} by ${Math.abs(pctFromStrike).toFixed(1)}%`,
     isObviousBet: isSafeBet,
     isHighProb,
     timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining),
@@ -1590,7 +1577,6 @@ function analyzeIndexMarket(parsed) {
     momentumStrength: momentum.aligned ? 'strong' : 'weak',
     momentumData: momentum,
     timeOfDay: timeOfDay,
-    newsBoost: newsBoost,
     confidence: (isSafeBet ? 85 : isHighProb ? 70 : 55) + '%',
     dataPoints: allHistory.length
   };
@@ -1721,18 +1707,6 @@ function analyzeCryptoMarket(parsed) {
                        prediction.momentum.direction === 'down' ? '📉 DOWN' : '➡️ flat';
   const timeDesc = prediction.analysis.timeDecayApplied ? '⏰ time decay' : '';
 
-  // Get news boost for this crypto
-  const newsBoost = getNewsBoost('crypto', parsed.cryptoType);
-
-  // Apply news boost to edge
-  if (newsBoost.boost > 0) {
-    if (newsBoost.direction === 'bullish') {
-      yesEdge += newsBoost.boost;
-    } else if (newsBoost.direction === 'bearish') {
-      noEdge += newsBoost.boost;
-    }
-  }
-
   // ============================================
   // SAFETY-FIRST BET SELECTION
   // ============================================
@@ -1772,8 +1746,7 @@ function analyzeCryptoMarket(parsed) {
 
   // Build reason string
   const probPct = (bestBet.prob * 100).toFixed(0);
-  const newsDesc = newsBoost.boost > 0 ? ` | 📰 +${newsBoost.boost.toFixed(1)}%` : '';
-  const betReason = `${momentumDesc} ${timeDesc} | ${probPct}% win prob${newsDesc}`;
+  const betReason = `${momentumDesc} ${timeDesc} | ${probPct}% win prob`;
 
   // Calculate profit for $1 worth of contracts
   // E.g., if price is 50¢, we buy 2 contracts. If we win, each pays $1, so profit = 2×$1 - $1 = $1 (100¢)
@@ -1821,9 +1794,7 @@ function analyzeCryptoMarket(parsed) {
     confidence: (prediction.confidence * 100).toFixed(0) + '%',
     dataPoints: prediction.dataPoints,
     analysisMethod: prediction.analysis.method,
-    timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining),
-    // News data
-    newsBoost: newsBoost
+    timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining)
   };
 }
 
