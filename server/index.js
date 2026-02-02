@@ -2348,8 +2348,11 @@ app.get('/api/crypto/opportunities', async (req, res) => {
 });
 
 // Get ALL opportunities (crypto + index) - unified endpoint
+// Add ?showAll=true to include markets without edge (for debugging)
 app.get('/api/opportunities/all', async (req, res) => {
   try {
+    const showAll = req.query.showAll === 'true';
+
     // Fetch both market types in parallel
     const [cryptoMarkets, indexMarkets] = await Promise.all([
       fetchCryptoMarkets(),
@@ -2363,16 +2366,39 @@ app.get('/api/opportunities/all', async (req, res) => {
         if (analyzed) analyzed.marketCategory = 'crypto';
         return analyzed;
       })
-      .filter(m => m !== null && m.edge >= 0.5 && parseFloat(m.winProbability) >= 50);
+      .filter(m => m !== null)
+      .map(m => {
+        // Mark why market was filtered
+        const winProb = parseFloat(m.winProbability) || 0;
+        m.isRecommended = m.edge >= 0.5 && winProb >= 50;
+        if (!m.isRecommended) {
+          if (m.edge < 0.5) m.filterReason = `No edge (${m.edge.toFixed(1)}%)`;
+          else if (winProb < 50) m.filterReason = `Low prob (${winProb.toFixed(0)}%)`;
+        }
+        return m;
+      });
 
     // Analyze index opportunities
     const indexOpps = indexMarkets
       .map(m => analyzeIndexMarket(parseIndexMarket(m)))
-      .filter(m => m !== null && m.edge >= 0.5 && parseFloat(m.winProbability) >= 50);
+      .filter(m => m !== null)
+      .map(m => {
+        const winProb = parseFloat(m.winProbability) || 0;
+        m.isRecommended = m.edge >= 0.5 && winProb >= 50;
+        if (!m.isRecommended) {
+          if (m.edge < 0.5) m.filterReason = `No edge (${m.edge.toFixed(1)}%)`;
+          else if (winProb < 50) m.filterReason = `Low prob (${winProb.toFixed(0)}%)`;
+        }
+        return m;
+      });
 
-    // Combine and sort by win probability
-    const allOpportunities = [...cryptoOpps, ...indexOpps]
-      .sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
+    // Combine all analyzed markets
+    const allAnalyzed = [...cryptoOpps, ...indexOpps];
+
+    // Filter to recommended only (unless showAll=true)
+    const allOpportunities = showAll
+      ? allAnalyzed.sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability))
+      : allAnalyzed.filter(m => m.isRecommended).sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
 
     // Refresh positions before calculating risk
     if (config.isAuthenticated) {
@@ -2398,11 +2424,23 @@ app.get('/api/opportunities/all', async (req, res) => {
       }
     }
 
+    // Calculate filter statistics
+    const recommended = allAnalyzed.filter(m => m.isRecommended);
+    const noEdge = allAnalyzed.filter(m => !m.isRecommended && m.edge < 0.5);
+    const lowProb = allAnalyzed.filter(m => !m.isRecommended && m.edge >= 0.5);
+
     res.json({
       success: true,
       count: allOpportunities.length,
-      cryptoCount: cryptoOpps.length,
-      indexCount: indexOpps.length,
+      showingAll: showAll,
+      stats: {
+        totalAnalyzed: allAnalyzed.length,
+        recommended: recommended.length,
+        filteredNoEdge: noEdge.length,
+        filteredLowProb: lowProb.length
+      },
+      cryptoCount: cryptoOpps.filter(m => m.isRecommended).length,
+      indexCount: indexOpps.filter(m => m.isRecommended).length,
       prices: priceDisplay,
       risk: {
         // Total risk

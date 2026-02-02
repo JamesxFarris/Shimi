@@ -1368,6 +1368,73 @@ body {
   font-size: 12px;
 }
 
+/* No-edge market cards (shown when "Show All" is enabled) */
+.opp-card.no-edge {
+  opacity: 0.6;
+  border-color: #444;
+  background: rgba(20, 20, 30, 0.5);
+}
+
+.opp-card.no-edge:hover {
+  border-color: #555;
+}
+
+.badge.no-edge {
+  background: var(--accent-red);
+  color: white;
+  font-size: 8px;
+  padding: 2px 5px;
+}
+
+.bet-btn.disabled-no-edge {
+  background: #333;
+  color: #888;
+  box-shadow: none;
+}
+
+/* Show all markets button */
+.show-all-btn,
+.toggle-all-btn {
+  padding: 8px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-top: 10px;
+}
+
+.show-all-btn:hover,
+.toggle-all-btn:hover {
+  border-color: var(--neon-cyan);
+  color: var(--neon-cyan);
+}
+
+.toggle-all-btn {
+  margin-top: 0;
+  margin-left: auto;
+}
+
+/* Market stats inline */
+.market-stats-inline {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-muted);
+  margin-left: 8px;
+}
+
+/* Section header with toggle */
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
 /* ============================================
    History
    ============================================ */

@@ -72,9 +72,10 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
   const assetType = opp.assetType || opp.cryptoType || 'Unknown'
   const config = ASSET_CONFIG[assetType] || { color: '#888', name: assetType, icon: '?' }
   const isIndex = opp.marketCategory === 'index'
+  const notRecommended = opp.isRecommended === false
 
   return (
-    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''}`}>
+    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''} ${notRecommended ? 'no-edge' : ''}`}>
       {/* Card Header */}
       <div className="opp-header">
         <div className="opp-token">
@@ -90,7 +91,8 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
           <span className={`badge market-type ${isIndex ? 'index' : 'crypto'}`}>
             {isIndex ? 'INDEX' : 'CRYPTO'}
           </span>
-          {opp.isObviousBet && <span className="badge safe">HIGH CONF</span>}
+          {notRecommended && <span className="badge no-edge">{opp.filterReason || 'NO EDGE'}</span>}
+          {opp.isObviousBet && !notRecommended && <span className="badge safe">HIGH CONF</span>}
           <span className="badge time">{opp.timeRemainingFormatted}</span>
         </div>
       </div>
@@ -166,11 +168,11 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
 
       {/* Action Button */}
       <button
-        className={`bet-btn ${isPlacing ? 'loading' : ''} ${opp.betSide?.toLowerCase()}`}
+        className={`bet-btn ${isPlacing ? 'loading' : ''} ${opp.betSide?.toLowerCase()} ${notRecommended ? 'disabled-no-edge' : ''}`}
         onClick={() => onBet(opp)}
-        disabled={isPlacing}
+        disabled={isPlacing || notRecommended}
       >
-        {isPlacing ? 'Placing...' : `${opp.betSide} @ ${opp.betPriceCents || Math.round(opp.betPrice * 100)}¢`}
+        {isPlacing ? 'Placing...' : notRecommended ? `${opp.filterReason}` : `${opp.betSide} @ ${opp.betPriceCents || Math.round(opp.betPrice * 100)}¢`}
       </button>
     </div>
   )
@@ -356,6 +358,8 @@ function App() {
   })
   const [settingsSaved, setSettingsSaved] = useState(false)
   const [marketFilter, setMarketFilter] = useState('all') // 'all', 'crypto', 'index'
+  const [showAllMarkets, setShowAllMarkets] = useState(false) // Show markets without edge
+  const [marketStats, setMarketStats] = useState({ totalAnalyzed: 0, recommended: 0, filteredNoEdge: 0, filteredLowProb: 0 })
 
   // Fetch prices directly (faster updates)
   const fetchPrices = useCallback(async () => {
@@ -383,13 +387,15 @@ function App() {
   }, []) // No dependencies - prevents infinite loop
 
   // Fetch opportunities (now uses unified endpoint for all market types)
-  const fetchOpportunities = useCallback(async () => {
+  const fetchOpportunities = useCallback(async (forceShowAll = null) => {
     try {
-      const res = await fetch(`${API_BASE}/api/opportunities/all`)
+      const showAll = forceShowAll !== null ? forceShowAll : showAllMarkets
+      const res = await fetch(`${API_BASE}/api/opportunities/all${showAll ? '?showAll=true' : ''}`)
       const data = await res.json()
 
       if (data.success) {
         setOpportunities(data.opportunities || [])
+        if (data.stats) setMarketStats(data.stats)
         // Update risk info
         if (data.risk) {
                     setRisk(data.risk)
@@ -881,7 +887,22 @@ function App() {
               {/* Top Opportunities */}
               <div className="top-opportunities">
                 <div className="section-header">
-                  <h3 className="section-title">Top Opportunities</h3>
+                  <h3 className="section-title">
+                    Top Opportunities
+                    {marketStats.totalAnalyzed > 0 && (
+                      <span className="market-stats-inline">
+                        ({marketStats.recommended} of {marketStats.totalAnalyzed} have edge)
+                      </span>
+                    )}
+                  </h3>
+                  {showAllMarkets && (
+                    <button
+                      className="toggle-all-btn"
+                      onClick={() => { setShowAllMarkets(false); fetchOpportunities(false); }}
+                    >
+                      Hide No-Edge Markets
+                    </button>
+                  )}
                 </div>
 
                 {loading ? (
@@ -893,7 +914,19 @@ function App() {
                   <div className="empty-state">
                     <span className="empty-icon">🔍</span>
                     <h3>No opportunities with edge found</h3>
-                    <p>Waiting for price mispricings...</p>
+                    <p>
+                      {marketStats.totalAnalyzed > 0
+                        ? `Analyzed ${marketStats.totalAnalyzed} markets: ${marketStats.filteredNoEdge} have no edge (price too high)`
+                        : 'Waiting for price mispricings...'}
+                    </p>
+                    {marketStats.filteredNoEdge > 0 && (
+                      <button
+                        className="show-all-btn"
+                        onClick={() => { setShowAllMarkets(true); fetchOpportunities(true); }}
+                      >
+                        Show All Markets ({marketStats.totalAnalyzed})
+                      </button>
+                    )}
                   </div>
                 ) : (
                   <div className="opportunities-grid">
