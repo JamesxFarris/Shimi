@@ -1105,9 +1105,9 @@ body {
 .opportunities-preview,
 .opportunities-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 10px;
-  padding: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 16px;
+  padding: 16px;
   background: linear-gradient(180deg, rgba(0, 10, 20, 0.5) 0%, rgba(5, 15, 30, 0.8) 100%);
   border-radius: var(--radius-lg);
   border: 1px solid rgba(0, 240, 255, 0.1);
@@ -1120,11 +1120,12 @@ body {
 .opp-card {
   background: linear-gradient(145deg, rgba(15, 25, 45, 0.95) 0%, rgba(10, 20, 40, 0.98) 100%);
   border: 1px solid rgba(0, 240, 255, 0.2);
-  border-radius: var(--radius-md);
-  padding: 10px;
+  border-radius: var(--radius-lg);
+  padding: 20px;
   transition: all 0.3s ease;
   position: relative;
   overflow: hidden;
+  min-width: 320px;
 }
 
 .opp-card::before {
@@ -1157,12 +1158,14 @@ body {
   box-shadow: 0 12px 40px rgba(0, 255, 136, 0.25);
 }
 
-/* Clean Card Header */
+/* Card Header */
 .opp-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 12px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(0, 240, 255, 0.15);
   position: relative;
   z-index: 1;
 }
@@ -1170,108 +1173,152 @@ body {
 .opp-token {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
 }
 
 .token-icon {
-  width: 28px;
-  height: 28px;
+  width: 40px;
+  height: 40px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-sm);
-  font-size: 12px;
+  border-radius: var(--radius-md);
+  font-size: 18px;
   background: linear-gradient(135deg, rgba(0, 240, 255, 0.1) 0%, rgba(128, 90, 255, 0.1) 100%);
   border: 1px solid rgba(0, 240, 255, 0.3);
 }
 
+.token-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .token-symbol {
   font-family: var(--font-display);
-  font-size: 14px;
+  font-size: 18px;
   font-weight: 700;
   color: var(--text-primary);
+}
+
+.token-name {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .opp-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .high-conf-dot {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   background: var(--neon-green);
-  box-shadow: 0 0 8px var(--neon-green);
+  box-shadow: 0 0 10px var(--neon-green);
   animation: pulse 1.5s ease-in-out infinite;
 }
 
 .time-badge {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--neon-cyan);
-  padding: 4px 8px;
+  padding: 6px 12px;
   background: rgba(0, 240, 255, 0.1);
   border: 1px solid rgba(0, 240, 255, 0.3);
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
-/* Key Stats - The main focus */
-.key-stats {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 10px;
-  padding: 10px;
-  background: rgba(0, 0, 0, 0.3);
-  border-radius: var(--radius-sm);
-  border: 1px solid rgba(0, 240, 255, 0.1);
-}
-
-.key-stat {
+/* Stacked Stats - Vertical Layout */
+.stacked-stats {
   display: flex;
   flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
   align-items: center;
-  text-align: center;
+  padding: 12px 16px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
-.key-stat-value {
-  font-family: var(--font-display);
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--text-primary);
-  line-height: 1;
-}
-
-.key-stat-label {
+.stat-row .stat-label {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 12px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  margin-top: 3px;
 }
 
-.key-stat.win-prob .key-stat-value {
+.stat-row .stat-value {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+/* Win Probability - Highlighted */
+.stat-row.win-prob {
+  background: rgba(0, 240, 255, 0.08);
+  border-color: rgba(0, 240, 255, 0.2);
+}
+
+.stat-row.win-prob .stat-value {
   color: var(--neon-cyan);
+  font-size: 24px;
 }
 
-.key-stat.edge .key-stat-value {
+/* Edge - Green highlight */
+.stat-row.edge {
+  background: rgba(0, 255, 136, 0.08);
+  border-color: rgba(0, 255, 136, 0.2);
+}
+
+.stat-row.edge .stat-value {
   color: var(--neon-green);
 }
 
-.key-stat.distance.above .key-stat-value {
+/* Distance from Strike */
+.stat-row.distance.above .stat-value {
   color: var(--neon-green);
 }
 
-.key-stat.distance.below .key-stat-value {
+.stat-row.distance.below .stat-value {
   color: var(--accent-red);
 }
 
-/* Compact Price Context */
-.price-context {
+/* Price Comparison Row */
+.stat-row.prices .stat-value {
+  font-size: 14px;
   display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stat-row.prices .stat-value .arrow {
+  font-size: 16px;
+}
+
+.stat-row.prices .stat-value .arrow.up {
+  color: var(--neon-green);
+}
+
+.stat-row.prices .stat-value .arrow.down {
+  color: var(--accent-red);
+}
+
+/* Legacy - keep for compatibility */
+.price-context {
+  display: none; /* Hidden - using stacked layout now */
   align-items: center;
   justify-content: center;
   gap: 8px;
@@ -1300,16 +1347,18 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 12px 16px;
+  padding: 16px 20px;
   border: none;
-  border-radius: var(--radius-sm);
-  font-family: var(--font-mono);
-  font-weight: 600;
-  font-size: 13px;
-  letter-spacing: 0.5px;
+  border-radius: var(--radius-md);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
   cursor: pointer;
   transition: all 0.2s;
-  min-height: 44px;
+  min-height: 56px;
+  margin-top: 8px;
 }
 
 .bet-btn.yes {

@@ -67,7 +67,7 @@ const ASSET_CONFIG = {
   SPX: { color: '#ffcc00', name: 'S&P 500', icon: '📈' }
 }
 
-// Opportunity Card - Clean, focused design
+// Opportunity Card - Larger stacked design
 const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
   const assetType = opp.assetType || opp.cryptoType || 'Unknown'
   const config = ASSET_CONFIG[assetType] || { color: '#888', name: assetType, icon: '?' }
@@ -77,13 +77,16 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
 
   return (
     <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''} ${notRecommended ? 'no-edge' : ''}`}>
-      {/* Compact Header: Token + Time */}
+      {/* Header: Token + Time */}
       <div className="opp-header">
         <div className="opp-token">
           <div className="token-icon" style={{ background: `${config.color}20`, color: config.color }}>
             {config.icon}
           </div>
-          <span className="token-symbol">{assetType}</span>
+          <div className="token-info">
+            <span className="token-symbol">{assetType}</span>
+            <span className="token-name">{config.name}</span>
+          </div>
         </div>
         <div className="opp-meta">
           {opp.isObviousBet && !notRecommended && <span className="high-conf-dot" title="High Confidence"></span>}
@@ -91,27 +94,35 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
         </div>
       </div>
 
-      {/* Key Stats Row */}
-      <div className="key-stats">
-        <div className="key-stat win-prob">
-          <span className="key-stat-value">{opp.winProbability}%</span>
-          <span className="key-stat-label">win prob</span>
+      {/* Stacked Stats */}
+      <div className="stacked-stats">
+        {/* Win Probability - Most Important */}
+        <div className="stat-row win-prob">
+          <span className="stat-label">Win Probability</span>
+          <span className="stat-value">{opp.winProbability}%</span>
         </div>
-        <div className="key-stat edge">
-          <span className="key-stat-value">+{formatPercent(opp.edge)}</span>
-          <span className="key-stat-label">edge</span>
-        </div>
-        <div className={`key-stat distance ${pctFromStrike >= 0 ? 'above' : 'below'}`}>
-          <span className="key-stat-value">{pctFromStrike >= 0 ? '+' : ''}{opp.pctFromStrike}%</span>
-          <span className="key-stat-label">{pctFromStrike >= 0 ? 'above' : 'below'} strike</span>
-        </div>
-      </div>
 
-      {/* Price Context - Compact */}
-      <div className="price-context">
-        <span className="price-now">{formatPrice(opp.currentPrice, opp.cryptoType)}</span>
-        <span className="price-arrow">{pctFromStrike >= 0 ? '↑' : '↓'}</span>
-        <span className="price-strike">{formatPrice(opp.strikePrice, opp.cryptoType)}</span>
+        {/* Edge */}
+        <div className="stat-row edge">
+          <span className="stat-label">Your Edge</span>
+          <span className="stat-value">+{formatPercent(opp.edge)}%</span>
+        </div>
+
+        {/* Price vs Strike */}
+        <div className={`stat-row distance ${pctFromStrike >= 0 ? 'above' : 'below'}`}>
+          <span className="stat-label">Distance from Strike</span>
+          <span className="stat-value">{pctFromStrike >= 0 ? '+' : ''}{opp.pctFromStrike}%</span>
+        </div>
+
+        {/* Current → Strike */}
+        <div className="stat-row prices">
+          <span className="stat-label">Current → Strike</span>
+          <span className="stat-value price-comparison">
+            {formatPrice(opp.currentPrice, opp.cryptoType)}
+            <span className={`arrow ${pctFromStrike >= 0 ? 'up' : 'down'}`}>{pctFromStrike >= 0 ? '↑' : '↓'}</span>
+            {formatPrice(opp.strikePrice, opp.cryptoType)}
+          </span>
+        </div>
       </div>
 
       {/* Action Button */}
@@ -120,7 +131,7 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
         onClick={() => onBet(opp)}
         disabled={isPlacing || notRecommended}
       >
-        {isPlacing ? 'Placing...' : notRecommended ? `${opp.filterReason}` : `${opp.betSide} @ ${opp.betPriceCents || Math.round(opp.betPrice * 100)}¢`}
+        {isPlacing ? 'Placing...' : notRecommended ? `${opp.filterReason}` : `BET ${opp.betSide} @ ${opp.betPriceCents || Math.round(opp.betPrice * 100)}¢`}
       </button>
     </div>
   )
