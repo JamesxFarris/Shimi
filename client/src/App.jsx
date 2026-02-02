@@ -903,7 +903,13 @@ function App() {
                     )}
                     {scanStatus.lastScan.betPlaced && scanStatus.lastScan.betDetails && (
                       <div className="scan-bet-placed">
-                        Placed: {scanStatus.lastScan.betDetails.contracts}x {scanStatus.lastScan.betDetails.side.toUpperCase()} @ {scanStatus.lastScan.betDetails.priceCents}¢
+                        {scanStatus.lastScan.betDetails.count > 1 ? (
+                          <>Placed {scanStatus.lastScan.betDetails.count} bets | ${(scanStatus.lastScan.betDetails.totalAmount / 100).toFixed(2)} total</>
+                        ) : scanStatus.lastScan.betDetails.bets?.[0] ? (
+                          <>Placed: {scanStatus.lastScan.betDetails.bets[0].count}x {scanStatus.lastScan.betDetails.bets[0].side} @ {scanStatus.lastScan.betDetails.bets[0].price}¢</>
+                        ) : (
+                          <>Bet placed</>
+                        )}
                       </div>
                     )}
                   </div>

@@ -1772,6 +1772,39 @@ function getMaxPerBet(type) {
   return config.riskLimits[type]?.maxPerBet || 200;
 }
 
+// Kelly Criterion bet sizing - mathematically optimal for long-term growth
+// Uses fractional Kelly (25%) to be more conservative and handle model uncertainty
+function calculateKellyBet(probability, priceCents, bankrollCents, maxBetCents) {
+  const p = probability / 100;  // Convert to decimal
+  const q = 1 - p;              // Probability of losing
+  const price = priceCents / 100;  // Price as fraction of $1
+
+  // Odds: if you bet at 40¢, you win 60¢ profit on a $1 payout
+  // b = (1 - price) / price = profit per dollar risked
+  const b = (1 - price) / price;
+
+  // Kelly formula: f* = (bp - q) / b
+  const kellyFraction = (b * p - q) / b;
+
+  // If Kelly is negative or zero, don't bet (no edge)
+  if (kellyFraction <= 0) return 0;
+
+  // Use fractional Kelly (25%) - more conservative, handles model error
+  const KELLY_FRACTION = 0.25;
+  const adjustedKelly = kellyFraction * KELLY_FRACTION;
+
+  // Calculate bet size in cents
+  let betSize = Math.floor(bankrollCents * adjustedKelly);
+
+  // Cap at max per bet
+  betSize = Math.min(betSize, maxBetCents);
+
+  // Minimum bet of 1 contract
+  if (betSize < priceCents) betSize = priceCents;
+
+  return betSize;
+}
+
 function getMaxTotalRisk() {
   return getMaxRisk('hourly') + getMaxRisk('other');
 }
@@ -3787,225 +3820,201 @@ async function runAutoBet() {
       return;
     }
 
-    // Always show the best opportunity found
-    const best = opportunities[0];
-    const category = best.marketCategory || 'crypto';
-
-    // Check risk limit for this market's pool
-    const isHourly = isHourlyMarket(best.ticker);
-    const remainingBudget = getRemainingRiskBudget(best.ticker);
+    // === MULTI-BET LOOP: Bet on ALL qualifying opportunities ===
     const riskByType = getRiskByType();
-    const poolMax = isHourly ? getMaxRisk('hourly') : getMaxRisk('other');
-    const poolCurrent = isHourly ? riskByType.hourly : riskByType.other;
-    const poolName = isHourly ? 'HOURLY' : 'OTHER';
+    console.log(`💰 Risk: Hourly $${(riskByType.hourly/100).toFixed(2)}/$${(getMaxRisk('hourly')/100).toFixed(2)} | Other $${(riskByType.other/100).toFixed(2)}/$${(getMaxRisk('other')/100).toFixed(2)}`);
 
-    console.log(`💰 Risk [${poolName}]: $${(poolCurrent/100).toFixed(2)} / $${(poolMax/100).toFixed(2)} | Total: $${(riskByType.total/100).toFixed(2)} / $${(getMaxTotalRisk()/100).toFixed(2)}`);
+    let betsPlaced = 0;
+    let totalBetAmount = 0;
+    const betResults = [];
 
-    // Record best opportunity for diagnostics
-    lastScanStatus.bestOpportunity = {
-      title: best.title,
-      ticker: best.ticker,
-      winProbability: best.winProbability,
-      edge: best.edge,
-      side: best.betSide,
-      priceCents: Math.round(best.betPrice * 100)
-    };
+    // Process each opportunity (already sorted by EV)
+    for (const opp of opportunities) {
+      // Check if we've hit overall limits
+      if (getTotalRemainingBudget() < 10) {
+        console.log('   ⚠️ Total risk limit reached - stopping');
+        break;
+      }
 
-    console.log(`\n💰 BEST OPPORTUNITY [${category.toUpperCase()}]:`);
-    console.log(`   ${best.title}`);
-    console.log(`   ${best.betReason}`);
-    console.log(`   Side: ${best.betSide} @ ${(best.betPrice * 100).toFixed(0)}¢ | Win prob: ${best.winProbability}%`);
-    console.log(`   Current: $${best.currentPrice?.toFixed(2) || 'N/A'} | Strike: $${best.strikePrice?.toFixed(2) || 'N/A'}`);
-    console.log(`   Edge: +${best.edge.toFixed(1)}%`);
+      const isHourly = isHourlyMarket(opp.ticker);
+      const poolType = isHourly ? 'hourly' : 'other';
+      const remainingBudget = getRemainingRiskBudget(opp.ticker);
+      const remainingTokenBudget = getRemainingTokenBudget(opp.ticker, opp.assetType || opp.cryptoType);
+      const tokenName = getTokenFromTicker(opp.ticker) || opp.assetType || opp.cryptoType || 'token';
 
-    // Show other good opportunities
-    if (opportunities.length > 1) {
-      console.log(`   + ${opportunities.length - 1} more opportunities above 60%`);
-    }
+      // Skip if pool is exhausted
+      if (remainingBudget < 10) {
+        console.log(`   ⏭️ ${tokenName}: Pool limit reached`);
+        continue;
+      }
 
-    // Check risk limit AFTER showing opportunities
-    if (remainingBudget < 10) {
-      lastScanStatus.blockedReason = 'risk_limit';
-      lastScanStatus.bestOpportunity.reason = `${poolName} pool limit reached`;
-      console.log(`⚠️ Risk limit reached for ${poolName} pool - watching but not betting...`);
-      console.log('========================================\n');
-      return;
-    }
+      // Skip if token limit exhausted
+      if (remainingTokenBudget < 10) {
+        console.log(`   ⏭️ ${tokenName}: Token limit reached`);
+        continue;
+      }
 
-    // Check per-token limit
-    const remainingTokenBudget = getRemainingTokenBudget(best.ticker, best.assetType || best.cryptoType);
-    const tokenName = getTokenFromTicker(best.ticker) || best.assetType || best.cryptoType || 'token';
-    if (remainingTokenBudget < 10) {
-      lastScanStatus.blockedReason = 'token_limit';
-      lastScanStatus.bestOpportunity.reason = `Token limit reached for ${tokenName}`;
-      console.log(`⚠️ Token limit reached for ${tokenName} ($${(getMaxPerToken()/100).toFixed(2)} max) - skipping...`);
-      console.log('========================================\n');
-      return;
-    }
+      const priceCents = Math.round(opp.betPrice * 100);
+      const winProb = parseFloat(opp.winProbability);
 
-    console.log(`   ${best.isObviousBet ? '✅ HIGH CONFIDENCE' : '⚠️ Model-based'}`);
-    console.log(`   Token budget for ${tokenName}: $${(remainingTokenBudget/100).toFixed(2)} remaining`);
+      // Kelly Criterion bet sizing
+      const maxBetCents = Math.min(getMaxPerBet(poolType), remainingBudget, remainingTokenBudget);
+      const kellyBetSize = calculateKellyBet(winProb, priceCents, config.bankroll, maxBetCents);
 
-    // Cap bet at remaining risk budget, max per bet, OR token budget - whichever is lowest
-    const maxPerBet = getMaxPerBet(isHourly ? 'hourly' : 'other');
-    const MAX_BET_CENTS = Math.min(maxPerBet, remainingBudget, remainingTokenBudget);
+      if (kellyBetSize < priceCents) {
+        console.log(`   ⏭️ ${tokenName}: Kelly size too small (${kellyBetSize}¢)`);
+        continue;
+      }
 
-    const priceCents = Math.round(best.betPrice * 100);
+      const count = Math.floor(kellyBetSize / priceCents);
+      if (count < 1) continue;
 
-    // Calculate contracts but cap total cost
-    let count = Math.floor(MAX_BET_CENTS / priceCents);
-    if (count < 1) {
-      console.log('⚠️ Bet size too small for risk budget');
-      return;
-    }
+      const totalCost = count * priceCents;
 
-    // Ensure we don't exceed budget
-    const totalCost = count * priceCents;
+      // Get existing bet info for scale-in tracking
+      const existingBet = recentBets.get(opp.ticker);
+      const newBetCount = opp.isScaleIn ? ((existingBet?.betCount || 1) + 1) : 1;
 
-    // Get existing bet info for scale-in tracking
-    const existingBet = recentBets.get(best.ticker);
-    const newBetCount = best.isScaleIn ? ((existingBet?.betCount || 1) + 1) : 1;
+      const betRecord = {
+        id: Date.now().toString() + '-' + betsPlaced,
+        ticker: opp.ticker,
+        title: opp.title,
+        marketCategory: opp.marketCategory || 'crypto',
+        assetType: opp.assetType || opp.cryptoType,
+        side: opp.betSide.toLowerCase(),
+        count,
+        price: priceCents,
+        totalCost,
+        edge: opp.edge,
+        winProbability: opp.winProbability,
+        kellyFraction: (kellyBetSize / config.bankroll * 100).toFixed(1) + '%',
+        timestamp: new Date().toISOString(),
+        status: config.isAuthenticated ? 'pending' : 'simulated',
+        auto: true,
+        isScaleIn: opp.isScaleIn || false,
+        scaleInNumber: newBetCount
+      };
 
-    const betRecord = {
-      id: Date.now().toString(),
-      ticker: best.ticker,
-      title: best.title,
-      marketCategory: category,
-      assetType: best.assetType || best.cryptoType,
-      side: best.betSide.toLowerCase(),
-      count,
-      price: priceCents,
-      totalCost,
-      edge: best.edge,
-      winProbability: best.winProbability,
-      timestamp: new Date().toISOString(),
-      status: config.isAuthenticated ? 'pending' : 'simulated',
-      auto: true,
-      isScaleIn: best.isScaleIn || false,
-      scaleInNumber: newBetCount
-    };
-
-    // Mark this market as bet on BEFORE placing the bet (or update for scale-in)
-    recentBets.set(best.ticker, {
-      timestamp: now,
-      side: best.betSide,
-      probability: parseFloat(best.winProbability),
-      betCount: newBetCount
-    });
-    if (best.isScaleIn) {
-      console.log(`📈 SCALE-IN: Adding bet #${newBetCount} on ${best.ticker} (prob increased to ${best.winProbability}%)`);
-    }
-
-    if (!config.isAuthenticated) {
-      betRecord.orderId = 'SIM-' + Date.now();
-      betHistory.unshift(betRecord);
-      config.bankroll -= betRecord.totalCost;
-
-      // Track for performance analysis
-      trackBet({
-        ...betRecord,
-        token: best.assetType || best.cryptoType || getTokenFromTicker(best.ticker),
-        predictedProb: parseFloat(best.winProbability),
-        marketPrice: priceCents,
-        strikePrice: best.strikePrice,
-        currentPrice: best.currentPrice,
-        marketType: isHourlyMarket(best.ticker) ? 'hourly' : best.ticker?.includes('15M') ? '15min' : 'daily',
-        expiryTime: best.expiry || best.close_time
+      // Mark this market as bet on
+      recentBets.set(opp.ticker, {
+        timestamp: now,
+        side: opp.betSide,
+        probability: winProb,
+        betCount: newBetCount
       });
 
-      console.log(`\n🎰 SIMULATED BET PLACED:`);
-      console.log(`   ${betRecord.side.toUpperCase()} on ${assetName}`);
-      console.log(`   ${count} contracts @ ${priceCents}¢ = $${(betRecord.totalCost/100).toFixed(2)}`);
-      console.log(`   Edge: +${best.edge.toFixed(1)}% | Win prob: ${best.winProbability}%`);
-      console.log(`   New balance: $${(config.bankroll/100).toFixed(2)}`);
-      console.log('========================================\n');
-      return;
+      if (!config.isAuthenticated) {
+        // Simulated bet
+        betRecord.orderId = 'SIM-' + Date.now() + '-' + betsPlaced;
+        betHistory.unshift(betRecord);
+        config.bankroll -= betRecord.totalCost;
+
+        trackBet({
+          ...betRecord,
+          token: tokenName,
+          predictedProb: winProb,
+          marketPrice: priceCents,
+          strikePrice: opp.strikePrice,
+          currentPrice: opp.currentPrice,
+          marketType: isHourly ? 'hourly' : opp.ticker?.includes('15M') ? '15min' : 'daily',
+          expiryTime: opp.expiry || opp.close_time
+        });
+
+        console.log(`   ✅ SIM: ${opp.betSide} ${tokenName} ${count}x@${priceCents}¢ | Edge:+${opp.edge.toFixed(1)}% | Kelly:${betRecord.kellyFraction}`);
+        betsPlaced++;
+        totalBetAmount += totalCost;
+        betResults.push({ ticker: opp.ticker, side: opp.betSide, count, price: priceCents, edge: opp.edge });
+
+      } else {
+        // Real bet
+        try {
+          const fillPrice = Math.min(priceCents + 2, 99);
+          const orderRequest = {
+            ticker: opp.ticker,
+            action: 'buy',
+            side: opp.betSide.toLowerCase(),
+            type: 'limit',
+            count
+          };
+
+          if (opp.betSide.toLowerCase() === 'yes') {
+            orderRequest.yes_price = fillPrice;
+          } else {
+            orderRequest.no_price = fillPrice;
+          }
+
+          const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
+          const order = orderResponse.order;
+
+          if (order && order.filled_count > 0) {
+            const filledCount = order.filled_count;
+            betRecord.status = order.status === 'filled' ? 'filled' : 'partial';
+            betRecord.orderId = order.order_id;
+            betRecord.filledCount = filledCount;
+            betRecord.avgPrice = order.average_fill_price || priceCents;
+            betRecord.totalCost = filledCount * betRecord.avgPrice;
+            betHistory.unshift(betRecord);
+
+            trackBet({
+              ...betRecord,
+              count: filledCount,
+              token: tokenName,
+              predictedProb: winProb,
+              marketPrice: betRecord.avgPrice,
+              strikePrice: opp.strikePrice,
+              currentPrice: opp.currentPrice,
+              marketType: isHourly ? 'hourly' : opp.ticker?.includes('15M') ? '15min' : 'daily',
+              expiryTime: opp.expiry || opp.close_time
+            });
+
+            console.log(`   ✅ REAL: ${opp.betSide} ${tokenName} ${filledCount}x@${betRecord.avgPrice}¢ | Edge:+${opp.edge.toFixed(1)}%`);
+            betsPlaced++;
+            totalBetAmount += betRecord.totalCost;
+            betResults.push({ ticker: opp.ticker, side: opp.betSide, count: filledCount, price: betRecord.avgPrice, edge: opp.edge });
+          } else {
+            console.log(`   ❌ ${tokenName}: No fill`);
+            recentBets.delete(opp.ticker);
+          }
+        } catch (orderError) {
+          console.log(`   ❌ ${tokenName}: ${orderError.message}`);
+          recentBets.delete(opp.ticker);
+        }
+      }
+
+      // Small delay between orders to avoid rate limiting
+      if (config.isAuthenticated && betsPlaced < opportunities.length - 1) {
+        await new Promise(r => setTimeout(r, 200));
+      }
     }
 
-    // Real bet - use limit order slightly above ask to ensure fill
-    const fillPrice = Math.min(priceCents + 2, 99);
+    // Update balance after all bets
+    if (config.isAuthenticated && betsPlaced > 0) {
+      try {
+        const balanceData = await kalshiRequest('GET', '/portfolio/balance');
+        config.bankroll = balanceData.balance || 0;
+      } catch (e) {}
+    }
 
-    console.log(`\n💸 PLACING REAL BET...`);
-    const orderRequest = {
-      ticker: best.ticker,
-      action: 'buy',
-      side: best.betSide.toLowerCase(),
-      type: 'limit',
-      count
-    };
-
-    // Add the appropriate price field based on side
-    if (best.betSide.toLowerCase() === 'yes') {
-      orderRequest.yes_price = fillPrice;
+    // Update scan status
+    if (betsPlaced > 0) {
+      lastScanStatus.betPlaced = true;
+      lastScanStatus.blockedReason = null;
+      lastScanStatus.betDetails = {
+        count: betsPlaced,
+        totalAmount: totalBetAmount,
+        bets: betResults
+      };
+      console.log(`\n🎯 PLACED ${betsPlaced} BETS | Total: $${(totalBetAmount/100).toFixed(2)} | Balance: $${(config.bankroll/100).toFixed(2)}`);
     } else {
-      orderRequest.no_price = fillPrice;
-    }
-    console.log(`   Order (ask: ${priceCents}¢, bid: ${fillPrice}¢): ${JSON.stringify(orderRequest)}`);
-
-    const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
-    console.log(`   Response: ${JSON.stringify(orderResponse)}`);
-
-    const order = orderResponse.order;
-    if (!order) {
-      console.error('❌ No order in response');
-      recentBets.delete(best.ticker);
-      console.log('========================================\n');
-      return;
+      lastScanStatus.blockedReason = 'limits_reached';
+      lastScanStatus.bestOpportunity = {
+        title: opportunities[0]?.title,
+        winProbability: opportunities[0]?.winProbability,
+        edge: opportunities[0]?.edge,
+        reason: 'All opportunities blocked by limits'
+      };
     }
 
-    // Check if order was filled
-    const status = order.status;
-    const filledCount = order.filled_count || 0;
-
-    if (filledCount === 0) {
-      console.error(`❌ Order not filled. Status: ${status}. No liquidity.`);
-      recentBets.delete(best.ticker);
-      console.log('========================================\n');
-      return;
-    }
-
-    // Update bet record with actual fill info
-    betRecord.status = status === 'filled' ? 'filled' : 'partial';
-    betRecord.orderId = order.order_id;
-    betRecord.filledCount = filledCount;
-    betRecord.avgPrice = order.average_fill_price || priceCents;
-    betRecord.totalCost = filledCount * (order.average_fill_price || priceCents);
-    betHistory.unshift(betRecord);
-
-    // Track for performance analysis
-    trackBet({
-      ...betRecord,
-      count: filledCount,
-      token: best.assetType || best.cryptoType || getTokenFromTicker(best.ticker),
-      predictedProb: parseFloat(best.winProbability),
-      marketPrice: betRecord.avgPrice,
-      strikePrice: best.strikePrice,
-      currentPrice: best.currentPrice,
-      marketType: isHourlyMarket(best.ticker) ? 'hourly' : best.ticker?.includes('15M') ? '15min' : 'daily',
-      expiryTime: best.expiry || best.close_time
-    });
-
-    const balanceData = await kalshiRequest('GET', '/portfolio/balance');
-    config.bankroll = balanceData.balance || 0;
-
-    // Update scan status for successful bet
-    lastScanStatus.betPlaced = true;
-    lastScanStatus.blockedReason = null;
-    lastScanStatus.betDetails = {
-      ticker: best.ticker,
-      title: best.title,
-      side: betRecord.side,
-      contracts: filledCount,
-      priceCents: betRecord.avgPrice,
-      totalCostCents: betRecord.totalCost,
-      winProbability: best.winProbability,
-      edge: best.edge
-    };
-
-    console.log(`\n✅ REAL BET FILLED:`);
-    console.log(`   ${betRecord.side.toUpperCase()} on ${best.cryptoType || best.assetType}`);
-    console.log(`   ${filledCount} contracts @ ${betRecord.avgPrice}¢`);
-    console.log(`   Edge: +${best.edge.toFixed(1)}% | New balance: $${(config.bankroll/100).toFixed(2)}`);
     console.log('========================================\n');
 
   } catch (error) {
