@@ -1124,6 +1124,88 @@ function calculateMomentum(history, lookbackMinutes = 5) {
   };
 }
 
+// ============================================
+// MOMENTUM BETTING SIGNAL - Our actual edge
+// ============================================
+// For 15-min markets: follow recent momentum
+// This is simpler and more profitable than complex probability models
+
+function getMomentumBetSignal(token) {
+  const history = priceHistoryExtended[token];
+  if (!history || history.length < 15) {
+    return { shouldBet: false, reason: 'insufficient_data' };
+  }
+
+  const now = Date.now();
+  const latest = history[history.length - 1];
+  if (!latest || now - latest.time > 60000) {
+    return { shouldBet: false, reason: 'stale_data' };
+  }
+
+  const latestPrice = latest.price;
+
+  // Find prices at specific times ago
+  const findPriceAt = (secondsAgo) => {
+    const targetTime = now - (secondsAgo * 1000);
+    let closest = history[0];
+    let minDiff = Math.abs(history[0].time - targetTime);
+    for (const p of history) {
+      const diff = Math.abs(p.time - targetTime);
+      if (diff < minDiff) {
+        minDiff = diff;
+        closest = p;
+      }
+    }
+    return closest.price;
+  };
+
+  // Short-term returns (what we actually trade on)
+  const price1min = findPriceAt(60);
+  const price2min = findPriceAt(120);
+  const price3min = findPriceAt(180);
+  const price5min = findPriceAt(300);
+
+  const ret1 = ((latestPrice - price1min) / price1min) * 100;
+  const ret2 = ((latestPrice - price2min) / price2min) * 100;
+  const ret3 = ((latestPrice - price3min) / price3min) * 100;
+  const ret5 = ((latestPrice - price5min) / price5min) * 100;
+
+  // Check for aligned momentum (all timeframes agree)
+  const allUp = ret1 > 0.03 && ret2 > 0.05 && ret3 > 0.08;
+  const allDown = ret1 < -0.03 && ret2 < -0.05 && ret3 < -0.08;
+
+  // Strong signal: aligned + meaningful move
+  if (allUp && ret3 >= 0.12) {
+    const confidence = ret3 >= 0.25 ? 'very_high' : ret3 >= 0.18 ? 'high' : 'medium';
+    return {
+      shouldBet: true,
+      side: 'YES',
+      confidence,
+      momentum: { ret1, ret2, ret3, ret5 },
+      reason: `Strong UP momentum: ${ret3.toFixed(2)}% in 3min`
+    };
+  }
+
+  if (allDown && ret3 <= -0.12) {
+    const confidence = ret3 <= -0.25 ? 'very_high' : ret3 <= -0.18 ? 'high' : 'medium';
+    return {
+      shouldBet: true,
+      side: 'NO',
+      confidence,
+      momentum: { ret1, ret2, ret3, ret5 },
+      reason: `Strong DOWN momentum: ${ret3.toFixed(2)}% in 3min`
+    };
+  }
+
+  // No clear signal
+  return {
+    shouldBet: false,
+    side: null,
+    momentum: { ret1, ret2, ret3, ret5 },
+    reason: `No aligned momentum (1m:${ret1.toFixed(2)}% 3m:${ret3.toFixed(2)}%)`
+  };
+}
+
 // Multi-timeframe momentum scoring
 // Track price momentum over 5min, 15min, and 60min
 function calculateMomentumMultiTimeframe(history) {
@@ -2598,195 +2680,102 @@ function parseMarket(market) {
   };
 }
 
-// Analyze market and find the SAFEST side to bet (highest win probability)
+// Analyze market using MOMENTUM STRATEGY
+// Simple: follow recent price direction for 15-min markets
 function analyzeCryptoMarket(parsed) {
-  // Debug: log why markets are rejected
-  if (!parsed.cryptoType) {
-    console.log(`   ❌ Rejected: No crypto type detected for ${parsed.ticker}`);
-    return null;
-  }
-  if (!parsed.strikePrice) {
-    console.log(`   ❌ Rejected ${parsed.cryptoType}: No strike price (title: ${parsed.title?.substring(0, 40)})`);
-    return null;
-  }
-  if (!parsed.marketType) {
-    console.log(`   ❌ Rejected ${parsed.cryptoType}: No market type (above/below) detected`);
-    return null;
-  }
-  if (parsed.marketType === 'between') {
-    return null; // Silently skip between markets
-  }
+  if (!parsed.cryptoType) return null;
+  if (!parsed.marketType || parsed.marketType === 'between') return null;
 
   const priceData = cryptoPrices[parsed.cryptoType];
-  if (!priceData || !priceData.price) {
-    return null;
-  }
+  if (!priceData || !priceData.price) return null;
 
   const currentPrice = priceData.price;
-  const volatility = priceData.volatility;
   const timeMinutes = parsed.timeRemainingMinutes || 15;
 
-  // Calculate how far price is from strike
-  const pctFromStrike = ((currentPrice - parsed.strikePrice) / parsed.strikePrice) * 100;
+  // Get MOMENTUM SIGNAL - this is our edge
+  const signal = getMomentumBetSignal(parsed.cryptoType);
 
-  // USE STATISTICAL PREDICTION ENGINE
-  // This analyzes historical data, momentum, and volatility
-  const prediction = predictOutcome(
-    parsed.cryptoType,
-    currentPrice,
-    parsed.strikePrice,
-    timeMinutes
-  );
+  // If no momentum signal, check if we should still analyze based on price position
+  if (!signal.shouldBet) {
+    // Still return opportunity for display, but mark as low confidence
+    const yesPrice = parsed.yesAsk || 0.5;
+    const noPrice = parsed.noAsk || 0.5;
 
-  // BULLETPROOF PROBABILITY CALCULATION
-  // Calculate simple distance-based probability as fallback
-  const pctDist = currentPrice && parsed.strikePrice ?
-    (currentPrice - parsed.strikePrice) / parsed.strikePrice : 0;
-  const fallbackProb = Math.max(0.25, Math.min(0.75, 0.5 + (pctDist * 8)));
-
-  // Try to use prediction, but fall back if NaN
-  let probAbove = prediction?.probAbove;
-  let probBelow = prediction?.probBelow;
-
-  // Force fallback if anything is wrong
-  if (!probAbove || !probBelow || isNaN(probAbove) || isNaN(probBelow) ||
-      probAbove < 0 || probAbove > 1 || probBelow < 0 || probBelow > 1) {
-    probAbove = fallbackProb;
-    probBelow = 1 - fallbackProb;
-    console.log(`   📊 Using fallback prob for ${parsed.cryptoType}: ${(probAbove*100).toFixed(0)}% (dist: ${(pctDist*100).toFixed(2)}%)`);
+    return {
+      ticker: parsed.ticker,
+      title: parsed.title,
+      cryptoType: parsed.cryptoType,
+      assetType: parsed.cryptoType,
+      marketType: parsed.marketType,
+      currentPrice,
+      strikePrice: parsed.strikePrice || currentPrice,
+      timeRemaining: parsed.timeRemaining,
+      timeRemainingMinutes: timeMinutes,
+      timeRemainingFormatted: formatTime(parsed.timeRemaining),
+      yesAsk: yesPrice,
+      noAsk: noPrice,
+      // No clear bet recommendation
+      betSide: null,
+      betPrice: null,
+      winProbability: 50,
+      edge: 0,
+      expectedValue: 0,
+      isRecommended: false,
+      momentumSignal: signal,
+      reason: signal.reason
+    };
   }
 
-  // For "above/up" markets: YES wins if price >= strike at expiry
-  // For "below/down" markets: YES wins if price < strike at expiry
-  let probYesWins, probNoWins;
-  if (parsed.marketType === 'above') {
-    probYesWins = probAbove;
-    probNoWins = probBelow;
+  // We have a momentum signal! Determine bet
+  const betSide = signal.side; // 'YES' or 'NO'
+  const betPrice = betSide === 'YES' ? (parsed.yesAsk || 0.5) : (parsed.noAsk || 0.5);
+  const betPriceCents = Math.round(betPrice * 100);
+
+  // For momentum strategy, probability is based on signal confidence
+  let winProbability;
+  if (signal.confidence === 'very_high') {
+    winProbability = 68;
+  } else if (signal.confidence === 'high') {
+    winProbability = 62;
   } else {
-    probYesWins = probBelow;
-    probNoWins = probAbove;
+    winProbability = 56;
   }
 
-  // SKIP CALIBRATION FOR NOW - it might be causing issues
-  // Just use the raw probabilities
-  const marketType = parsed.ticker?.includes('1H') ? 'hourly' :
-                     parsed.ticker?.includes('15M') ? '15min' : 'daily';
+  // Edge = our probability - market price
+  const edge = winProbability - betPriceCents;
 
-  // Final NaN safety - use 0.5 as absolute fallback
-  if (isNaN(probYesWins) || probYesWins === undefined) probYesWins = 0.5;
-  if (isNaN(probNoWins) || probNoWins === undefined) probNoWins = 0.5;
-
-  // Market implied probabilities from ask prices
-  const marketProbYes = parsed.yesAsk;
-  const marketProbNo = parsed.noAsk;
-
-  // Calculate edge for BOTH sides
-  const yesEdge = (probYesWins - marketProbYes) * 100;
-  const noEdge = (probNoWins - marketProbNo) * 100;
-
-  // Build analysis description
-  const momentumDesc = prediction.momentum.direction === 'up' ? '📈 UP' :
-                       prediction.momentum.direction === 'down' ? '📉 DOWN' : '➡️ flat';
-  const timeDesc = prediction.analysis.timeDecayApplied ? '⏰ time decay' : '';
-
-  // ============================================
-  // SAFETY-FIRST BET SELECTION
-  // ============================================
-  // Strategy: Pick the side with HIGHEST WIN PROBABILITY
-  // Only requirement: must have SOME positive edge (>0.5%)
-  // We don't care about profit size - we want SAFE wins
-
-  let bestBet = null;
-
-  // Evaluate YES side
-  const yesValid = parsed.yesAsk > 0 && parsed.yesAsk < 0.98 && yesEdge > 0.5;
-  // Evaluate NO side
-  const noValid = parsed.noAsk > 0 && parsed.noAsk < 0.98 && noEdge > 0.5;
-
-  // Pick the side with HIGHER WIN PROBABILITY (safest bet)
-  if (yesValid && noValid) {
-    // Both sides have positive edge - pick the one with higher probability
-    if (probYesWins >= probNoWins) {
-      bestBet = { side: 'YES', edge: yesEdge, prob: probYesWins, price: parsed.yesAsk };
-    } else {
-      bestBet = { side: 'NO', edge: noEdge, prob: probNoWins, price: parsed.noAsk };
-    }
-  } else if (yesValid) {
-    bestBet = { side: 'YES', edge: yesEdge, prob: probYesWins, price: parsed.yesAsk };
-  } else if (noValid) {
-    bestBet = { side: 'NO', edge: noEdge, prob: probNoWins, price: parsed.noAsk };
-  }
-
-  // No valid bet found - log why for high-priced markets
-  if (!bestBet) {
-    // Log markets where prices are too high for our model
-    const maxPrice = Math.max(parsed.yesAsk || 0, parsed.noAsk || 0);
-    if (maxPrice > 0.75) {
-      console.log(`   ⚠️ Skipped ${parsed.cryptoType} market: YES@${Math.round((parsed.yesAsk||0)*100)}¢ NO@${Math.round((parsed.noAsk||0)*100)}¢ | Our prob: ${(probYesWins*100).toFixed(0)}% | Need >${Math.round(maxPrice*100)}% to bet`);
-    }
-    return null;
-  }
-
-  // Determine if this is a "safe" bet (high confidence)
-  const isHighProb = bestBet.prob >= 0.60;
-  const isSafeBet = bestBet.prob >= 0.70;
-
-  // Build reason string
-  const probPct = (bestBet.prob * 100).toFixed(0);
-  const betReason = `${momentumDesc} ${timeDesc} | ${probPct}% win prob`;
-
-  // Calculate profit for $1 worth of contracts
-  // E.g., if price is 50¢, we buy 2 contracts. If we win, each pays $1, so profit = 2×$1 - $1 = $1 (100¢)
-  const priceCents = Math.round(bestBet.price * 100);
-  const contractsFor1Dollar = Math.floor(100 / priceCents);
-  const totalCostCents = contractsFor1Dollar * priceCents;
-  const feeCents = calculateKalshiFee(contractsFor1Dollar, bestBet.price);
-  const payoutIfWinCents = contractsFor1Dollar * 100; // Each contract pays $1
-  const profitIfWinCents = payoutIfWinCents - totalCostCents - feeCents;
-
-  // Expected profit accounting for probability (include fee in both win and loss)
-  const expectedProfit = (bestBet.prob * profitIfWinCents - (1 - bestBet.prob) * (totalCostCents + feeCents));
-  const profitPotential = (profitIfWinCents / totalCostCents) * 100;
-
-  // Fixed bet amount ($1) for sustainable growth
-  const recommendedBet = 100; // Always $1
+  // Expected value
+  const potentialWin = 100 - betPriceCents;
+  const ev = (winProbability / 100) * potentialWin - ((100 - winProbability) / 100) * betPriceCents;
 
   return {
-    ...parsed,
+    ticker: parsed.ticker,
+    title: parsed.title,
+    cryptoType: parsed.cryptoType,
+    assetType: parsed.cryptoType,
+    marketType: parsed.marketType,
     currentPrice,
-    volatility: (volatility * 100).toFixed(2) + '%',
-    pctFromStrike: pctFromStrike.toFixed(2),
-    zScore: prediction.zScore.toFixed(2),
-    probYesWins: probYesWins * 100,
-    probNoWins: probNoWins * 100,
-    ourProbability: bestBet.prob * 100,
-    winProbability: (bestBet.prob * 100).toFixed(1),
-    marketImpliedProb: bestBet.price * 100,
-    yesEdge,
-    noEdge,
-    edge: bestBet.edge,
-    betSide: bestBet.side,
-    betPrice: bestBet.price,
-    betPriceCents: priceCents,
-    contractsFor1Dollar,
-    feeCents,
-    betReason,
-    profitIfWin: profitIfWinCents, // Total profit in cents for $1 bet (after fees)
-    expectedProfit: expectedProfit.toFixed(1),
-    profitPotential,
-    recommendedBet,
-    isObviousBet: isSafeBet || (prediction.ensemble?.isObviousBet && bestBet.prob >= 0.75),
-    isHighProb,
-    maxProbAllowed: prediction.ensemble?.maxProbAllowed || 0.80,
-    // Statistical analysis info
-    momentum: prediction.momentum.direction,
-    momentumStrength: prediction.momentum.strength,
-    confidence: (prediction.confidence * 100).toFixed(0) + '%',
-    dataPoints: prediction.dataPoints,
-    analysisMethod: prediction.analysis.method,
-    timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining)
+    strikePrice: parsed.strikePrice || currentPrice,
+    timeRemaining: parsed.timeRemaining,
+    timeRemainingMinutes: timeMinutes,
+    timeRemainingFormatted: formatTime(parsed.timeRemaining),
+    yesAsk: parsed.yesAsk,
+    noAsk: parsed.noAsk,
+    betPriceCents,
+    // Momentum-based bet recommendation
+    betSide,
+    betPrice,
+    winProbability: winProbability.toFixed(1),
+    edge: edge,
+    expectedValue: ev.toFixed(2),
+    isRecommended: edge >= 5,
+    momentumSignal: signal,
+    shortMomentum: signal.momentum,
+    hasStrongMomentumSignal: true,
+    reason: signal.reason
   };
 }
+
 
 // Calculate Kalshi taker fee
 // Formula: ceil(0.07 × contracts × price × (1 - price))
