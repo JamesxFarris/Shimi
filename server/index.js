@@ -2844,10 +2844,14 @@ function analyzeCryptoMarket(parsed) {
   const ev = (ourProbability / 100) * potentialWin - ((100 - ourProbability) / 100) * betPriceCents;
 
   // === SAFE vs DEGEN ===
-  // SAFE: positive edge with reasonable price (auto-bet will place these)
-  // DEGEN: low price (<40¢) = risky long shot, manual only
-  const isSafe = edge > 0 && betPriceCents >= 40;
-  const isDegen = edge > 0 && betPriceCents < 40; // Long shots - manual only
+  // SAFE: Auto-bet will place these. Requirements:
+  //   - Positive edge
+  //   - Price >= 40¢ (not a long shot)
+  //   - Time <= 8 minutes (don't bet too early - too much can change)
+  //   - Medium+ confidence (score >= 2)
+  // DEGEN: Manual only - too risky for auto
+  const isSafe = edge > 0 && betPriceCents >= 40 && timeMinutes <= 8 && score >= 2;
+  const isDegen = edge > 0 && !isSafe; // Everything else with edge is manual only
 
   // Build reason string
   const dirStr = isAboveStrike ? 'above' : 'below';
@@ -4240,11 +4244,11 @@ async function runAutoBet() {
     const degenOpportunities = opportunities.filter(o => o.isDegen);
 
     if (degenOpportunities.length > 0) {
-      console.log(`   🎲 ${degenOpportunities.length} DEGEN bets (<40¢ long shots, manual only)`);
+      console.log(`   🎲 ${degenOpportunities.length} DEGEN bets (too early, low confidence, or <40¢ - manual only)`);
     }
 
     if (safeOpportunities.length === 0 && opportunities.length > 0) {
-      console.log('   📊 Only long-shot bets available (manual only)');
+      console.log('   📊 Only DEGEN bets available (manual only)');
       lastScanStatus.blockedReason = 'degen_only';
       console.log('========================================\n');
       return;
@@ -4257,7 +4261,7 @@ async function runAutoBet() {
       return;
     }
 
-    console.log(`   ✅ ${safeOpportunities.length} bets to place (edge > 0, price >= 40¢)`);
+    console.log(`   ✅ ${safeOpportunities.length} SAFE bets (edge>0, price>=40¢, time<=8min, confidence>=medium)`);
 
     for (const opp of safeOpportunities) {
       const tokenName = getTokenFromTicker(opp.ticker) || opp.assetType || opp.cryptoType || 'token';
@@ -4411,7 +4415,9 @@ async function runAutoBet() {
                   console.log(`   ⚠️ ${tokenName}: No liquidity for ${finalSide.toUpperCase()}, opposite edge too low (${oppositeEdge.toFixed(1)}%)`);
                 }
               } else {
-                console.log(`   ⚠️ ${tokenName}: No liquidity on either side`);
+                // No liquidity shown in orderbook, but market exists - try anyway
+                console.log(`   ⚠️ ${tokenName}: Orderbook empty, trying anyway with market price`);
+                hasLiquidity = true; // Try anyway - Kalshi may have hidden liquidity
               }
             }
           } catch (obErr) {
@@ -4420,10 +4426,10 @@ async function runAutoBet() {
             hasLiquidity = true; // Try anyway
           }
 
+          // Always try to place the bet - worst case it gets rejected
           if (!hasLiquidity) {
-            console.log(`   ❌ ${tokenName}: Skipped - no liquidity`);
-            recentBets.delete(opp.ticker);
-            continue;
+            hasLiquidity = true; // Try anyway
+            console.log(`   ℹ️ ${tokenName}: Proceeding despite liquidity uncertainty`);
           }
 
           // Use best ask + buffer to ensure fill
