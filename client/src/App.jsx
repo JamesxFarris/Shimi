@@ -899,27 +899,25 @@ function App() {
               <div className="top-opportunities">
                 <div className="section-header">
                   <h3 className="section-title">Top Opportunities</h3>
-                  <button className="view-all-btn" onClick={() => setTab('opportunities')}>
-                    View All →
-                  </button>
+                  {opportunities.length > 0 && (
+                    <button className="view-all-btn" onClick={() => setTab('opportunities')}>
+                      View All →
+                    </button>
+                  )}
                 </div>
 
-                {loading && (
+                {loading ? (
                   <div className="loading-state">
                     <div className="spinner"></div>
                     <p>Scanning crypto markets...</p>
                   </div>
-                )}
-
-                {!loading && opportunities.length === 0 && (
+                ) : opportunities.length === 0 ? (
                   <div className="empty-state">
                     <span className="empty-icon">🔍</span>
-                    <p>No opportunities with edge found</p>
-                    <span className="empty-hint">Waiting for price mispricings...</span>
+                    <h3>No opportunities with edge found</h3>
+                    <p>Waiting for price mispricings...</p>
                   </div>
-                )}
-
-                {!loading && opportunities.length > 0 && (
+                ) : (
                   <div className="opportunities-preview">
                     {opportunities.slice(0, 3).map(opp => (
                       <OpportunityCard
