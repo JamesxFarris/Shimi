@@ -1108,6 +1108,88 @@ body {
   box-shadow: 0 12px 40px rgba(0, 255, 136, 0.25);
 }
 
+/* Locked Card - MK Character Select Style */
+.opp-card.locked {
+  border-color: rgba(100, 100, 120, 0.3);
+  background: linear-gradient(145deg, rgba(15, 15, 25, 0.98) 0%, rgba(10, 10, 20, 0.99) 100%);
+}
+
+.opp-card.locked::before {
+  background: none;
+}
+
+.opp-card.locked:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: rgba(100, 100, 120, 0.4);
+}
+
+.opp-card.locked .stacked-stats,
+.opp-card.locked .opp-header {
+  filter: grayscale(80%) brightness(0.5);
+}
+
+.locked-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.smoke-effect {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 30% 20%, rgba(60, 60, 80, 0.4) 0%, transparent 50%),
+    radial-gradient(ellipse at 70% 60%, rgba(40, 40, 60, 0.5) 0%, transparent 50%),
+    radial-gradient(ellipse at 50% 80%, rgba(50, 50, 70, 0.3) 0%, transparent 40%);
+  animation: smokeFlow 8s ease-in-out infinite;
+}
+
+@keyframes smokeFlow {
+  0%, 100% {
+    opacity: 0.7;
+    transform: scale(1) translateY(0);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.02) translateY(-2px);
+  }
+}
+
+.locked-icon {
+  font-size: 28px;
+  margin-bottom: 8px;
+  filter: drop-shadow(0 0 10px rgba(0, 0, 0, 0.8));
+  animation: lockPulse 2s ease-in-out infinite;
+}
+
+@keyframes lockPulse {
+  0%, 100% { transform: scale(1); opacity: 0.8; }
+  50% { transform: scale(1.1); opacity: 1; }
+}
+
+.locked-text {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: rgba(150, 150, 170, 0.9);
+  text-shadow: 0 0 10px rgba(0, 0, 0, 0.8);
+  text-transform: uppercase;
+}
+
+.opp-card.locked .bet-btn {
+  background: rgba(40, 40, 50, 0.8);
+  color: rgba(100, 100, 120, 0.8);
+  border-color: rgba(60, 60, 80, 0.5);
+  cursor: not-allowed;
+}
+
 /* Card Header */
 .opp-header {
   display: flex;

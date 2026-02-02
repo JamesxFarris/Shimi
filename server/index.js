@@ -3098,10 +3098,60 @@ app.get('/api/opportunities/all', async (req, res) => {
     // Combine all analyzed markets
     const allAnalyzed = [...cryptoOpps, ...indexOpps];
 
-    // Filter to recommended only (unless showAll=true)
-    const allOpportunities = showAll
-      ? allAnalyzed.sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability))
-      : allAnalyzed.filter(m => m.isRecommended).sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
+    // ALWAYS include BTC, ETH, SOL - mark as "locked" if no edge
+    const coreTokens = ['BTC', 'ETH', 'SOL'];
+    const coreMarkets = [];
+
+    for (const token of coreTokens) {
+      // Find the best market for this token (prefer 15min)
+      const tokenMarket = cryptoOpps.find(m => m.cryptoType === token || m.assetType === token);
+
+      if (tokenMarket) {
+        // Market exists - mark as locked if not recommended
+        tokenMarket.isLocked = !tokenMarket.isRecommended;
+        tokenMarket.isCore = true;
+        coreMarkets.push(tokenMarket);
+      } else {
+        // No market found - create placeholder
+        const price = cryptoPrices[token]?.price || 0;
+        coreMarkets.push({
+          ticker: `KX${token}15M-PLACEHOLDER`,
+          title: `${token} price prediction`,
+          cryptoType: token,
+          assetType: token,
+          marketCategory: 'crypto',
+          currentPrice: price,
+          strikePrice: price,
+          timeRemaining: 0,
+          timeRemainingFormatted: 'No market',
+          winProbability: 50,
+          edge: 0,
+          betSide: null,
+          isRecommended: false,
+          isLocked: true,
+          isCore: true,
+          isPlaceholder: true,
+          filterReason: 'No active market'
+        });
+      }
+    }
+
+    // Filter to recommended only (unless showAll=true), but always include core markets
+    const recommendedOpps = allAnalyzed.filter(m => m.isRecommended);
+    const nonCoreRecommended = recommendedOpps.filter(m => !coreTokens.includes(m.cryptoType) && !coreTokens.includes(m.assetType));
+
+    // Core markets first (BTC, ETH, SOL), then other recommended
+    const allOpportunities = [...coreMarkets, ...nonCoreRecommended]
+      .sort((a, b) => {
+        // Core markets first
+        if (a.isCore && !b.isCore) return -1;
+        if (!a.isCore && b.isCore) return 1;
+        // Then by recommended status
+        if (a.isRecommended && !b.isRecommended) return -1;
+        if (!a.isRecommended && b.isRecommended) return 1;
+        // Then by probability
+        return parseFloat(b.winProbability) - parseFloat(a.winProbability);
+      });
 
     // Refresh positions before calculating risk
     if (config.isAuthenticated) {

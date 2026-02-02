@@ -53,10 +53,20 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
   const config = ASSET_CONFIG[assetType] || { color: '#888', name: assetType, icon: '?' }
   const isIndex = opp.marketCategory === 'index'
   const notRecommended = opp.isRecommended === false
+  const isLocked = opp.isLocked === true
   const pctFromStrike = parseFloat(opp.pctFromStrike) || 0
 
   return (
-    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''} ${notRecommended ? 'no-edge' : ''}`}>
+    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''} ${notRecommended ? 'no-edge' : ''} ${isLocked ? 'locked' : ''}`}>
+      {/* Locked smoke overlay */}
+      {isLocked && (
+        <div className="locked-overlay">
+          <div className="smoke-effect"></div>
+          <div className="locked-icon">🔒</div>
+          <div className="locked-text">WAITING FOR SIGNAL</div>
+        </div>
+      )}
+
       {/* Header: Token + Time */}
       <div className="opp-header">
         <div className="opp-token">
@@ -70,7 +80,7 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
         </div>
         <div className="opp-meta">
           {opp.isObviousBet && !notRecommended && <span className="high-conf-dot" title="High Confidence"></span>}
-          <span className="time-badge">{opp.timeRemainingFormatted}</span>
+          <span className="time-badge">{opp.timeRemainingFormatted || 'Scanning...'}</span>
         </div>
       </div>
 
@@ -79,28 +89,26 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
         {/* Win Probability - Most Important */}
         <div className="stat-row win-prob">
           <span className="stat-label">Win Probability</span>
-          <span className="stat-value">{opp.winProbability}%</span>
+          <span className="stat-value">{opp.winProbability || '--'}%</span>
         </div>
 
         {/* Edge */}
         <div className="stat-row edge">
           <span className="stat-label">Your Edge</span>
-          <span className="stat-value">+{formatPercent(opp.edge)}%</span>
+          <span className="stat-value">{opp.edge > 0 ? '+' : ''}{formatPercent(opp.edge || 0)}%</span>
         </div>
 
         {/* Price vs Strike */}
         <div className={`stat-row distance ${pctFromStrike >= 0 ? 'above' : 'below'}`}>
           <span className="stat-label">Distance from Strike</span>
-          <span className="stat-value">{pctFromStrike >= 0 ? '+' : ''}{opp.pctFromStrike}%</span>
+          <span className="stat-value">{pctFromStrike >= 0 ? '+' : ''}{opp.pctFromStrike || '0.00'}%</span>
         </div>
 
         {/* Current → Strike */}
         <div className="stat-row prices">
-          <span className="stat-label">Current → Strike</span>
+          <span className="stat-label">Current Price</span>
           <span className="stat-value price-comparison">
             {formatPrice(opp.currentPrice, opp.cryptoType)}
-            <span className={`arrow ${pctFromStrike >= 0 ? 'up' : 'down'}`}>{pctFromStrike >= 0 ? '↑' : '↓'}</span>
-            {formatPrice(opp.strikePrice, opp.cryptoType)}
           </span>
         </div>
       </div>
@@ -109,9 +117,9 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
       <button
         className={`bet-btn ${isPlacing ? 'loading' : ''} ${opp.betSide?.toLowerCase()} ${notRecommended ? 'disabled-no-edge' : ''}`}
         onClick={() => onBet(opp)}
-        disabled={isPlacing || notRecommended}
+        disabled={isPlacing || notRecommended || isLocked}
       >
-        {isPlacing ? 'Placing...' : notRecommended ? `${opp.filterReason}` : `BET ${opp.betSide} @ ${opp.betPriceCents || Math.round(opp.betPrice * 100)}¢`}
+        {isPlacing ? 'Placing...' : isLocked ? (opp.filterReason || 'No signal') : notRecommended ? `${opp.filterReason}` : `BET ${opp.betSide} @ ${opp.betPriceCents || Math.round(opp.betPrice * 100)}¢`}
       </button>
     </div>
   )
