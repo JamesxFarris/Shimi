@@ -245,7 +245,10 @@ const HistoryItem = ({ bet, currentTime }) => {
       {/* Bet Details */}
       <div className="bet-details">
         <div className="bet-market">
-          <span className="bet-title">{bet.title}</span>
+          <span className="bet-title">
+            {bet.title}
+            {bet.isScaleIn && <span className="scale-in-badge">Scale #{bet.scaleInNumber}</span>}
+          </span>
           <span className="bet-time">{new Date(bet.timestamp).toLocaleString()}</span>
         </div>
         <div className="bet-info-row">
@@ -277,7 +280,7 @@ const HistoryItem = ({ bet, currentTime }) => {
       </div>
     </div>
   )
-})
+}
 
 // Stats Card
 const StatsCard = ({ title, value, subtitle, icon, color }) => (
@@ -323,6 +326,12 @@ function App() {
   const [riskSettings, setRiskSettings] = useState({
     hourly: { maxPerBet: 200, maxTotal: 500 },
     other: { maxPerBet: 200, maxTotal: 1000 }
+  })
+  const [scaleInSettings, setScaleInSettings] = useState({
+    enabled: true,
+    minProbabilityIncrease: 15,
+    maxBetsPerMarket: 3,
+    minTimeBetweenBets: 60000
   })
   const [settingsSaved, setSettingsSaved] = useState(false)
   const [marketFilter, setMarketFilter] = useState('all') // 'all', 'crypto', 'index'
@@ -622,6 +631,34 @@ function App() {
     }
   }
 
+  // Update local scale-in settings state
+  const updateScaleInSettings = (field, value) => {
+    setSettingsSaved(false)
+    setScaleInSettings(prev => ({
+      ...prev,
+      [field]: value
+    }))
+  }
+
+  // Save scale-in settings to server
+  const saveScaleInSettings = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/settings/scale-in`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(scaleInSettings)
+      })
+      const data = await res.json()
+      if (data.success) {
+        setScaleInSettings(data.scaleIn)
+        setSettingsSaved(true)
+        setTimeout(() => setSettingsSaved(false), 3000)
+      }
+    } catch (err) {
+      console.error('Error saving scale-in settings:', err)
+    }
+  }
+
   // Auth handlers
   const handleAuth = async (e) => {
     e.preventDefault()
@@ -752,31 +789,36 @@ function App() {
           </div>
         </header>
 
-        {/* Price Ticker */}
+        {/* Price Ticker - Wall Street Style */}
         <div className="price-ticker-container">
           <div className="price-ticker">
-            {Object.entries(prices)
-              .filter(([_, p]) => p > 0)
-              .sort(([a], [b]) => {
-                const order = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK', 'MATIC', 'DOT', 'SHIB', 'LTC', 'UNI', 'ATOM', 'APT']
-                return order.indexOf(a) - order.indexOf(b)
-              })
-              .map(([token, price]) => (
-                <PriceTickerItem
-                  key={`${token}-${price}`}
-                  token={token}
-                  price={price}
-                  prevPrice={prevPrices[token]}
-                />
-              ))}
+            {/* Duplicate items for seamless loop */}
+            {[...Array(2)].map((_, dupeIndex) =>
+              Object.entries(prices)
+                .filter(([_, p]) => p > 0)
+                .sort(([a], [b]) => {
+                  const order = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK', 'MATIC', 'DOT', 'SHIB', 'LTC', 'UNI', 'ATOM', 'APT']
+                  return order.indexOf(a) - order.indexOf(b)
+                })
+                .map(([token, price]) => (
+                  <PriceTickerItem
+                    key={`${token}-${dupeIndex}`}
+                    token={token}
+                    price={price}
+                    prevPrice={prevPrices[token]}
+                  />
+                ))
+            )}
           </div>
           <div className="ticker-fade-left"></div>
           <div className="ticker-fade-right"></div>
           <div className="ticker-status">
             <span className={`status-indicator ${priceLastUpdated ? 'live' : ''}`}></span>
             <span className="status-text">
-              {Object.keys(prices).filter(k => prices[k] > 0).length} tokens
-              {priceLastUpdated && ` • ${Math.floor((tickerTime - priceLastUpdated) / 1000)}s ago`}
+              {Object.keys(prices).filter(k => prices[k] > 0).length > 0
+                ? `${Object.keys(prices).filter(k => prices[k] > 0).length} LIVE`
+                : 'Loading prices...'}
+              {priceLastUpdated && ` • ${Math.floor((tickerTime - priceLastUpdated) / 1000)}s`}
             </span>
           </div>
         </div>
@@ -1320,7 +1362,59 @@ function App() {
                     </div>
                   </div>
                   <button className={`save-settings-btn ${settingsSaved ? 'saved' : ''}`} onClick={saveRiskSettings}>
-                    {settingsSaved ? '✓ Saved' : 'Save Settings'}
+                    {settingsSaved ? '✓ Saved' : 'Save Risk Settings'}
+                  </button>
+                </div>
+
+                {/* Scale-In Settings */}
+                <div className="settings-card">
+                  <h3 className="settings-card-title">Scale-In Strategy</h3>
+                  <p className="settings-description">Add to positions when probability improves (Kelly-inspired scaling)</p>
+                  <div className="scale-in-settings">
+                    <div className="settings-input-group">
+                      <label>Enabled</label>
+                      <input
+                        type="checkbox"
+                        checked={scaleInSettings.enabled}
+                        onChange={(e) => updateScaleInSettings('enabled', e.target.checked)}
+                      />
+                    </div>
+                    <div className="settings-input-group">
+                      <label>Min probability increase (%)</label>
+                      <input
+                        type="number"
+                        min="5"
+                        max="50"
+                        step="5"
+                        value={scaleInSettings.minProbabilityIncrease}
+                        onChange={(e) => updateScaleInSettings('minProbabilityIncrease', parseInt(e.target.value) || 15)}
+                      />
+                    </div>
+                    <div className="settings-input-group">
+                      <label>Max bets per market</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="10"
+                        step="1"
+                        value={scaleInSettings.maxBetsPerMarket}
+                        onChange={(e) => updateScaleInSettings('maxBetsPerMarket', parseInt(e.target.value) || 3)}
+                      />
+                    </div>
+                    <div className="settings-input-group">
+                      <label>Min time between bets (sec)</label>
+                      <input
+                        type="number"
+                        min="30"
+                        max="600"
+                        step="30"
+                        value={Math.round(scaleInSettings.minTimeBetweenBets / 1000)}
+                        onChange={(e) => updateScaleInSettings('minTimeBetweenBets', (parseInt(e.target.value) || 60) * 1000)}
+                      />
+                    </div>
+                  </div>
+                  <button className={`save-settings-btn ${settingsSaved ? 'saved' : ''}`} onClick={saveScaleInSettings}>
+                    {settingsSaved ? '✓ Saved' : 'Save Scale-In Settings'}
                   </button>
                 </div>
 

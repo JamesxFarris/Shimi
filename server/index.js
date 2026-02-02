@@ -49,6 +49,13 @@ let config = {
       maxPerBet: 200,    // $2.00 max per bet
       maxTotal: 1000     // $10.00 max total exposure
     }
+  },
+  // Scale-in settings: add to position when probability improves
+  scaleIn: {
+    enabled: true,
+    minProbabilityIncrease: 15,  // Only scale in if prob increased by 15%+ (60% → 75%)
+    maxBetsPerMarket: 3,         // Maximum times to bet on same market
+    minTimeBetweenBets: 60000    // At least 1 minute between bets on same market
   }
 };
 
@@ -108,8 +115,41 @@ async function loadCredentialsFromEnv() {
 }
 
 // Track markets we've already bet on to avoid duplicate bets
-// Key: ticker, Value: { timestamp, side }
+// Key: ticker, Value: { timestamp, side, probability, betCount }
 const recentBets = new Map();
+
+// Check if we should allow a scale-in bet on this market
+function shouldAllowScaleIn(ticker, currentProbability) {
+  if (!config.scaleIn.enabled) return false;
+
+  const existing = recentBets.get(ticker);
+  if (!existing) return false; // No existing bet, this isn't a scale-in
+
+  const now = Date.now();
+  const timeSinceLastBet = now - existing.timestamp;
+
+  // Check time between bets
+  if (timeSinceLastBet < config.scaleIn.minTimeBetweenBets) {
+    return false;
+  }
+
+  // Check max bets per market
+  if ((existing.betCount || 1) >= config.scaleIn.maxBetsPerMarket) {
+    return false;
+  }
+
+  // Check probability improvement
+  const probIncrease = currentProbability - (existing.probability || 0);
+  if (probIncrease < config.scaleIn.minProbabilityIncrease) {
+    return false;
+  }
+
+  console.log(`📈 SCALE-IN OPPORTUNITY: ${ticker}`);
+  console.log(`   Previous prob: ${existing.probability}% → Current: ${currentProbability}% (+${probIncrease.toFixed(1)}%)`);
+  console.log(`   Bet #${(existing.betCount || 1) + 1} of max ${config.scaleIn.maxBetsPerMarket}`);
+
+  return true;
+}
 
 // Edge requirements - lower for "obvious" high-probability bets
 // Strategy: Safe growth from $10 → $100 by taking high-probability bets
@@ -2142,6 +2182,40 @@ app.post('/api/settings/risk', (req, res) => {
   });
 });
 
+// Get scale-in settings
+app.get('/api/settings/scale-in', (req, res) => {
+  res.json({
+    success: true,
+    scaleIn: config.scaleIn
+  });
+});
+
+// Update scale-in settings
+app.post('/api/settings/scale-in', (req, res) => {
+  const { enabled, minProbabilityIncrease, maxBetsPerMarket, minTimeBetweenBets } = req.body;
+
+  if (enabled !== undefined) {
+    config.scaleIn.enabled = !!enabled;
+  }
+  if (minProbabilityIncrease !== undefined) {
+    config.scaleIn.minProbabilityIncrease = Math.max(5, Math.min(50, parseInt(minProbabilityIncrease) || 15));
+  }
+  if (maxBetsPerMarket !== undefined) {
+    config.scaleIn.maxBetsPerMarket = Math.max(1, Math.min(10, parseInt(maxBetsPerMarket) || 3));
+  }
+  if (minTimeBetweenBets !== undefined) {
+    config.scaleIn.minTimeBetweenBets = Math.max(30000, Math.min(600000, parseInt(minTimeBetweenBets) || 60000));
+  }
+
+  console.log(`⚙️ Scale-in settings updated:`, JSON.stringify(config.scaleIn));
+
+  res.json({
+    success: true,
+    scaleIn: config.scaleIn,
+    message: 'Scale-in settings updated'
+  });
+});
+
 // ============================================
 // SENTIMENT & NEWS API ENDPOINTS
 // ============================================
@@ -2517,11 +2591,19 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     const opportunities = [...cryptoOpps, ...indexOpps]
       .filter(m => {
         if (m === null) return false;
-        // Skip if we already bet on this exact market
-        if (recentBets.has(m.ticker)) return false;
         // REQUIRE 60%+ WIN PROBABILITY for auto-betting
         const winProb = parseFloat(m.winProbability) || 0;
         if (winProb < 60) return false;
+
+        // Check if we already bet on this market
+        if (recentBets.has(m.ticker)) {
+          // Allow scale-in if probability improved significantly
+          if (shouldAllowScaleIn(m.ticker, winProb)) {
+            m.isScaleIn = true; // Mark as scale-in opportunity
+          } else {
+            return false; // Skip - already bet and not a valid scale-in
+          }
+        }
         return true;
       })
       // SORT BY WIN PROBABILITY (safest bets first)
@@ -2572,6 +2654,10 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     // Ensure we don't exceed budget
     const totalCost = count * priceCents;
 
+    // Get existing bet info for scale-in tracking
+    const existingBet = recentBets.get(best.ticker);
+    const newBetCount = best.isScaleIn ? ((existingBet?.betCount || 1) + 1) : 1;
+
     const betRecord = {
       id: Date.now().toString(),
       ticker: best.ticker,
@@ -2588,11 +2674,21 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       strikePrice: best.strikePrice,
       timestamp: new Date().toISOString(),
       status: 'pending',
-      auto: true
+      auto: true,
+      isScaleIn: best.isScaleIn || false,
+      scaleInNumber: newBetCount
     };
 
-    // Mark this market as bet on
-    recentBets.set(best.ticker, { timestamp: now, side: best.betSide });
+    // Mark this market as bet on (or update for scale-in)
+    recentBets.set(best.ticker, {
+      timestamp: now,
+      side: best.betSide,
+      probability: parseFloat(best.winProbability),
+      betCount: newBetCount
+    });
+    if (best.isScaleIn) {
+      console.log(`📈 Scale-in bet #${newBetCount} on ${best.ticker} at ${best.winProbability}%`);
+    }
 
     if (!config.isAuthenticated) {
       betRecord.status = 'simulated';
@@ -2783,15 +2879,21 @@ async function runAutoBet() {
     const opportunities = [...cryptoOpps, ...indexOpps]
       .filter(m => {
         if (m === null) return false;
-        // Skip if we already bet on this exact market
-        if (recentBets.has(m.ticker)) {
-          return false;
-        }
         // REQUIRE 60%+ WIN PROBABILITY for auto-betting
         const winProb = parseFloat(m.winProbability) || 0;
         if (winProb < 60) return false;
         // Also require positive edge
         if (m.edge < 0.5) return false;
+
+        // Check if we already bet on this market
+        if (recentBets.has(m.ticker)) {
+          // Allow scale-in if probability improved significantly
+          if (shouldAllowScaleIn(m.ticker, winProb)) {
+            m.isScaleIn = true; // Mark as scale-in opportunity
+          } else {
+            return false; // Skip - already bet and not a valid scale-in
+          }
+        }
         return true;
       })
       // SORT BY WIN PROBABILITY (safest bets first)
@@ -2869,6 +2971,10 @@ async function runAutoBet() {
     // Ensure we don't exceed budget
     const totalCost = count * priceCents;
 
+    // Get existing bet info for scale-in tracking
+    const existingBet = recentBets.get(best.ticker);
+    const newBetCount = best.isScaleIn ? ((existingBet?.betCount || 1) + 1) : 1;
+
     const betRecord = {
       id: Date.now().toString(),
       ticker: best.ticker,
@@ -2880,13 +2986,24 @@ async function runAutoBet() {
       price: priceCents,
       totalCost,
       edge: best.edge,
+      winProbability: best.winProbability,
       timestamp: new Date().toISOString(),
       status: config.isAuthenticated ? 'pending' : 'simulated',
-      auto: true
+      auto: true,
+      isScaleIn: best.isScaleIn || false,
+      scaleInNumber: newBetCount
     };
 
-    // Mark this market as bet on BEFORE placing the bet
-    recentBets.set(best.ticker, { timestamp: now, side: best.betSide });
+    // Mark this market as bet on BEFORE placing the bet (or update for scale-in)
+    recentBets.set(best.ticker, {
+      timestamp: now,
+      side: best.betSide,
+      probability: parseFloat(best.winProbability),
+      betCount: newBetCount
+    });
+    if (best.isScaleIn) {
+      console.log(`📈 SCALE-IN: Adding bet #${newBetCount} on ${best.ticker} (prob increased to ${best.winProbability}%)`);
+    }
 
     if (!config.isAuthenticated) {
       betRecord.orderId = 'SIM-' + Date.now();
