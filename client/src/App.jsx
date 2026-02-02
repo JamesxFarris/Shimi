@@ -67,103 +67,51 @@ const ASSET_CONFIG = {
   SPX: { color: '#ffcc00', name: 'S&P 500', icon: '📈' }
 }
 
-// Opportunity Card
+// Opportunity Card - Clean, focused design
 const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
   const assetType = opp.assetType || opp.cryptoType || 'Unknown'
   const config = ASSET_CONFIG[assetType] || { color: '#888', name: assetType, icon: '?' }
   const isIndex = opp.marketCategory === 'index'
   const notRecommended = opp.isRecommended === false
+  const pctFromStrike = parseFloat(opp.pctFromStrike) || 0
 
   return (
     <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''} ${notRecommended ? 'no-edge' : ''}`}>
-      {/* Card Header */}
+      {/* Compact Header: Token + Time */}
       <div className="opp-header">
         <div className="opp-token">
           <div className="token-icon" style={{ background: `${config.color}20`, color: config.color }}>
             {config.icon}
           </div>
-          <div className="token-info">
-            <span className="token-symbol">{assetType}</span>
-            <span className="token-name">{config.name}</span>
-          </div>
+          <span className="token-symbol">{assetType}</span>
         </div>
-        <div className="opp-badges">
-          <span className={`badge market-type ${isIndex ? 'index' : 'crypto'}`}>
-            {isIndex ? 'INDEX' : 'CRYPTO'}
-          </span>
-          {notRecommended && <span className="badge no-edge">{opp.filterReason || 'NO EDGE'}</span>}
-          {opp.isObviousBet && !notRecommended && <span className="badge safe">HIGH CONF</span>}
-          <span className="badge time">{opp.timeRemainingFormatted}</span>
+        <div className="opp-meta">
+          {opp.isObviousBet && !notRecommended && <span className="high-conf-dot" title="High Confidence"></span>}
+          <span className="time-badge">{opp.timeRemainingFormatted}</span>
         </div>
       </div>
 
-      {/* Market Title */}
-      <div className="opp-title">{opp.title}</div>
-
-      {/* Price Comparison */}
-      <div className="price-comparison">
-        <div className="price-box current">
-          <span className="price-label">Current</span>
-          <span className="price-value">{formatPrice(opp.currentPrice, opp.cryptoType)}</span>
+      {/* Key Stats Row */}
+      <div className="key-stats">
+        <div className="key-stat win-prob">
+          <span className="key-stat-value">{opp.winProbability}%</span>
+          <span className="key-stat-label">win prob</span>
         </div>
-        <div className="price-arrow">
-          <span className={parseFloat(opp.pctFromStrike) >= 0 ? 'up' : 'down'}>
-            {parseFloat(opp.pctFromStrike) >= 0 ? '↑' : '↓'}
-          </span>
-          <span className={`pct ${parseFloat(opp.pctFromStrike) >= 0 ? 'up' : 'down'}`}>
-            {opp.pctFromStrike > 0 ? '+' : ''}{opp.pctFromStrike}%
-          </span>
+        <div className="key-stat edge">
+          <span className="key-stat-value">+{formatPercent(opp.edge)}</span>
+          <span className="key-stat-label">edge</span>
         </div>
-        <div className="price-box strike">
-          <span className="price-label">Strike</span>
-          <span className="price-value">{formatPrice(opp.strikePrice, opp.cryptoType)}</span>
+        <div className={`key-stat distance ${pctFromStrike >= 0 ? 'above' : 'below'}`}>
+          <span className="key-stat-value">{pctFromStrike >= 0 ? '+' : ''}{opp.pctFromStrike}%</span>
+          <span className="key-stat-label">{pctFromStrike >= 0 ? 'above' : 'below'} strike</span>
         </div>
       </div>
 
-      {/* Stats Grid */}
-      <div className="stats-grid">
-        <div className="stat-box">
-          <span className="stat-label">Win Probability</span>
-          <span className="stat-value highlight">{opp.winProbability}%</span>
-        </div>
-        <div className="stat-box">
-          <span className="stat-label">Market Price</span>
-          <span className="stat-value">{(opp.betPrice * 100).toFixed(0)}¢</span>
-        </div>
-        <div className="stat-box edge">
-          <span className="stat-label">Your Edge</span>
-          <span className="stat-value">+{formatPercent(opp.edge)}</span>
-        </div>
-        <div className="stat-box">
-          <span className="stat-label">Profit if Win</span>
-          <span className="stat-value">{opp.profitIfWin}¢</span>
-        </div>
-      </div>
-
-      {/* Analysis Bar */}
-      <div className="analysis-bar">
-        <div className="analysis-item">
-          <span className={`momentum-icon ${opp.momentum}`}>
-            {opp.momentum === 'up' ? '📈' : opp.momentum === 'down' ? '📉' : '➡️'}
-          </span>
-          <span className="analysis-text">{opp.momentumStrength}</span>
-        </div>
-        <div className="analysis-item">
-          <span className="analysis-icon">🎯</span>
-          <span className="analysis-text">{opp.confidence}</span>
-        </div>
-        <div className="analysis-item">
-          <span className="analysis-icon">📊</span>
-          <span className="analysis-text">{opp.dataPoints} points</span>
-        </div>
-      </div>
-
-      {/* Recommendation */}
-      <div className="recommendation">
-        <div className={`rec-side ${opp.betSide?.toLowerCase()}`}>
-          BET {opp.betSide}
-        </div>
-        <div className="rec-reason">{opp.betReason}</div>
+      {/* Price Context - Compact */}
+      <div className="price-context">
+        <span className="price-now">{formatPrice(opp.currentPrice, opp.cryptoType)}</span>
+        <span className="price-arrow">{pctFromStrike >= 0 ? '↑' : '↓'}</span>
+        <span className="price-strike">{formatPrice(opp.strikePrice, opp.cryptoType)}</span>
       </div>
 
       {/* Action Button */}

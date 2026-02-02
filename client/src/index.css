@@ -1157,11 +1157,12 @@ body {
   box-shadow: 0 12px 40px rgba(0, 255, 136, 0.25);
 }
 
+/* Clean Card Header */
 .opp-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  margin-bottom: 8px;
+  margin-bottom: 12px;
   position: relative;
   z-index: 1;
 }
@@ -1169,223 +1170,128 @@ body {
 .opp-token {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
 }
 
 .token-icon {
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-sm);
-  font-size: 10px;
+  font-size: 12px;
   background: linear-gradient(135deg, rgba(0, 240, 255, 0.1) 0%, rgba(128, 90, 255, 0.1) 100%);
   border: 1px solid rgba(0, 240, 255, 0.3);
 }
 
-.token-info {
-  display: flex;
-  flex-direction: column;
-  gap: 0px;
-}
-
 .token-symbol {
   font-family: var(--font-display);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--text-primary);
 }
 
-.token-name {
-  font-size: 10px;
-  color: var(--text-muted);
-}
-
-.opp-badges {
-  display: flex;
-  gap: 4px;
-}
-
-.badge {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 700;
-  padding: 3px 6px;
-  border-radius: 3px;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-}
-
-.badge.safe {
-  background: linear-gradient(135deg, rgba(0, 255, 136, 0.2) 0%, rgba(0, 200, 100, 0.1) 100%);
-  color: var(--neon-green);
-  border: 1px solid var(--neon-green);
-  box-shadow: 0 0 6px rgba(0, 255, 136, 0.2);
-}
-
-.badge.time {
-  background: rgba(0, 240, 255, 0.1);
-  color: var(--neon-cyan);
-  border: 1px solid rgba(0, 240, 255, 0.3);
-}
-
-.opp-title {
-  font-size: 11px;
-  color: var(--text-secondary);
-  margin-bottom: 10px;
-  line-height: 1.4;
-  position: relative;
-  z-index: 1;
-}
-
-/* Price Comparison */
-.price-comparison {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  padding: 6px;
-  background: linear-gradient(135deg, rgba(0, 0, 0, 0.3) 0%, rgba(0, 240, 255, 0.03) 100%);
-  border-radius: var(--radius-sm);
-  border: 1px solid rgba(0, 240, 255, 0.1);
-  position: relative;
-  z-index: 1;
-}
-
-.price-box {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.price-label {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  font-weight: 500;
-}
-
-.price-value {
-  font-family: var(--font-display);
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.price-arrow {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1px;
-}
-
-.price-arrow span {
-  font-size: 10px;
-}
-
-.price-arrow .up { color: var(--neon-green); }
-.price-arrow .down { color: var(--accent-red); }
-.pct.up { color: var(--neon-green); }
-.pct.down { color: var(--accent-red); }
-
-/* Stats Grid */
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 4px;
-  margin-bottom: 8px;
-}
-
-.stat-box {
-  padding: 5px 7px;
-  background: var(--bg-elevated);
-  border-radius: var(--radius-sm);
-}
-
-.stat-box.edge {
-  background: rgba(0, 255, 136, 0.1);
-  border: 1px solid rgba(0, 255, 136, 0.2);
-}
-
-.stat-label {
-  display: block;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-  margin-bottom: 2px;
-}
-
-.stat-value {
-  font-family: var(--font-display);
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.stat-value.highlight {
-  color: var(--neon-cyan);
-}
-
-/* Analysis Bar */
-.analysis-bar {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 8px;
-  padding: 6px 0;
-  border-top: 1px solid var(--border-color);
-  border-bottom: 1px solid var(--border-color);
-}
-
-.analysis-item {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 9px;
-  color: var(--text-muted);
-}
-
-.analysis-icon,
-.momentum-icon {
-  font-size: 9px;
-}
-
-/* Recommendation */
-.recommendation {
+.opp-meta {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
 }
 
-.rec-side {
-  font-family: var(--font-display);
-  font-size: 9px;
-  font-weight: 700;
-  padding: 4px 10px;
+.high-conf-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--neon-green);
+  box-shadow: 0 0 8px var(--neon-green);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.time-badge {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--neon-cyan);
+  padding: 4px 8px;
+  background: rgba(0, 240, 255, 0.1);
+  border: 1px solid rgba(0, 240, 255, 0.3);
+  border-radius: 4px;
+}
+
+/* Key Stats - The main focus */
+.key-stats {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.3);
   border-radius: var(--radius-sm);
+  border: 1px solid rgba(0, 240, 255, 0.1);
 }
 
-.rec-side.yes {
-  background: rgba(0, 255, 136, 0.15);
-  color: var(--neon-green);
-  border: 1px solid var(--neon-green);
+.key-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
 }
 
-.rec-side.no {
-  background: rgba(255, 51, 102, 0.15);
-  color: var(--accent-red);
-  border: 1px solid var(--accent-red);
+.key-stat-value {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1;
 }
 
-.rec-reason {
+.key-stat-label {
   font-family: var(--font-mono);
   font-size: 9px;
   color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 3px;
+}
+
+.key-stat.win-prob .key-stat-value {
+  color: var(--neon-cyan);
+}
+
+.key-stat.edge .key-stat-value {
+  color: var(--neon-green);
+}
+
+.key-stat.distance.above .key-stat-value {
+  color: var(--neon-green);
+}
+
+.key-stat.distance.below .key-stat-value {
+  color: var(--accent-red);
+}
+
+/* Compact Price Context */
+.price-context {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.price-now {
+  color: var(--text-secondary);
+}
+
+.price-context .price-arrow {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.price-strike {
+  color: var(--text-dim);
 }
 
 /* Bet Button */
