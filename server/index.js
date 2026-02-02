@@ -77,6 +77,7 @@ let lastScanStatus = {
 
 const PERFORMANCE_FILE = path.join(__dirname, 'performance_data.json');
 const STATE_FILE = path.join(__dirname, 'autobet_state.json');
+const SETTINGS_FILE = path.join(__dirname, 'settings.json');
 
 // ============================================
 // AUTO-BET STATE PERSISTENCE
@@ -107,6 +108,39 @@ function saveAutoBetState(enabled, intervalSeconds = 15) {
     console.log(`💾 Saved auto-bet state: ${enabled ? 'ENABLED' : 'disabled'}`);
   } catch (err) {
     console.log('Could not save auto-bet state:', err.message);
+  }
+}
+
+// ============================================
+// SETTINGS PERSISTENCE
+// ============================================
+// Save/restore risk settings so they survive server restarts
+
+function loadSettings() {
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
+      console.log(`⚙️ Loaded settings: $${(data.riskLimits?.maxTotal || 3500) / 100} max exposure`);
+      return data;
+    }
+  } catch (err) {
+    console.log('Could not load settings:', err.message);
+  }
+  return null;
+}
+
+function saveSettings() {
+  try {
+    const settings = {
+      riskLimits: config.riskLimits,
+      scaleIn: config.scaleIn,
+      minEdge: config.minEdge,
+      savedAt: new Date().toISOString()
+    };
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
+    console.log(`💾 Saved settings: $${config.riskLimits.maxTotal / 100} max exposure`);
+  } catch (err) {
+    console.log('Could not save settings:', err.message);
   }
 }
 
@@ -3223,12 +3257,15 @@ app.post('/api/settings/risk', (req, res) => {
     config.riskLimits.maxPerToken = Math.max(100, Math.min(5000, parseInt(maxPerToken) || 500));
   }
 
+  // Persist to disk
+  saveSettings();
+
   console.log(`⚙️ Risk settings updated:`, JSON.stringify(config.riskLimits));
 
   res.json({
     success: true,
     riskLimits: config.riskLimits,
-    message: 'Risk settings updated'
+    message: 'Risk settings saved'
   });
 });
 
@@ -3256,6 +3293,9 @@ app.post('/api/settings/scale-in', (req, res) => {
   if (minTimeBetweenBets !== undefined) {
     config.scaleIn.minTimeBetweenBets = Math.max(30000, Math.min(600000, parseInt(minTimeBetweenBets) || 60000));
   }
+
+  // Persist to disk
+  saveSettings();
 
   console.log(`⚙️ Scale-in settings updated:`, JSON.stringify(config.scaleIn));
 
@@ -4935,6 +4975,21 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
 
   // Auto-load Kalshi credentials from environment
   await loadCredentialsFromEnv();
+
+  // Restore saved settings (risk limits, etc.)
+  const savedSettings = loadSettings();
+  if (savedSettings) {
+    if (savedSettings.riskLimits) {
+      config.riskLimits = { ...config.riskLimits, ...savedSettings.riskLimits };
+    }
+    if (savedSettings.scaleIn) {
+      config.scaleIn = { ...config.scaleIn, ...savedSettings.scaleIn };
+    }
+    if (savedSettings.minEdge !== undefined) {
+      config.minEdge = savedSettings.minEdge;
+    }
+    console.log(`⚙️ Risk limits: $${config.riskLimits.maxPerBet/100}/bet, $${config.riskLimits.maxTotal/100} max exposure`);
+  }
 
   // Restore auto-bet state from previous session
   const savedState = loadAutoBetState();
