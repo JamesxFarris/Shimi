@@ -3697,15 +3697,24 @@ async function runAutoBet() {
     });
     console.log(`   Probability distribution: ${JSON.stringify(probBuckets)}`);
 
-    // Combine and filter
+    // Combine and filter - EDGE-BASED FILTERING (no arbitrary probability threshold)
+    // The model calculates probability; edge = our_prob - market_prob
+    // Minimum edge accounts for model uncertainty; minimum prob avoids coin-flips
+    const MIN_EDGE = 3.0;      // Require 3%+ edge to account for model uncertainty
+    const MIN_PROB = 52;       // Soft floor - avoid near 50/50 bets
+
     const opportunities = [...cryptoOpps, ...indexOpps]
       .filter(m => {
         if (m === null) return false;
-        // REQUIRE 60%+ WIN PROBABILITY for auto-betting
+
         const winProb = parseFloat(m.winProbability) || 0;
-        if (winProb < 60) return false;
-        // Also require positive edge
-        if (m.edge < 0.5) return false;
+        const edge = m.edge || 0;
+
+        // Primary filter: EDGE (this is what matters for profitability)
+        if (edge < MIN_EDGE) return false;
+
+        // Secondary filter: avoid near-coin-flip bets
+        if (winProb < MIN_PROB) return false;
 
         // Check if we already bet on this market
         if (recentBets.has(m.ticker)) {
@@ -3716,46 +3725,61 @@ async function runAutoBet() {
             return false; // Skip - already bet and not a valid scale-in
           }
         }
+
+        // Calculate expected value score for sorting
+        // EV = (prob * profit) - ((1-prob) * cost) normalized
+        // Simplified: edge * probability gives us a quality score
+        m.evScore = (edge / 100) * (winProb / 100) * 100;
+
         return true;
       })
-      // SORT BY WIN PROBABILITY (safest bets first)
-      .sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
+      // SORT BY EXPECTED VALUE (best risk-adjusted bets first)
+      .sort((a, b) => b.evScore - a.evScore);
 
-    const highConfCount = opportunities.filter(o => parseFloat(o.winProbability) >= 70).length;
-    console.log(`   Final: ${opportunities.length} opportunities (${highConfCount} above 70%)`);
+    const highEdgeCount = opportunities.filter(o => o.edge >= 5).length;
+    console.log(`   Final: ${opportunities.length} opportunities (${highEdgeCount} with 5%+ edge)`);
 
     // Show top opportunities
     if (opportunities.length > 0) {
-      console.log(`   🎯 Top opportunities:`);
+      console.log(`   🎯 Top opportunities (by EV):`);
       opportunities.slice(0, 3).forEach(m => {
-        console.log(`      - ${m.title}: ${m.winProbability}% @ ${m.betPriceCents}¢ (${m.betSide}, edge +${m.edge.toFixed(1)}%)`);
+        console.log(`      - ${m.title}: ${m.winProbability}% @ ${m.betPriceCents}¢ | Edge: +${m.edge.toFixed(1)}% | EV: ${m.evScore.toFixed(2)}`);
       });
     }
 
-    // Show markets approaching the threshold (55-59%)
-    const approaching = allOpps.filter(m => {
-      const prob = parseFloat(m.winProbability) || 0;
-      return prob >= 55 && prob < 60 && m.edge > 0;
+    // Show markets close to threshold
+    const nearThreshold = allOpps.filter(m => {
+      const edge = m.edge || 0;
+      return edge > 0 && edge < MIN_EDGE;
     });
-    if (approaching.length > 0) {
-      console.log(`   📈 ${approaching.length} markets approaching 60% threshold:`);
-      approaching.slice(0, 3).forEach(m => {
-        console.log(`      - ${m.title}: ${m.winProbability}% (${m.betSide})`);
+    if (nearThreshold.length > 0) {
+      console.log(`   📈 ${nearThreshold.length} markets with small edge (0-${MIN_EDGE}%):`);
+      nearThreshold.slice(0, 3).forEach(m => {
+        console.log(`      - ${m.title}: ${m.winProbability}% | Edge: +${m.edge.toFixed(1)}%`);
       });
     }
 
     if (opportunities.length === 0) {
       lastScanStatus.blockedReason = 'no_opportunities';
-      // Find closest to threshold for diagnostic
+      // Find closest to threshold for diagnostic (best edge that didn't qualify)
       const closest = allOpps
         .filter(m => m.edge > 0)
-        .sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability))[0];
+        .sort((a, b) => b.edge - a.edge)[0];
       if (closest) {
+        const winProb = parseFloat(closest.winProbability) || 0;
+        let reason = '';
+        if (closest.edge < MIN_EDGE) {
+          reason = `Edge too low: ${closest.edge.toFixed(1)}% (need ${MIN_EDGE}%+)`;
+        } else if (winProb < MIN_PROB) {
+          reason = `Prob too low: ${winProb}% (need ${MIN_PROB}%+)`;
+        } else {
+          reason = 'Already bet on this market';
+        }
         lastScanStatus.bestOpportunity = {
           title: closest.title,
           winProbability: closest.winProbability,
           edge: closest.edge,
-          reason: `Below 60% threshold (needs ${(60 - parseFloat(closest.winProbability)).toFixed(1)}% more)`
+          reason
         };
       }
       console.log('⏳ No valid opportunities - waiting for next scan...');
