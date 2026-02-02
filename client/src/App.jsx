@@ -287,7 +287,13 @@ function App() {
   const [placingBet, setPlacingBet] = useState(null)
   const [tickerTime, setTickerTime] = useState(Date.now())
   // New: Risk tracking and market filtering
-  const [risk, setRisk] = useState({ current: 0, max: 500, remaining: 500 })
+  const [risk, setRisk] = useState({
+    current: 0,
+    max: 1000,
+    remaining: 1000,
+    hourly: { current: 0, max: 500, currentDollars: '0.00', maxDollars: '5.00' },
+    other: { current: 0, max: 500, currentDollars: '0.00', maxDollars: '5.00' }
+  })
   const [marketFilter, setMarketFilter] = useState('all') // 'all', 'crypto', 'index'
   // News & Sentiment
   const [sentiment, setSentiment] = useState(null)
@@ -621,13 +627,23 @@ function App() {
           </div>
           <div className="risk-display-sidebar">
             <div className="risk-header">
-              <span className="risk-label">Risk Exposure</span>
-              <span className="risk-value">${risk.currentDollars || '0.00'} / ${risk.maxDollars || '5.00'}</span>
+              <span className="risk-label">Hourly Markets</span>
+              <span className="risk-value">${risk.hourly?.currentDollars || '0.00'} / ${risk.hourly?.maxDollars || '5.00'}</span>
             </div>
             <div className="risk-bar-small">
               <div
                 className="risk-fill-small"
-                style={{ width: `${Math.min(100, ((risk.current || 0) / (risk.max || 500)) * 100)}%` }}
+                style={{ width: `${Math.min(100, ((risk.hourly?.current || 0) / (risk.hourly?.max || 500)) * 100)}%` }}
+              ></div>
+            </div>
+            <div className="risk-header" style={{ marginTop: '8px' }}>
+              <span className="risk-label">Other Markets</span>
+              <span className="risk-value">${risk.other?.currentDollars || '0.00'} / ${risk.other?.maxDollars || '5.00'}</span>
+            </div>
+            <div className="risk-bar-small">
+              <div
+                className="risk-fill-small"
+                style={{ width: `${Math.min(100, ((risk.other?.current || 0) / (risk.other?.max || 500)) * 100)}%` }}
               ></div>
             </div>
           </div>
