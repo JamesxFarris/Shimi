@@ -1199,14 +1199,14 @@ function calculateMomentum(history, lookbackMinutes = 5) {
 
 function getMomentumBetSignal(token) {
   const history = priceHistoryExtended[token];
-  if (!history || history.length < 15) {
-    return { shouldBet: false, reason: 'insufficient_data' };
+  if (!history || history.length < 10) {
+    return { direction: 'neutral', strength: 0, ret1: 0, ret2: 0, ret5: 0 };
   }
 
   const now = Date.now();
   const latest = history[history.length - 1];
   if (!latest || now - latest.time > 60000) {
-    return { shouldBet: false, reason: 'stale_data' };
+    return { direction: 'neutral', strength: 0, ret1: 0, ret2: 0, ret5: 0 };
   }
 
   const latestPrice = latest.price;
@@ -1226,84 +1226,30 @@ function getMomentumBetSignal(token) {
     return closest.price;
   };
 
-  // Short-term returns (what we actually trade on)
   const price1min = findPriceAt(60);
   const price2min = findPriceAt(120);
-  const price3min = findPriceAt(180);
   const price5min = findPriceAt(300);
 
   const ret1 = ((latestPrice - price1min) / price1min) * 100;
   const ret2 = ((latestPrice - price2min) / price2min) * 100;
-  const ret3 = ((latestPrice - price3min) / price3min) * 100;
   const ret5 = ((latestPrice - price5min) / price5min) * 100;
 
-  // AGGRESSIVE MODE - bet on any directional bias
-  // Check if price is moving in any consistent direction
-  const anyUp = ret1 > 0 && ret2 > 0;    // Just needs 1min and 2min both positive
-  const anyDown = ret1 < 0 && ret2 < 0;  // Just needs 1min and 2min both negative
+  // Simple: what direction is price moving?
+  let direction = 'neutral';
+  let strength = 0;
 
-  // Strong signal: clear directional move
-  if (anyUp && ret2 >= 0.02) {
-    const confidence = ret2 >= 0.08 ? 'very_high' : ret2 >= 0.04 ? 'high' : 'medium';
-    return {
-      shouldBet: true,
-      side: 'YES',
-      confidence,
-      momentum: { ret1, ret2, ret3, ret5 },
-      reason: `UP trend: ${ret2.toFixed(3)}% in 2min`
-    };
+  if (ret1 > 0.005 && ret2 > 0) {
+    direction = 'up';
+    strength = Math.abs(ret2);
+  } else if (ret1 < -0.005 && ret2 < 0) {
+    direction = 'down';
+    strength = Math.abs(ret2);
+  } else if (Math.abs(ret2) > 0.02) {
+    direction = ret2 > 0 ? 'up' : 'down';
+    strength = Math.abs(ret2);
   }
 
-  if (anyDown && ret2 <= -0.02) {
-    const confidence = ret2 <= -0.08 ? 'very_high' : ret2 <= -0.04 ? 'high' : 'medium';
-    return {
-      shouldBet: true,
-      side: 'NO',
-      confidence,
-      momentum: { ret1, ret2, ret3, ret5 },
-      reason: `DOWN trend: ${ret2.toFixed(3)}% in 2min`
-    };
-  }
-
-  // MICRO signal: any slight movement in same direction
-  if (ret1 > 0.005 && ret2 > 0.01) {
-    return {
-      shouldBet: true,
-      side: 'YES',
-      confidence: 'low',
-      momentum: { ret1, ret2, ret3, ret5 },
-      reason: `Slight UP: ${ret2.toFixed(3)}% in 2min`
-    };
-  }
-
-  if (ret1 < -0.005 && ret2 < -0.01) {
-    return {
-      shouldBet: true,
-      side: 'NO',
-      confidence: 'low',
-      momentum: { ret1, ret2, ret3, ret5 },
-      reason: `Slight DOWN: ${ret2.toFixed(3)}% in 2min`
-    };
-  }
-
-  // FALLBACK: Just use 1-minute direction if there's any movement
-  if (Math.abs(ret1) >= 0.01) {
-    return {
-      shouldBet: true,
-      side: ret1 > 0 ? 'YES' : 'NO',
-      confidence: 'low',
-      momentum: { ret1, ret2, ret3, ret5 },
-      reason: `1min move: ${ret1.toFixed(3)}%`
-    };
-  }
-
-  // No signal at all - market is completely flat
-  return {
-    shouldBet: false,
-    side: null,
-    momentum: { ret1, ret2, ret3, ret5 },
-    reason: `Flat (1m:${ret1.toFixed(3)}% 2m:${ret2.toFixed(3)}%)`
-  };
+  return { direction, strength, ret1, ret2, ret5 };
 }
 
 // Multi-timeframe momentum scoring
@@ -2810,142 +2756,134 @@ function analyzeCryptoMarket(parsed) {
   if (!priceData || !priceData.price) return null;
 
   const currentPrice = priceData.price;
+  const strikePrice = parsed.strikePrice || currentPrice;
   const timeMinutes = parsed.timeRemainingMinutes || 15;
+  const yesPrice = parsed.yesAsk || 0.5;
+  const noPrice = parsed.noAsk || 0.5;
 
-  // Get MOMENTUM SIGNAL - this is our edge
-  const signal = getMomentumBetSignal(parsed.cryptoType);
+  // Get momentum info (not for betting decision, just context)
+  const momentum = getMomentumBetSignal(parsed.cryptoType);
 
-  // If no momentum signal, try PRICE POSITION strategy
-  // If price is already far from strike, bet on continuation
-  if (!signal.shouldBet) {
-    const yesPrice = parsed.yesAsk || 0.5;
-    const noPrice = parsed.noAsk || 0.5;
-    const strikePrice = parsed.strikePrice || currentPrice;
-    const pctFromStrike = ((currentPrice - strikePrice) / strikePrice) * 100;
+  // === SIMPLE POSITION-BASED STRATEGY ===
+  // Core idea: If price is on one side of strike, bet that side
+  // The market already prices this - we bet when we think it's underpriced
 
-    // PRICE POSITION STRATEGY: If price is >0.1% from strike, bet on that side
-    // The further from strike + less time = higher confidence
-    if (Math.abs(pctFromStrike) >= 0.1 && timeMinutes <= 10) {
-      const positionSide = pctFromStrike > 0 ? 'YES' : 'NO';
-      const positionPrice = positionSide === 'YES' ? yesPrice : noPrice;
-      const positionPriceCents = Math.round(positionPrice * 100);
+  const pctFromStrike = ((currentPrice - strikePrice) / strikePrice) * 100;
+  const isAboveStrike = currentPrice > strikePrice;
+  const isBelowStrike = currentPrice < strikePrice;
+  const distanceFromStrike = Math.abs(pctFromStrike);
 
-      // Confidence based on distance from strike
-      let positionConfidence = 'medium';
-      let winProb = 55;
-      if (Math.abs(pctFromStrike) >= 0.25) {
-        positionConfidence = 'high';
-        winProb = 60;
-      }
-      if (Math.abs(pctFromStrike) >= 0.4) {
-        positionConfidence = 'very_high';
-        winProb = 65;
-      }
-      // Time bonus: less time = more confidence price stays
-      if (timeMinutes <= 5) winProb += 3;
-      if (timeMinutes <= 3) winProb += 2;
+  // Determine which side to bet
+  let betSide = null;
+  let betPrice = null;
+  let betPriceCents = 0;
 
-      const positionEdge = winProb - positionPriceCents;
-
-      // Only bet if we have positive edge
-      if (positionEdge >= 3) {
-        return {
-          ticker: parsed.ticker,
-          title: parsed.title,
-          cryptoType: parsed.cryptoType,
-          assetType: parsed.cryptoType,
-          marketType: parsed.marketType,
-          currentPrice,
-          strikePrice,
-          pctFromStrike: pctFromStrike.toFixed(2),
-          timeRemaining: parsed.timeRemaining,
-          timeRemainingMinutes: timeMinutes,
-          timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining),
-          yesAsk: yesPrice,
-          noAsk: noPrice,
-          betPriceCents: positionPriceCents,
-          betSide: positionSide,
-          betPrice: positionPrice,
-          winProbability: winProb.toFixed(1),
-          edge: positionEdge.toFixed(1),
-          expectedValue: ((winProb / 100) * (100 - positionPriceCents) - ((100 - winProb) / 100) * positionPriceCents).toFixed(2),
-          isRecommended: true,
-          confidence: positionConfidence,
-          momentumSignal: { ...signal, positionBased: true },
-          reason: `Price ${pctFromStrike > 0 ? 'above' : 'below'} strike by ${Math.abs(pctFromStrike).toFixed(2)}%`
-        };
-      }
-    }
-
-    // No position-based bet either
-    return {
-      ticker: parsed.ticker,
-      title: parsed.title,
-      cryptoType: parsed.cryptoType,
-      assetType: parsed.cryptoType,
-      marketType: parsed.marketType,
-      currentPrice,
-      strikePrice: parsed.strikePrice || currentPrice,
-      timeRemaining: parsed.timeRemaining,
-      timeRemainingMinutes: timeMinutes,
-      timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining),
-      yesAsk: yesPrice,
-      noAsk: noPrice,
-      // No clear bet recommendation
-      betSide: null,
-      betPrice: null,
-      winProbability: 50,
-      edge: 0,
-      expectedValue: 0,
-      isRecommended: false,
-      momentumSignal: signal,
-      reason: signal.reason
-    };
-  }
-
-  // We have a momentum signal! Determine bet
-  const betSide = signal.side; // 'YES' or 'NO'
-  const betPrice = betSide === 'YES' ? (parsed.yesAsk || 0.5) : (parsed.noAsk || 0.5);
-  const betPriceCents = Math.round(betPrice * 100);
-
-  // RELAXED SANITY CHECK: Only block extreme cases
-  // If market prices our side below 15¢, skip (too risky)
-  if (betPriceCents < 15) {
-    return {
-      ...buildBaseResult(parsed, currentPrice, timeMinutes, signal),
-      betSide: null,
-      isRecommended: false,
-      reason: `Price too low (${betPriceCents}¢) - market strongly disagrees`
-    };
-  }
-
-  // For momentum strategy, probability is based on signal confidence
-  let winProbability;
-  if (signal.confidence === 'very_high') {
-    winProbability = 65;
-  } else if (signal.confidence === 'high') {
-    winProbability = 60;
-  } else if (signal.confidence === 'medium') {
-    winProbability = 55;
+  if (isAboveStrike) {
+    betSide = 'YES';
+    betPrice = yesPrice;
+    betPriceCents = Math.round(yesPrice * 100);
+  } else if (isBelowStrike) {
+    betSide = 'NO';
+    betPrice = noPrice;
+    betPriceCents = Math.round(noPrice * 100);
   } else {
-    // 'low' confidence - still bet but with lower probability
-    winProbability = 52;
+    // Price exactly at strike - no bet
+    return buildNoSignalResult(parsed, currentPrice, strikePrice, timeMinutes, momentum, 'Price at strike');
   }
 
-  // Edge = our probability - market price
-  const edge = winProbability - betPriceCents;
+  // === CONFIDENCE SCORING ===
+  // Based on: distance from strike, time remaining, momentum alignment
+  let confidence = 'low';
+  let score = 0;
+
+  // Distance from strike (most important)
+  if (distanceFromStrike >= 0.5) score += 4;      // 0.5%+ away = very strong
+  else if (distanceFromStrike >= 0.3) score += 3; // 0.3%+ away = strong
+  else if (distanceFromStrike >= 0.15) score += 2; // 0.15%+ away = moderate
+  else if (distanceFromStrike >= 0.05) score += 1; // 0.05%+ away = slight
+  // Below 0.05% = too close, risky
+
+  // Time remaining (less time = price more likely to stay)
+  if (timeMinutes <= 3) score += 3;       // Very little time
+  else if (timeMinutes <= 5) score += 2;  // Little time
+  else if (timeMinutes <= 8) score += 1;  // Some time
+  // More than 8 min = lots can change
+
+  // Momentum alignment
+  const momentumHelps = (betSide === 'YES' && momentum.direction === 'up') ||
+                        (betSide === 'NO' && momentum.direction === 'down');
+  const momentumHurts = (betSide === 'YES' && momentum.direction === 'down') ||
+                        (betSide === 'NO' && momentum.direction === 'up');
+
+  if (momentumHelps && momentum.strength >= 0.02) score += 2;
+  else if (momentumHelps) score += 1;
+  else if (momentumHurts && momentum.strength >= 0.05) score -= 2; // Strong opposing momentum is bad
+  else if (momentumHurts) score -= 1;
+
+  // Convert score to confidence
+  if (score >= 6) confidence = 'very_high';
+  else if (score >= 4) confidence = 'high';
+  else if (score >= 2) confidence = 'medium';
+  else confidence = 'low';
+
+  // === SHOULD WE BET? ===
+  // Minimum requirements to bet:
+  // 1. Price must be at least 0.03% from strike (not dead even)
+  // 2. Market price must be reasonable (15-90 cents)
+  // 3. Must have SOME confidence (score >= 1)
+
+  const tooCloseToStrike = distanceFromStrike < 0.03;
+  const priceTooLow = betPriceCents < 15;
+  const priceTooHigh = betPriceCents > 90;
+  const noConfidence = score < 1;
+
+  if (tooCloseToStrike) {
+    return buildNoSignalResult(parsed, currentPrice, strikePrice, timeMinutes, momentum,
+      `Too close to strike (${distanceFromStrike.toFixed(3)}%)`);
+  }
+
+  if (priceTooLow) {
+    return buildNoSignalResult(parsed, currentPrice, strikePrice, timeMinutes, momentum,
+      `Market price too low (${betPriceCents}¢)`);
+  }
+
+  if (priceTooHigh) {
+    return buildNoSignalResult(parsed, currentPrice, strikePrice, timeMinutes, momentum,
+      `Market price too high (${betPriceCents}¢) - no value`);
+  }
+
+  // === CALCULATE EDGE ===
+  // Simple: if we're confident price stays on this side, what's our expected edge?
+  // More distance + less time + aligned momentum = higher "true" probability
+
+  // Base probability from market price, then adjust
+  const marketImpliedProb = betPriceCents;
+
+  // Our adjustment based on confidence
+  let probAdjustment = 0;
+  if (confidence === 'very_high') probAdjustment = 12;
+  else if (confidence === 'high') probAdjustment = 8;
+  else if (confidence === 'medium') probAdjustment = 5;
+  else probAdjustment = 2;
+
+  const ourProbability = Math.min(95, marketImpliedProb + probAdjustment);
+  const edge = ourProbability - betPriceCents;
 
   // Expected value
   const potentialWin = 100 - betPriceCents;
-  const ev = (winProbability / 100) * potentialWin - ((100 - winProbability) / 100) * betPriceCents;
+  const ev = (ourProbability / 100) * potentialWin - ((100 - ourProbability) / 100) * betPriceCents;
 
-  // DEGEN vs SAFE classification
-  // SAFE = medium/high/very_high confidence + any positive edge
-  // Small gains ($0.20 on $5) are fine if the bet is safe
-  // DEGEN = low confidence OR betting against strong market (price < 30¢)
-  const hasGoodConfidence = signal.confidence === 'medium' || signal.confidence === 'high' || signal.confidence === 'very_high';
-  const isSafe = hasGoodConfidence && edge > 0 && betPriceCents >= 30;
-  const isDegen = signal.confidence === 'low' || betPriceCents < 30;
+  // === SAFE vs DEGEN ===
+  // SAFE: medium+ confidence, reasonable price (30-85¢), positive edge
+  // DEGEN: low confidence OR extreme prices
+  const isSafe = (confidence === 'medium' || confidence === 'high' || confidence === 'very_high')
+                  && betPriceCents >= 30 && betPriceCents <= 85 && edge > 0;
+  const isDegen = !isSafe;
+
+  // Build reason string
+  const dirStr = isAboveStrike ? 'above' : 'below';
+  const momStr = momentum.direction !== 'neutral' ? ` | momentum ${momentum.direction}` : '';
+  const reason = `Price ${distanceFromStrike.toFixed(2)}% ${dirStr} strike, ${timeMinutes}m left${momStr}`;
 
   return {
     ticker: parsed.ticker,
@@ -2954,27 +2892,57 @@ function analyzeCryptoMarket(parsed) {
     assetType: parsed.cryptoType,
     marketType: parsed.marketType,
     currentPrice,
-    strikePrice: parsed.strikePrice || currentPrice,
+    strikePrice,
+    pctFromStrike: pctFromStrike.toFixed(3),
     timeRemaining: parsed.timeRemaining,
     timeRemainingMinutes: timeMinutes,
     timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining),
-    yesAsk: parsed.yesAsk,
-    noAsk: parsed.noAsk,
+    yesAsk: yesPrice,
+    noAsk: noPrice,
     betPriceCents,
-    // Momentum-based bet recommendation
     betSide,
     betPrice,
-    winProbability: winProbability.toFixed(1),
+    winProbability: ourProbability.toFixed(1),
     edge: edge,
     expectedValue: ev.toFixed(2),
-    isRecommended: edge >= 1, // Show all with 1%+ edge
-    isDegen,  // Risky bet - manual only
-    isSafe,   // Safe bet - auto-bet can place
-    confidence: signal.confidence,
-    momentumSignal: signal,
-    shortMomentum: signal.momentum,
-    hasStrongMomentumSignal: true,
-    reason: signal.reason
+    isRecommended: edge > 0,
+    isDegen,
+    isSafe,
+    confidence,
+    confidenceScore: score,
+    momentumSignal: momentum,
+    reason
+  };
+}
+
+// Helper for no-signal results
+function buildNoSignalResult(parsed, currentPrice, strikePrice, timeMinutes, momentum, reason) {
+  return {
+    ticker: parsed.ticker,
+    title: parsed.title,
+    cryptoType: parsed.cryptoType,
+    assetType: parsed.cryptoType,
+    marketType: parsed.marketType,
+    currentPrice,
+    strikePrice,
+    pctFromStrike: (((currentPrice - strikePrice) / strikePrice) * 100).toFixed(3),
+    timeRemaining: parsed.timeRemaining,
+    timeRemainingMinutes: timeMinutes,
+    timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining),
+    yesAsk: parsed.yesAsk || 0.5,
+    noAsk: parsed.noAsk || 0.5,
+    betSide: null,
+    betPrice: null,
+    betPriceCents: 0,
+    winProbability: 50,
+    edge: 0,
+    expectedValue: 0,
+    isRecommended: false,
+    isDegen: false,
+    isSafe: false,
+    confidence: 'none',
+    momentumSignal: momentum,
+    reason
   };
 }
 
@@ -4150,25 +4118,35 @@ async function runAutoBet() {
     const above50 = allOpps.filter(m => parseFloat(m.winProbability) >= 50);
     const above60 = allOpps.filter(m => parseFloat(m.winProbability) >= 60);
 
-    console.log(`   Analyzed: ${allOpps.length} valid | ${withEdge.length} with edge | ${above50.length} >50% | ${above60.length} >60%`);
+    console.log(`   Analyzed: ${allOpps.length} valid | ${withEdge.length} with edge`);
 
     // Update scan status
     lastScanStatus.analyzedValid = allOpps.length;
     lastScanStatus.withEdge = withEdge.length;
     lastScanStatus.above60 = above60.length;
 
-    // Show probability distribution for debugging
-    const probBuckets = { '50-55': 0, '55-60': 0, '60-65': 0, '65-70': 0, '70-75': 0, '75-80': 0 };
-    allOpps.forEach(m => {
-      const prob = parseFloat(m.winProbability) || 0;
-      if (prob >= 75) probBuckets['75-80']++;
-      else if (prob >= 70) probBuckets['70-75']++;
-      else if (prob >= 65) probBuckets['65-70']++;
-      else if (prob >= 60) probBuckets['60-65']++;
-      else if (prob >= 55) probBuckets['55-60']++;
-      else if (prob >= 50) probBuckets['50-55']++;
-    });
-    console.log(`   Probability distribution: ${JSON.stringify(probBuckets)}`);
+    // Show all crypto markets with their status
+    const cryptoAnalyzed = allOpps.filter(m => m.marketCategory === 'crypto' || m.cryptoType);
+    if (cryptoAnalyzed.length > 0) {
+      console.log(`   📈 Crypto markets:`);
+      cryptoAnalyzed.forEach(m => {
+        const side = m.betSide || '-';
+        const price = m.betPriceCents || 0;
+        const edge = parseFloat(m.edge) || 0;
+        const conf = m.confidence || 'none';
+        const status = m.isSafe ? '✅' : (m.isDegen ? '🎲' : '⏸️');
+        console.log(`      ${status} ${m.cryptoType}: ${side} @ ${price}¢ | edge ${edge > 0 ? '+' : ''}${edge.toFixed(1)}% | ${conf} | ${m.reason || 'no signal'}`);
+      });
+    }
+
+    // Show no-bet reasons
+    const noEdge = allOpps.filter(m => m.edge <= 0 && m.cryptoType);
+    if (noEdge.length > 0 && withEdge.length === 0) {
+      console.log(`   ⚠️ No positive edge found. Reasons:`);
+      noEdge.slice(0, 3).forEach(m => {
+        console.log(`      - ${m.cryptoType}: ${m.reason || 'unknown'}`);
+      });
+    }
 
     // Combine and filter - EDGE-BASED FILTERING
     // Edge is what determines profitability, not raw probability!
@@ -4185,9 +4163,10 @@ async function runAutoBet() {
     if (withAnyEdge.length > 0) {
       console.log(`   📊 Top 5 by edge:`);
       withAnyEdge.sort((a, b) => parseFloat(b.edge) - parseFloat(a.edge)).slice(0, 5).forEach(m => {
-        const momStr = m.hasStrongMomentumSignal ? ` 🚀${m.shortMomentum?.direction || ''}` : '';
+        const safeStr = m.isSafe ? '✅SAFE' : (m.isDegen ? '🎲DEGEN' : '');
         const edgeNum = parseFloat(m.edge) || 0;
-        console.log(`      - ${m.title?.substring(0, 30)}: ${m.winProbability}% @ ${m.betPriceCents}¢ | edge +${edgeNum.toFixed(1)}%${momStr}`);
+        const confStr = m.confidence ? ` [${m.confidence}]` : '';
+        console.log(`      - ${m.title?.substring(0, 35)}: ${m.betSide} @ ${m.betPriceCents}¢ | edge +${edgeNum.toFixed(1)}%${confStr} ${safeStr}`);
       });
     }
 
