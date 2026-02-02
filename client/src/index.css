@@ -36,11 +36,11 @@
   --accent-blue: #00f0ff;
   --accent-purple: #bf00ff;
 
-  /* Text Colors - Improved Readability */
-  --text-primary: #f0f0f5;
-  --text-secondary: #b0b0c0;
-  --text-muted: #8090a0;
-  --text-dim: #506070;
+  /* Text Colors - HIGH CONTRAST for Readability */
+  --text-primary: #ffffff;
+  --text-secondary: #d0d8e8;
+  --text-muted: #a0b0c8;
+  --text-dim: #7090b0;
 
   /* Borders & Effects */
   --border-color: #252535;
@@ -185,7 +185,7 @@ body {
 .logo-subtitle {
   display: block;
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 3px;
@@ -217,7 +217,7 @@ body {
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   font-family: var(--font-body);
-  font-size: 15px;
+  font-size: 17px;
   font-weight: 600;
   letter-spacing: 0.5px;
   cursor: pointer;
@@ -268,7 +268,7 @@ body {
   background: var(--neon-magenta);
   color: white;
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   font-weight: 600;
   padding: 2px 8px;
   border-radius: 2px;
@@ -305,7 +305,7 @@ body {
 .balance-label {
   display: block;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 16px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 1px;
@@ -337,7 +337,7 @@ body {
   align-items: center;
   gap: 8px;
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-muted);
   padding: 8px 12px;
   background: var(--bg-card);
@@ -423,7 +423,7 @@ body {
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   font-family: var(--font-body);
-  font-size: 13px;
+  font-size: 17px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;
@@ -435,7 +435,7 @@ body {
 }
 
 .refresh-icon {
-  font-size: 14px;
+  font-size: 16px;
 }
 
 /* ============================================
@@ -530,7 +530,7 @@ body {
 
 .ticker-symbol {
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
   color: #ffffff;
   letter-spacing: 1px;
@@ -547,7 +547,7 @@ body {
 .ticker-price.down { color: var(--accent-red); }
 
 .ticker-change-indicator {
-  font-size: 14px;
+  font-size: 16px;
   margin-left: 6px;
   font-weight: bold;
 }
@@ -605,7 +605,7 @@ body {
 
 .status-text {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   font-weight: 700;
   color: var(--neon-cyan);
   letter-spacing: 1px;
@@ -650,7 +650,7 @@ body {
 .status-message {
   flex: 1;
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
 }
 
 .status-banner.success .status-message { color: var(--neon-green); }
@@ -761,7 +761,7 @@ body {
 
 .stats-card-title {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 2px;
@@ -769,7 +769,7 @@ body {
 }
 
 .stats-card-subtitle {
-  font-size: 14px;
+  font-size: 16px;
   color: var(--text-muted);
   margin-top: 2px;
 }
@@ -872,7 +872,7 @@ body {
   border: none;
   color: var(--neon-cyan);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 16px;
   cursor: pointer;
   transition: opacity 0.2s;
 }
@@ -884,7 +884,7 @@ body {
 .opportunities-preview,
 .opportunities-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: 20px;
   padding: 20px;
   background: linear-gradient(180deg, rgba(0, 10, 20, 0.5) 0%, rgba(5, 15, 30, 0.8) 100%);
@@ -894,64 +894,52 @@ body {
   min-height: 300px;
 }
 
-/* Shimi Logo Watermark */
+/* Shimi Logo Watermark - just SHIMI text */
 .opportunities-preview::before,
 .opportunities-grid::before {
-  content: '//SHIMI';
+  content: 'SHIMI';
   position: absolute;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
   font-family: var(--font-display);
-  font-size: 120px;
+  font-size: 100px;
   font-weight: 800;
   letter-spacing: 12px;
-  color: rgba(0, 240, 255, 0.03);
-  text-shadow: none;
+  color: rgba(0, 240, 255, 0.04);
   pointer-events: none;
   z-index: 0;
   white-space: nowrap;
 }
 
-/* Flickering magenta lines around the watermark */
+/* Flickering magenta // prefix */
 .opportunities-preview::after,
 .opportunities-grid::after {
   content: '//';
   position: absolute;
   top: 50%;
-  left: calc(50% - 180px);
-  transform: translateY(-50%);
+  left: 50%;
+  transform: translate(calc(-50% - 220px), -50%);
   font-family: var(--font-display);
-  font-size: 120px;
+  font-size: 100px;
   font-weight: 800;
-  color: rgba(255, 0, 255, 0.06);
+  color: rgba(255, 0, 255, 0.08);
   text-shadow:
-    0 0 30px rgba(255, 0, 255, 0.1),
-    0 0 60px rgba(255, 0, 255, 0.05);
+    0 0 20px rgba(255, 0, 255, 0.1);
   pointer-events: none;
   z-index: 0;
   animation: pinkFlicker 3s ease-in-out infinite;
 }
 
 @keyframes pinkFlicker {
-  0%, 100% {
-    opacity: 1;
-    text-shadow:
-      0 0 30px rgba(255, 0, 255, 0.15),
-      0 0 60px rgba(255, 0, 255, 0.08);
-  }
-  15% { opacity: 0.4; }
-  16% { opacity: 0.9; }
-  25% { opacity: 0.7; }
-  30% {
-    opacity: 1;
-    text-shadow:
-      0 0 40px rgba(255, 0, 255, 0.2),
-      0 0 80px rgba(255, 0, 255, 0.1);
-  }
-  50% { opacity: 0.5; }
-  51% { opacity: 0.85; }
-  70% { opacity: 0.6; }
+  0%, 100% { opacity: 1; }
+  15% { opacity: 0.3; }
+  16% { opacity: 0.8; }
+  25% { opacity: 0.5; }
+  30% { opacity: 1; }
+  50% { opacity: 0.4; }
+  51% { opacity: 0.9; }
+  70% { opacity: 0.5; }
   85% { opacity: 0.95; }
 }
 
@@ -1037,7 +1025,7 @@ body {
 }
 
 .token-name {
-  font-size: 14px;
+  font-size: 16px;
   color: var(--text-muted);
 }
 
@@ -1048,7 +1036,7 @@ body {
 
 .badge {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 16px;
   font-weight: 700;
   padding: 6px 12px;
   border-radius: 4px;
@@ -1070,7 +1058,7 @@ body {
 }
 
 .opp-title {
-  font-size: 15px;
+  font-size: 17px;
   color: var(--text-secondary);
   margin-bottom: 20px;
   line-height: 1.5;
@@ -1100,7 +1088,7 @@ body {
 
 .price-label {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 16px;
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 1px;
@@ -1152,7 +1140,7 @@ body {
 .stat-label {
   display: block;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 16px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -1161,7 +1149,7 @@ body {
 
 .stat-value {
   font-family: var(--font-display);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -1184,13 +1172,13 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: 16px;
   color: var(--text-muted);
 }
 
 .analysis-icon,
 .momentum-icon {
-  font-size: 14px;
+  font-size: 16px;
 }
 
 /* Recommendation */
@@ -1203,7 +1191,7 @@ body {
 
 .rec-side {
   font-family: var(--font-display);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
   padding: 6px 16px;
   border-radius: var(--radius-sm);
@@ -1223,7 +1211,7 @@ body {
 
 .rec-reason {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-muted);
 }
 
@@ -1265,17 +1253,17 @@ body {
 }
 
 .btn-action {
-  font-size: 14px;
+  font-size: 16px;
 }
 
 .btn-profit {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   opacity: 0.9;
 }
 
 .btn-loading {
-  font-size: 14px;
+  font-size: 16px;
 }
 
 /* ============================================
@@ -1302,7 +1290,7 @@ body {
 }
 
 .stat-summary .stat-label {
-  font-size: 12px;
+  font-size: 16px;
   margin-bottom: 8px;
 }
 
@@ -1431,7 +1419,7 @@ body {
 
 .result-banner.pending .result-amount {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-muted);
 }
 
@@ -1454,7 +1442,7 @@ body {
 
 .bet-time {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-muted);
 }
 
@@ -1472,7 +1460,7 @@ body {
 
 .bet-info-label {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 1px;
@@ -1490,7 +1478,7 @@ body {
 
 .side-badge {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   font-weight: 700;
   padding: 6px 14px;
   border-radius: 4px;
@@ -1531,7 +1519,7 @@ body {
 
 .settings-card-title {
   font-family: var(--font-display);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
   margin-bottom: 16px;
@@ -1557,7 +1545,7 @@ body {
   border-radius: var(--radius-sm);
   color: var(--neon-green);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 16px;
   margin-bottom: 8px;
 }
 
@@ -1570,7 +1558,7 @@ body {
 }
 
 .connected-info p {
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-muted);
 }
 
@@ -1579,7 +1567,7 @@ body {
 }
 
 .connect-prompt p {
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-muted);
   margin-bottom: 12px;
 }
@@ -1591,7 +1579,7 @@ body {
   border-radius: var(--radius-sm);
   color: var(--bg-dark);
   font-family: var(--font-body);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s;
@@ -1620,13 +1608,13 @@ body {
 }
 
 .settings-label {
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-secondary);
 }
 
 .settings-value {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-primary);
 }
 
@@ -1660,7 +1648,7 @@ body {
   border: 1px solid var(--neon-cyan);
   border-radius: 50%;
   font-family: var(--font-display);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--neon-cyan);
   flex-shrink: 0;
@@ -1668,14 +1656,14 @@ body {
 
 .step-content h4 {
   font-family: var(--font-display);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
   margin-bottom: 4px;
 }
 
 .step-content p {
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-muted);
   line-height: 1.5;
 }
@@ -1710,13 +1698,13 @@ body {
 
 .token-item .token-symbol {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   font-weight: 700;
   color: var(--text-primary);
 }
 
 .token-item .token-name {
-  font-size: 12px;
+  font-size: 16px;
   color: var(--text-muted);
 }
 
@@ -1754,7 +1742,7 @@ body {
 
 .loading-state p,
 .empty-state p {
-  font-size: 14px;
+  font-size: 16px;
   color: var(--text-muted);
 }
 
@@ -1772,7 +1760,7 @@ body {
 }
 
 .empty-hint {
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-muted);
   margin-top: 8px;
 }
@@ -1825,7 +1813,7 @@ body {
 }
 
 .modal-description {
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-muted);
   margin-bottom: 20px;
 }
@@ -1836,7 +1824,7 @@ body {
   border: 1px solid var(--accent-red);
   border-radius: var(--radius-sm);
   color: var(--accent-red);
-  font-size: 13px;
+  font-size: 17px;
   margin-bottom: 16px;
 }
 
@@ -1847,7 +1835,7 @@ body {
 .form-group label {
   display: block;
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -1863,7 +1851,7 @@ body {
   border-radius: var(--radius-sm);
   color: var(--text-primary);
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   transition: border-color 0.2s;
 }
 
@@ -1892,7 +1880,7 @@ body {
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   font-family: var(--font-body);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   cursor: pointer;
 }
@@ -1904,7 +1892,7 @@ body {
   border-radius: var(--radius-sm);
   color: var(--bg-dark);
   font-family: var(--font-body);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   cursor: pointer;
 }
@@ -1965,7 +1953,7 @@ body {
 
 .risk-label {
   font-family: var(--font-body);
-  font-size: 12px;
+  font-size: 16px;
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 1px;
@@ -1973,7 +1961,7 @@ body {
 
 .risk-value {
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 16px;
   color: var(--neon-cyan);
 }
 
@@ -1994,7 +1982,7 @@ body {
 
 .risk-remaining {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-muted);
 }
 
@@ -2028,7 +2016,7 @@ body {
 
 .risk-display-sidebar .risk-label {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 16px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 1px;
@@ -2036,7 +2024,7 @@ body {
 
 .risk-display-sidebar .risk-value {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 16px;
   color: var(--neon-cyan);
 }
 
@@ -2071,7 +2059,7 @@ body {
   border: 1px solid var(--border-color);
   border-radius: 6px;
   font-family: var(--font-body);
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.2s ease;
@@ -2094,7 +2082,7 @@ body {
    ============================================ */
 
 .badge.market-type {
-  font-size: 12px;
+  font-size: 16px;
   font-weight: 600;
   letter-spacing: 0.5px;
 }
@@ -2152,7 +2140,7 @@ body {
     background: none;
     border: none;
     color: var(--text-muted);
-    font-size: 12px;
+    font-size: 16px;
     cursor: pointer;
   }
 
@@ -2166,20 +2154,57 @@ body {
 
   .stats-row {
     grid-template-columns: repeat(2, 1fr);
-    gap: 8px;
+    gap: 12px;
+    padding: 16px;
   }
 
   .stats-card {
-    padding: 14px;
+    padding: 16px;
+  }
+
+  .stats-card-icon {
+    width: 45px;
+    height: 45px;
+    font-size: 24px;
   }
 
   .stats-card-value {
-    font-size: 18px;
+    font-size: 24px;
+  }
+
+  .stats-card-title {
+    font-size: 14px;
   }
 
   .opportunities-preview,
   .opportunities-grid {
     grid-template-columns: 1fr;
+    padding: 12px;
+  }
+
+  .opportunities-preview::before,
+  .opportunities-grid::before {
+    font-size: 60px;
+  }
+
+  .opportunities-preview::after,
+  .opportunities-grid::after {
+    font-size: 60px;
+    transform: translate(calc(-50% - 130px), -50%);
+  }
+
+  .opp-card {
+    padding: 16px;
+  }
+
+  .token-icon {
+    width: 40px;
+    height: 40px;
+    font-size: 18px;
+  }
+
+  .token-symbol {
+    font-size: 18px;
   }
 
   .history-stats {
@@ -2190,16 +2215,47 @@ body {
     flex-direction: column;
   }
 
+  .action-btn {
+    padding: 16px 20px;
+    font-size: 16px;
+  }
+
   .content-area {
     padding: 16px;
   }
 
   .page-title {
-    font-size: 14px;
+    font-size: 20px;
+  }
+
+  .section-title {
+    font-size: 16px;
   }
 
   .tokens-grid {
     grid-template-columns: repeat(3, 1fr);
+  }
+
+  .price-ticker-container {
+    height: 50px;
+  }
+
+  .ticker-item {
+    padding: 8px 12px;
+  }
+
+  .ticker-icon {
+    width: 24px;
+    height: 24px;
+    font-size: 14px;
+  }
+
+  .ticker-symbol {
+    font-size: 12px;
+  }
+
+  .ticker-price {
+    font-size: 14px;
   }
 }
 
@@ -2208,8 +2264,62 @@ body {
     display: none;
   }
 
+  .stats-row {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .stats-card {
+    flex-direction: row;
+    align-items: center;
+    padding: 14px;
+  }
+
+  .stats-card-icon {
+    width: 40px;
+    height: 40px;
+    font-size: 20px;
+  }
+
+  .stats-card-value {
+    font-size: 22px;
+  }
+
   .bet-info-row {
     gap: 12px;
+  }
+
+  .bet-info-item {
+    min-width: 70px;
+  }
+
+  .result-amount {
+    font-size: 18px;
+  }
+
+  .opp-card {
+    padding: 14px;
+  }
+
+  .action-btn {
+    padding: 14px 16px;
+    font-size: 15px;
+  }
+
+  .section-title {
+    font-size: 15px;
+    letter-spacing: 2px;
+  }
+
+  .opportunities-preview::before,
+  .opportunities-grid::before {
+    font-size: 40px;
+  }
+
+  .opportunities-preview::after,
+  .opportunities-grid::after {
+    font-size: 40px;
+    transform: translate(calc(-50% - 85px), -50%);
   }
 }
 
@@ -2271,7 +2381,7 @@ body {
 }
 
 .alert-headline {
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
   line-height: 1.3;
@@ -2279,7 +2389,7 @@ body {
 
 .alert-meta {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-muted);
 }
 
@@ -2350,7 +2460,7 @@ body {
 
 .sentiment-badge {
   font-family: var(--font-display);
-  font-size: 12px;
+  font-size: 16px;
   font-weight: 700;
   padding: 6px 16px;
   border-radius: 4px;
@@ -2427,7 +2537,7 @@ body {
   justify-content: space-between;
   margin-top: 8px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 16px;
   color: var(--text-muted);
 }
 
@@ -2461,13 +2571,13 @@ body {
 
 .signal-label {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 16px;
   color: var(--text-muted);
   text-transform: uppercase;
 }
 
 .sentiment-description {
-  font-size: 14px;
+  font-size: 16px;
   color: var(--text-secondary);
   text-align: center;
 }
@@ -2492,7 +2602,7 @@ body {
   align-items: center;
   gap: 10px;
   font-family: var(--font-display);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text-primary);
   margin-bottom: 16px;
@@ -2510,7 +2620,7 @@ body {
   padding: 30px;
   text-align: center;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: 17px;
 }
 
 .alerts-list {
@@ -2544,7 +2654,7 @@ body {
 
 .alert-title {
   display: block;
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-primary);
   margin-bottom: 6px;
   line-height: 1.4;
@@ -2559,7 +2669,7 @@ body {
 
 .alert-tag {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 16px;
   padding: 2px 6px;
   background: var(--bg-card);
   border-radius: 2px;
@@ -2568,13 +2678,13 @@ body {
 
 .alert-time {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 16px;
   color: var(--text-muted);
 }
 
 .alert-score {
   font-family: var(--font-display);
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--neon-cyan);
   padding: 4px 8px;
@@ -2600,14 +2710,14 @@ body {
 
 .reddit-rank {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-muted);
   width: 24px;
 }
 
 .reddit-ticker {
   font-family: var(--font-display);
-  font-size: 13px;
+  font-size: 17px;
   font-weight: 700;
   color: var(--neon-cyan);
   width: 60px;
@@ -2616,13 +2726,13 @@ body {
 .reddit-mentions {
   flex: 1;
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-secondary);
 }
 
 .reddit-change {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   padding: 2px 6px;
   border-radius: 2px;
 }
@@ -2691,7 +2801,7 @@ body {
 
 .urgent-badge {
   font-family: var(--font-mono);
-  font-size: 8px;
+  font-size: 14px;
   font-weight: 700;
   padding: 2px 4px;
   background: var(--neon-yellow);
@@ -2716,7 +2826,7 @@ body {
 
 .news-title {
   display: block;
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-primary);
   line-height: 1.4;
   margin-bottom: 8px;
@@ -2727,7 +2837,7 @@ body {
   flex-wrap: wrap;
   gap: 12px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 16px;
   color: var(--text-muted);
 }
 
@@ -2784,7 +2894,7 @@ body {
   }
 
   .alert-headline {
-    font-size: 13px;
+    font-size: 17px;
   }
 }
 
@@ -2806,7 +2916,7 @@ body {
 
 .risk-pool-settings h4 {
   font-family: var(--font-display);
-  font-size: 12px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--neon-cyan);
   margin-bottom: 12px;
@@ -2823,7 +2933,7 @@ body {
 
 .settings-input-group label {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   color: var(--text-muted);
 }
 
@@ -2833,7 +2943,7 @@ body {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
   font-family: var(--font-mono);
-  font-size: 14px;
+  font-size: 16px;
   color: var(--text-primary);
   width: 100%;
 }
@@ -2864,7 +2974,7 @@ body {
   border: none;
   border-radius: var(--radius-md);
   font-family: var(--font-display);
-  font-size: 13px;
+  font-size: 17px;
   font-weight: 600;
   color: var(--bg-dark);
   cursor: pointer;
@@ -2888,7 +2998,7 @@ body {
 
 .result-countdown {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 17px;
   font-weight: 600;
   color: var(--neon-cyan);
   padding: 2px 8px;
@@ -2913,7 +3023,7 @@ body {
    ============================================ */
 
 .scale-in-badge {
-  font-size: 12px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--neon-purple);
   background: rgba(128, 90, 255, 0.2);
@@ -2932,7 +3042,7 @@ body {
 }
 
 .settings-description {
-  font-size: 12px;
+  font-size: 16px;
   color: var(--text-muted);
   margin-bottom: 12px;
   line-height: 1.4;
@@ -2946,7 +3056,7 @@ body {
 }
 
 .scale-in-settings .settings-input-group label {
-  font-size: 12px;
+  font-size: 16px;
   color: var(--text-secondary);
 }
 
