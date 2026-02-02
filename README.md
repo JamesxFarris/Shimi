@@ -75,22 +75,6 @@ Open [http://localhost:5173](http://localhost:5173)
 
 ---
 
-## Deploy (Run 24/7)
-
-### Render.com (Free)
-
-1. Push this repo to GitHub
-2. Go to [render.com](https://render.com) → New Web Service
-3. Connect your repo — it auto-detects settings
-4. Add environment variables for your Kalshi API keys
-5. Deploy
-
-Your bot will run at `https://your-app.onrender.com`
-
-> **Tip:** Use [UptimeRobot](https://uptimerobot.com) to ping `/api/health` every 5 minutes and keep the free tier awake.
-
----
-
 ## Connect Kalshi
 
 1. Go to [kalshi.com/account/api-keys](https://kalshi.com/account/api-keys)
