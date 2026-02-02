@@ -41,10 +41,9 @@ const formatPrice = (val, token) => {
   return `$${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
-// Asset config including S&P 500
+// Asset config (crypto only - S&P 500 disabled for now)
 const ASSET_CONFIG = {
-  ...TOKEN_CONFIG,
-  SPX: { color: '#ffcc00', name: 'S&P 500', icon: '📈' }
+  ...TOKEN_CONFIG
 }
 
 // Opportunity Card - Larger stacked design
@@ -362,13 +361,9 @@ function App() {
         if (data.risk) {
                     setRisk(data.risk)
         }
-        // Also update prices from opportunities as backup
-        if (data.prices) {
-          const allPrices = { ...data.prices.crypto }
-          if (data.prices.index?.SPX) {
-            allPrices.SPX = data.prices.index.SPX
-          }
-          setPrices(prev => ({ ...prev, ...allPrices }))
+        // Also update prices from opportunities as backup (crypto only)
+        if (data.prices?.crypto) {
+          setPrices(prev => ({ ...prev, ...data.prices.crypto }))
           setPriceLastUpdated(Date.now())
         }
         setError(null)

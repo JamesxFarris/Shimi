@@ -2447,55 +2447,9 @@ async function fetchCryptoMarkets() {
 const indexMarketCache = { data: null, lastFetch: 0, ttl: 30000 };
 
 async function fetchIndexMarkets() {
-  const now = Date.now();
-
-  if (indexMarketCache.data && (now - indexMarketCache.lastFetch) < indexMarketCache.ttl) {
-    return indexMarketCache.data;
-  }
-
-  try {
-    // S&P 500 market series on Kalshi
-    const indexSeries = [
-      'KXINX',      // S&P 500 daily range
-      'KXINXU',     // S&P 500 above/below
-      'KXINXD',     // S&P 500 daily direction
-    ];
-
-    const allMarkets = [];
-
-    // Fetch each index series in parallel
-    const fetches = indexSeries.map(async (series) => {
-      try {
-        const data = await kalshiRequest('GET', `/markets?limit=100&status=open&series_ticker=${series}`);
-        return data.markets || [];
-      } catch (e) {
-        console.log(`No markets for ${series}`);
-        return [];
-      }
-    });
-
-    const results = await Promise.all(fetches);
-    results.forEach(markets => allMarkets.push(...markets));
-
-    // Filter for markets closing within reasonable time (today)
-    const indexMarkets = allMarkets.filter(m => {
-      const closeTime = m.close_time ? new Date(m.close_time).getTime() : null;
-      const timeRemaining = closeTime ? closeTime - now : null;
-      // S&P markets settle at end of day, so allow up to 8 hours
-      const isValidTime = timeRemaining && timeRemaining > 60000 && timeRemaining < 8 * 60 * 60 * 1000;
-      return isValidTime;
-    });
-
-    console.log(`📊 Fetched ${allMarkets.length} index markets, ${indexMarkets.length} valid`);
-
-    indexMarketCache.data = indexMarkets;
-    indexMarketCache.lastFetch = now;
-
-    return indexMarkets;
-  } catch (error) {
-    console.error('Error fetching index markets:', error.message);
-    return [];
-  }
+  // DISABLED: Focusing on crypto algorithm only
+  // S&P 500 / index markets are disabled for now
+  return [];
 }
 
 // Parse S&P 500 market data
