@@ -3882,21 +3882,22 @@ async function runAutoBet() {
     });
     console.log(`   Probability distribution: ${JSON.stringify(probBuckets)}`);
 
-    // Combine and filter - EDGE-BASED FILTERING (no arbitrary probability threshold)
-    // The model calculates probability; edge = our_prob - market_prob
-    // Minimum edge accounts for model uncertainty; minimum prob avoids coin-flips
-    const MIN_EDGE = 2.0;      // Require 2%+ edge (lowered from 3% to catch more opportunities)
-    const MIN_PROB = 51;       // Soft floor - just above coin-flip
+    // Combine and filter - AGGRESSIVE MODE for more volume
+    // Lower thresholds to catch more opportunities
+    const MIN_EDGE = 0.5;      // Very low - just need ANY edge (was 2%)
+    const MIN_PROB = 50.5;     // Basically anything above 50%
 
-    // Log ALL markets with any positive edge for debugging
-    const anyEdge = allOpps.filter(m => m.edge > 0).sort((a, b) => b.edge - a.edge);
-    if (anyEdge.length > 0) {
-      console.log(`   🔍 ALL markets with positive edge:`);
-      anyEdge.slice(0, 5).forEach(m => {
-        console.log(`      - ${m.title?.substring(0, 40)}: prob=${m.winProbability}% edge=+${m.edge?.toFixed(1)}% price=${m.betPriceCents}¢`);
+    // Log ALL markets for debugging
+    console.log(`   🔍 Market breakdown:`);
+    const withAnyEdge = allOpps.filter(m => m.edge > 0);
+    const withGoodEdge = allOpps.filter(m => m.edge >= 2);
+    console.log(`      Total analyzed: ${allOpps.length} | Any edge: ${withAnyEdge.length} | 2%+ edge: ${withGoodEdge.length}`);
+
+    if (withAnyEdge.length > 0) {
+      console.log(`   📊 Top 5 by edge:`);
+      withAnyEdge.sort((a, b) => b.edge - a.edge).slice(0, 5).forEach(m => {
+        console.log(`      - ${m.title?.substring(0, 35)}: ${m.winProbability}% @ ${m.betPriceCents}¢ | edge +${m.edge?.toFixed(1)}%`);
       });
-    } else {
-      console.log(`   ⚠️ NO markets have positive edge right now`);
     }
 
     const opportunities = [...cryptoOpps, ...indexOpps]
@@ -3906,10 +3907,10 @@ async function runAutoBet() {
         const winProb = parseFloat(m.winProbability) || 0;
         const edge = m.edge || 0;
 
-        // Primary filter: EDGE (this is what matters for profitability)
+        // Primary filter: ANY positive edge
         if (edge < MIN_EDGE) return false;
 
-        // Secondary filter: avoid near-coin-flip bets
+        // Secondary filter: must be better than coin flip
         if (winProb < MIN_PROB) return false;
 
         // Check if we already bet on this market
