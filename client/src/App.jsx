@@ -325,6 +325,7 @@ function App() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [autoBetEnabled, setAutoBetEnabled] = useState(false)
+  const [scanStatus, setScanStatus] = useState(null)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [showAuth, setShowAuth] = useState(false)
   const [authForm, setAuthForm] = useState({ apiKeyId: '', privateKey: '' })
@@ -452,6 +453,19 @@ function App() {
     }
   }, [])
 
+  // Fetch scan status (for auto-bet diagnostics)
+  const fetchScanStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/scan-status`)
+      const data = await res.json()
+      if (data.success) {
+        setScanStatus(data)
+      }
+    } catch (err) {
+      console.error('Scan status error:', err)
+    }
+  }, [])
+
   // Check auth status
   const checkAuth = useCallback(async () => {
     try {
@@ -486,6 +500,15 @@ function App() {
       clearInterval(tickerTimeInterval)
     }
   }, []) // Empty dependency - only runs on mount
+
+  // Poll scan status when auto-bet is enabled
+  useEffect(() => {
+    if (autoBetEnabled) {
+      fetchScanStatus() // Fetch immediately
+      const scanInterval = setInterval(fetchScanStatus, 5000) // Poll every 5 seconds
+      return () => clearInterval(scanInterval)
+    }
+  }, [autoBetEnabled, fetchScanStatus])
 
   // Place a bet
   const placeBet = async (opp) => {
@@ -901,6 +924,42 @@ function App() {
                     </span>
                   </button>
                 </div>
+
+                {/* Scan Status (visible when auto-bet is enabled) */}
+                {autoBetEnabled && scanStatus?.lastScan && (
+                  <div className="scan-status">
+                    <div className="scan-status-header">
+                      <span className="scan-status-indicator"></span>
+                      Last Scan: {scanStatus.summary?.age || 'just now'}
+                    </div>
+                    <div className="scan-status-details">
+                      <span>Markets: {scanStatus.lastScan.cryptoMarketsFound + scanStatus.lastScan.indexMarketsFound}</span>
+                      <span>Qualifying: {scanStatus.lastScan.above60}</span>
+                      <span className={`scan-result ${scanStatus.lastScan.betPlaced ? 'bet-placed' : scanStatus.lastScan.blockedReason || 'waiting'}`}>
+                        {scanStatus.lastScan.betPlaced ? 'Bet Placed' :
+                         scanStatus.lastScan.blockedReason === 'no_opportunities' ? 'No 60%+ opps' :
+                         scanStatus.lastScan.blockedReason === 'risk_limit' ? 'Risk limit hit' :
+                         scanStatus.lastScan.blockedReason === 'token_limit' ? 'Token limit hit' :
+                         scanStatus.lastScan.blockedReason === 'error' ? 'Error' :
+                         'Scanning...'}
+                      </span>
+                    </div>
+                    {scanStatus.lastScan.bestOpportunity && !scanStatus.lastScan.betPlaced && (
+                      <div className="scan-best-opp">
+                        Best: {scanStatus.lastScan.bestOpportunity.title?.substring(0, 30)}...
+                        ({scanStatus.lastScan.bestOpportunity.winProbability}%)
+                        {scanStatus.lastScan.bestOpportunity.reason && (
+                          <span className="blocked-reason"> - {scanStatus.lastScan.bestOpportunity.reason}</span>
+                        )}
+                      </div>
+                    )}
+                    {scanStatus.lastScan.betPlaced && scanStatus.lastScan.betDetails && (
+                      <div className="scan-bet-placed">
+                        Placed: {scanStatus.lastScan.betDetails.contracts}x {scanStatus.lastScan.betDetails.side.toUpperCase()} @ {scanStatus.lastScan.betDetails.priceCents}¢
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Top Opportunities */}

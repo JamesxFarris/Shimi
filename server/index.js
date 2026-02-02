@@ -61,6 +61,21 @@ let config = {
 let betHistory = [];
 let portfolio = { balance: 0, positions: [] };
 
+// Track last auto-bet scan status for diagnostics
+let lastScanStatus = {
+  timestamp: null,
+  cryptoMarketsFound: 0,
+  indexMarketsFound: 0,
+  analyzedValid: 0,
+  withEdge: 0,
+  above60: 0,
+  filteredByRecentBet: 0,
+  bestOpportunity: null,
+  blockedReason: null,  // 'no_opportunities' | 'risk_limit' | 'token_limit' | 'bet_placed'
+  betPlaced: false,
+  betDetails: null
+};
+
 // ============================================
 // PERFORMANCE TRACKING
 // ============================================
@@ -3588,6 +3603,21 @@ async function runAutoBet() {
   try {
     console.log('\n🤖 ========== AUTO-BET SCAN ==========');
 
+    // Reset scan status
+    lastScanStatus = {
+      timestamp: new Date().toISOString(),
+      cryptoMarketsFound: 0,
+      indexMarketsFound: 0,
+      analyzedValid: 0,
+      withEdge: 0,
+      above60: 0,
+      filteredByRecentBet: 0,
+      bestOpportunity: null,
+      blockedReason: null,
+      betPlaced: false,
+      betDetails: null
+    };
+
     // CRITICAL: Refresh positions from Kalshi FIRST to get accurate risk
     if (config.isAuthenticated) {
       try {
@@ -3625,6 +3655,10 @@ async function runAutoBet() {
     console.log(`📊 Fetched: ${cryptoMarkets.length} crypto, ${indexMarkets.length} index markets`);
     console.log(`   Recent bets tracking: ${recentBets.size} markets`);
 
+    // Update scan status
+    lastScanStatus.cryptoMarketsFound = cryptoMarkets.length;
+    lastScanStatus.indexMarketsFound = indexMarkets.length;
+
     // Analyze crypto opportunities
     const cryptoOpps = cryptoMarkets
       .map(m => {
@@ -3644,6 +3678,11 @@ async function runAutoBet() {
     const above60 = allOpps.filter(m => parseFloat(m.winProbability) >= 60);
 
     console.log(`   Analyzed: ${allOpps.length} valid | ${withEdge.length} with edge | ${above50.length} >50% | ${above60.length} >60%`);
+
+    // Update scan status
+    lastScanStatus.analyzedValid = allOpps.length;
+    lastScanStatus.withEdge = withEdge.length;
+    lastScanStatus.above60 = above60.length;
 
     // Show probability distribution for debugging
     const probBuckets = { '50-55': 0, '55-60': 0, '60-65': 0, '65-70': 0, '70-75': 0, '75-80': 0 };
@@ -3706,6 +3745,19 @@ async function runAutoBet() {
     }
 
     if (opportunities.length === 0) {
+      lastScanStatus.blockedReason = 'no_opportunities';
+      // Find closest to threshold for diagnostic
+      const closest = allOpps
+        .filter(m => m.edge > 0)
+        .sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability))[0];
+      if (closest) {
+        lastScanStatus.bestOpportunity = {
+          title: closest.title,
+          winProbability: closest.winProbability,
+          edge: closest.edge,
+          reason: `Below 60% threshold (needs ${(60 - parseFloat(closest.winProbability)).toFixed(1)}% more)`
+        };
+      }
       console.log('⏳ No valid opportunities - waiting for next scan...');
       console.log('========================================\n');
       return;
@@ -3725,6 +3777,16 @@ async function runAutoBet() {
 
     console.log(`💰 Risk [${poolName}]: $${(poolCurrent/100).toFixed(2)} / $${(poolMax/100).toFixed(2)} | Total: $${(riskByType.total/100).toFixed(2)} / $${(getMaxTotalRisk()/100).toFixed(2)}`);
 
+    // Record best opportunity for diagnostics
+    lastScanStatus.bestOpportunity = {
+      title: best.title,
+      ticker: best.ticker,
+      winProbability: best.winProbability,
+      edge: best.edge,
+      side: best.betSide,
+      priceCents: Math.round(best.betPrice * 100)
+    };
+
     console.log(`\n💰 BEST OPPORTUNITY [${category.toUpperCase()}]:`);
     console.log(`   ${best.title}`);
     console.log(`   ${best.betReason}`);
@@ -3739,6 +3801,8 @@ async function runAutoBet() {
 
     // Check risk limit AFTER showing opportunities
     if (remainingBudget < 10) {
+      lastScanStatus.blockedReason = 'risk_limit';
+      lastScanStatus.bestOpportunity.reason = `${poolName} pool limit reached`;
       console.log(`⚠️ Risk limit reached for ${poolName} pool - watching but not betting...`);
       console.log('========================================\n');
       return;
@@ -3748,6 +3812,8 @@ async function runAutoBet() {
     const remainingTokenBudget = getRemainingTokenBudget(best.ticker, best.assetType || best.cryptoType);
     const tokenName = getTokenFromTicker(best.ticker) || best.assetType || best.cryptoType || 'token';
     if (remainingTokenBudget < 10) {
+      lastScanStatus.blockedReason = 'token_limit';
+      lastScanStatus.bestOpportunity.reason = `Token limit reached for ${tokenName}`;
       console.log(`⚠️ Token limit reached for ${tokenName} ($${(getMaxPerToken()/100).toFixed(2)} max) - skipping...`);
       console.log('========================================\n');
       return;
@@ -3898,6 +3964,20 @@ async function runAutoBet() {
     const balanceData = await kalshiRequest('GET', '/portfolio/balance');
     config.bankroll = balanceData.balance || 0;
 
+    // Update scan status for successful bet
+    lastScanStatus.betPlaced = true;
+    lastScanStatus.blockedReason = null;
+    lastScanStatus.betDetails = {
+      ticker: best.ticker,
+      title: best.title,
+      side: betRecord.side,
+      contracts: filledCount,
+      priceCents: betRecord.avgPrice,
+      totalCostCents: betRecord.totalCost,
+      winProbability: best.winProbability,
+      edge: best.edge
+    };
+
     console.log(`\n✅ REAL BET FILLED:`);
     console.log(`   ${betRecord.side.toUpperCase()} on ${best.cryptoType || best.assetType}`);
     console.log(`   ${filledCount} contracts @ ${betRecord.avgPrice}¢`);
@@ -3905,6 +3985,9 @@ async function runAutoBet() {
     console.log('========================================\n');
 
   } catch (error) {
+    lastScanStatus.blockedReason = 'error';
+    lastScanStatus.bestOpportunity = lastScanStatus.bestOpportunity || {};
+    lastScanStatus.bestOpportunity.reason = error.message;
     console.error('❌ Auto-bet error:', error.message);
     console.error('   Stack:', error.stack);
     console.log('========================================\n');
@@ -3940,6 +4023,22 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
       enabled: config.autoBetEnabled
     });
   }
+});
+
+// Get last scan status for diagnostics
+app.get('/api/scan-status', (req, res) => {
+  res.json({
+    success: true,
+    autoBetEnabled: config.autoBetEnabled,
+    lastScan: lastScanStatus,
+    summary: lastScanStatus.timestamp ? {
+      age: Math.round((Date.now() - new Date(lastScanStatus.timestamp).getTime()) / 1000) + 's ago',
+      markets: lastScanStatus.cryptoMarketsFound + lastScanStatus.indexMarketsFound,
+      qualifyingOpportunities: lastScanStatus.above60,
+      result: lastScanStatus.betPlaced ? 'bet_placed' :
+              lastScanStatus.blockedReason || 'no_scan_yet'
+    } : null
+  });
 });
 
 // Auth endpoints
