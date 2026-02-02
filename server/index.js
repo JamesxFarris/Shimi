@@ -3901,21 +3901,22 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     }
 
     const best = opportunities[0];
+    const category = best.marketCategory || 'crypto';
+    const maxPerBet = getMaxPerBet();
+    const priceCents = Math.round(best.betPrice * 100);
 
-    // Check risk limit
+    // Check total exposure limit - must be able to afford at least 1 contract
     const remainingBudget = getRemainingRiskBudget();
-
-    if (remainingBudget < 10) { // Less than 10 cents remaining
+    if (remainingBudget < priceCents) {
+      console.log(`⚠️ Exposure limit reached - $${(remainingBudget/100).toFixed(2)} remaining < ${priceCents}¢ per contract`);
       return res.json({
         success: true,
-        message: `Exposure limit reached ($${(getMaxTotalRisk()/100).toFixed(2)} max). Wait for positions to settle.`,
+        message: `Exposure limit reached ($${(getMaxTotalRisk()/100).toFixed(2)} max). Only $${(remainingBudget/100).toFixed(2)} remaining.`,
         bet: null,
         risk: getRiskByType()
       });
     }
-    const category = best.marketCategory || 'crypto';
-    const maxPerBet = getMaxPerBet();
-    const priceCents = Math.round(best.betPrice * 100);
+
     const remainingTokenBudget = getRemainingTokenBudget(best.ticker, best.assetType || best.cryptoType);
     console.log(`Auto-bet found [${category}]: ${best.title} | Win prob: ${best.winProbability}% | Side: ${best.betSide} | Price: ${priceCents}¢`);
 
@@ -4419,13 +4420,13 @@ async function runAutoBet() {
       const tokenName = getTokenFromTicker(opp.ticker) || opp.assetType || opp.cryptoType || 'token';
       console.log(`   🔄 Processing: ${tokenName} ${opp.betSide} @ ${opp.betPriceCents}¢ (edge +${parseFloat(opp.edge).toFixed(1)}%)`);
 
-      // Check if we've hit overall limits
-      if (getTotalRemainingBudget() < 10) {
-        console.log('   ⚠️ Exposure limit reached - stopping');
+      const priceCents = Math.round(opp.betPrice * 100);
+
+      // Check if we've hit overall limits - must afford at least 1 contract
+      if (getTotalRemainingBudget() < priceCents) {
+        console.log(`   ⚠️ Exposure limit reached ($${(getTotalRemainingBudget()/100).toFixed(2)} < ${priceCents}¢) - stopping`);
         break;
       }
-
-      const priceCents = Math.round(opp.betPrice * 100);
       const winProb = parseFloat(opp.winProbability);
       const remainingBudget = getRemainingRiskBudget();
       const remainingTokenBudget = getRemainingTokenBudget(opp.ticker, opp.assetType || opp.cryptoType);
