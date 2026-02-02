@@ -3123,7 +3123,7 @@ app.get('/api/opportunities/all', async (req, res) => {
           currentPrice: price,
           strikePrice: price,
           timeRemaining: 0,
-          timeRemainingFormatted: 'No market',
+          timeRemainingFormatted: 'Scanning...',
           winProbability: 50,
           edge: 0,
           betSide: null,
@@ -3131,7 +3131,7 @@ app.get('/api/opportunities/all', async (req, res) => {
           isLocked: true,
           isCore: true,
           isPlaceholder: true,
-          filterReason: 'No active market'
+          filterReason: 'No edge found'
         });
       }
     }
