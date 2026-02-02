@@ -2680,6 +2680,26 @@ function parseMarket(market) {
   };
 }
 
+// Helper to build base result object
+function buildBaseResult(parsed, currentPrice, timeMinutes, signal) {
+  return {
+    ticker: parsed.ticker,
+    title: parsed.title,
+    cryptoType: parsed.cryptoType,
+    assetType: parsed.cryptoType,
+    marketType: parsed.marketType,
+    currentPrice,
+    strikePrice: parsed.strikePrice || currentPrice,
+    timeRemaining: parsed.timeRemaining,
+    timeRemainingMinutes: timeMinutes,
+    timeRemainingFormatted: formatTime(parsed.timeRemaining),
+    yesAsk: parsed.yesAsk,
+    noAsk: parsed.noAsk,
+    momentumSignal: signal,
+    shortMomentum: signal?.momentum
+  };
+}
+
 // Analyze market using MOMENTUM STRATEGY
 // Simple: follow recent price direction for 15-min markets
 function analyzeCryptoMarket(parsed) {
@@ -2730,6 +2750,28 @@ function analyzeCryptoMarket(parsed) {
   const betSide = signal.side; // 'YES' or 'NO'
   const betPrice = betSide === 'YES' ? (parsed.yesAsk || 0.5) : (parsed.noAsk || 0.5);
   const betPriceCents = Math.round(betPrice * 100);
+
+  // SANITY CHECK: Don't bet against strong market consensus
+  // If market prices our side below 25¢, they see strong opposite momentum
+  // We need VERY high confidence to bet against that
+  if (betPriceCents < 25 && signal.confidence !== 'very_high') {
+    return {
+      ...buildBaseResult(parsed, currentPrice, timeMinutes, signal),
+      betSide: null,
+      isRecommended: false,
+      reason: `Market strongly disagrees (${betSide} @ ${betPriceCents}¢) - need very high confidence to bet against`
+    };
+  }
+
+  // If market prices our side below 35¢, require at least high confidence
+  if (betPriceCents < 35 && signal.confidence === 'medium') {
+    return {
+      ...buildBaseResult(parsed, currentPrice, timeMinutes, signal),
+      betSide: null,
+      isRecommended: false,
+      reason: `Market disagrees (${betSide} @ ${betPriceCents}¢) - need higher confidence`
+    };
+  }
 
   // For momentum strategy, probability is based on signal confidence
   let winProbability;
