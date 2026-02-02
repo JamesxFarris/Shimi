@@ -1450,10 +1450,18 @@ function calculateEnsembleProbability(token, currentPrice, targetPrice, expiryMi
   const crossingAnalysis = analyzeHistoricalCrossings(allHistory, currentPrice, targetPrice, expiryMinutes);
   const historicalProbStay = crossingAnalysis.reliable ? (1 - crossingAnalysis.crossingProb) : 0.5;
 
-  // Momentum adjustment (smaller than before)
+  // Momentum is our EDGE - the market doesn't instantly price in recent moves
+  // Strong recent momentum predicts continuation in very short term
   const momentum = calculateMomentumMultiTimeframe(allHistory);
+  const shortMomentum = calculateMomentum(allHistory, 2); // Last 2 minutes only
+
   let momentumAdjust = 0;
-  if (momentum.aligned) {
+  // Strong short-term momentum = higher adjustment (our actual edge)
+  if (shortMomentum.strength === 'strong') {
+    momentumAdjust = shortMomentum.direction === 'up' ? 0.15 : -0.15;
+  } else if (shortMomentum.strength === 'moderate') {
+    momentumAdjust = shortMomentum.direction === 'up' ? 0.08 : -0.08;
+  } else if (momentum.aligned) {
     momentumAdjust = momentum.direction === 'bullish' ? 0.05 : -0.05;
   }
 
@@ -1486,48 +1494,46 @@ function calculateEnsembleProbability(token, currentPrice, targetPrice, expiryMi
   // Apply momentum adjustment
   ensembleProbAbove = Math.max(0.05, Math.min(0.95, ensembleProbAbove + momentumAdjust));
 
-  // Apply uncertainty discount - pull extreme probabilities toward 50%
-  // Reduced from 15% to 10% shrinkage to allow more betting opportunities
-  const uncertaintyFactor = 0.90; // 10% shrinkage toward 50%
-  ensembleProbAbove = 0.5 + (ensembleProbAbove - 0.5) * uncertaintyFactor;
+  // LESS conservative - we need edge to make money
+  // Only apply shrinkage when momentum is weak (uncertain)
+  const hasStrongMomentumSignal = shortMomentum.strength === 'strong' || shortMomentum.strength === 'moderate';
 
-  // Data quality adjustment - less aggressive shrinkage
-  // With 50 data points: factor = 0.85, with 100+: factor = 0.95
-  const dataQualityFactor = Math.min(1, allHistory.length / 100);
-  ensembleProbAbove = 0.5 + (ensembleProbAbove - 0.5) * (0.80 + 0.15 * dataQualityFactor);
+  if (!hasStrongMomentumSignal) {
+    // Weak momentum = less confident = shrink toward 50%
+    const uncertaintyFactor = 0.85;
+    ensembleProbAbove = 0.5 + (ensembleProbAbove - 0.5) * uncertaintyFactor;
+  }
+  // Strong momentum = trust the signal, minimal shrinkage
 
-  // DYNAMIC CAPS: Allow higher confidence when conditions are very favorable
-  // Base cap is 80%, but can increase to 92% for "obvious" situations
-  let MAX_PROB = 0.80;
-  let MIN_PROB = 0.20;
+  // Data quality adjustment - only for low data
+  const dataQualityFactor = Math.min(1, allHistory.length / 50);
+  if (dataQualityFactor < 0.8) {
+    ensembleProbAbove = 0.5 + (ensembleProbAbove - 0.5) * (0.85 + 0.15 * dataQualityFactor);
+  }
 
-  // Check for "obvious bet" conditions that warrant higher confidence
+  // DYNAMIC CAPS based on signal strength
+  let MAX_PROB = 0.75;
+  let MIN_PROB = 0.25;
+
   const absDistanceFromStrike = Math.abs(pctFromTarget);
-  const methodsAgree = Math.abs(normalProbAbove - tProbAbove) < 0.10 &&
-                       Math.abs(normalProbAbove - bootstrapProbAbove) < 0.15;
-  const strongMomentum = Math.abs(momentum.score) > 0.02;
-  const momentumSupportsPosition = (isAboveTarget && momentum.direction === 'bullish') ||
-                                    (!isAboveTarget && momentum.direction === 'bearish');
+  const momentumSupportsPosition = (isAboveTarget && shortMomentum.direction === 'up') ||
+                                    (!isAboveTarget && shortMomentum.direction === 'down');
 
-  // Increase cap for short time + large buffer + agreement
-  if (expiryMinutes <= 10 && absDistanceFromStrike >= 0.5 && methodsAgree) {
-    // Very short time, price well past strike, models agree
-    if (expiryMinutes <= 5 && absDistanceFromStrike >= 1.0) {
-      MAX_PROB = 0.92; // Allow up to 92% for obvious situations
-      MIN_PROB = 0.08;
-    } else if (expiryMinutes <= 7 && absDistanceFromStrike >= 0.75) {
-      MAX_PROB = 0.88;
-      MIN_PROB = 0.12;
-    } else {
+  // Strong momentum = allow more extreme probabilities
+  if (hasStrongMomentumSignal && momentumSupportsPosition) {
+    if (shortMomentum.strength === 'strong') {
       MAX_PROB = 0.85;
       MIN_PROB = 0.15;
+    } else {
+      MAX_PROB = 0.80;
+      MIN_PROB = 0.20;
     }
+  }
 
-    // Bonus if momentum also supports the position
-    if (strongMomentum && momentumSupportsPosition) {
-      MAX_PROB = Math.min(0.94, MAX_PROB + 0.03);
-      MIN_PROB = Math.max(0.06, MIN_PROB - 0.03);
-    }
+  // Additional boost for very short time + clear direction
+  if (expiryMinutes <= 7 && absDistanceFromStrike >= 0.5) {
+    MAX_PROB = Math.min(0.92, MAX_PROB + 0.05);
+    MIN_PROB = Math.max(0.08, MIN_PROB - 0.05);
   }
 
   ensembleProbAbove = Math.max(MIN_PROB, Math.min(MAX_PROB, ensembleProbAbove));
@@ -1556,6 +1562,8 @@ function calculateEnsembleProbability(token, currentPrice, targetPrice, expiryMi
     volatility,
     adjustedVolatility: adjustedVol,
     momentum,
+    shortMomentum, // 2-minute momentum (our edge)
+    hasStrongMomentumSignal,
     tailRisk,
     methods: {
       normal: normalProbAbove,
@@ -3880,7 +3888,8 @@ async function runAutoBet() {
     if (withAnyEdge.length > 0) {
       console.log(`   📊 Top 5 by edge:`);
       withAnyEdge.sort((a, b) => b.edge - a.edge).slice(0, 5).forEach(m => {
-        console.log(`      - ${m.title?.substring(0, 35)}: ${m.winProbability}% @ ${m.betPriceCents}¢ | edge +${m.edge?.toFixed(1)}%`);
+        const momStr = m.hasStrongMomentumSignal ? ` 🚀${m.shortMomentum?.direction || ''}` : '';
+        console.log(`      - ${m.title?.substring(0, 30)}: ${m.winProbability}% @ ${m.betPriceCents}¢ | edge +${m.edge?.toFixed(1)}%${momStr}`);
       });
     }
 
@@ -4003,12 +4012,20 @@ async function runAutoBet() {
       const priceCents = Math.round(opp.betPrice * 100);
       const winProb = parseFloat(opp.winProbability);
 
-      // Kelly Criterion bet sizing
+      // Kelly Criterion bet sizing - use actual balance
+      const actualBankroll = Math.max(config.bankroll, portfolio.balance || 0);
       const maxBetCents = Math.min(getMaxPerBet(), remainingBudget, remainingTokenBudget);
-      const kellyBetSize = calculateKellyBet(winProb, priceCents, config.bankroll, maxBetCents);
+      const kellyBetSize = calculateKellyBet(winProb, priceCents, actualBankroll, maxBetCents);
 
+      // Check if Kelly recommends betting
       if (kellyBetSize < priceCents) {
-        console.log(`   ⏭️ ${tokenName}: Kelly size too small (${kellyBetSize}¢)`);
+        // Log why Kelly rejected
+        const edge = winProb - priceCents;
+        if (edge <= 0) {
+          console.log(`   ⏭️ ${tokenName}: No edge (prob ${winProb.toFixed(1)}% ≤ price ${priceCents}¢)`);
+        } else {
+          console.log(`   ⏭️ ${tokenName}: Kelly too small (${kellyBetSize}¢ < ${priceCents}¢ min)`);
+        }
         continue;
       }
 
