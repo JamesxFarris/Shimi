@@ -2305,13 +2305,23 @@ function getCurrentExposure() {
     for (const pos of portfolio.positions) {
       const contracts = Math.abs(pos.position || 0);
       if (contracts > 0) {
-        let avgPrice = pos.average_price || 50;
-        // Kalshi returns average_price as decimal (0.85) not cents (85)
-        if (avgPrice > 0 && avgPrice <= 1) {
-          avgPrice = Math.round(avgPrice * 100);
+        let posExposure;
+
+        // Check market_exposure first (most accurate if available)
+        if (pos.market_exposure && pos.market_exposure > 0) {
+          posExposure = pos.market_exposure;
+        } else {
+          // Fall back to calculating from average_price
+          let avgPrice = pos.average_price || 75; // Conservative fallback (was 50)
+          // Kalshi returns average_price as decimal (0.85) not cents (85)
+          if (avgPrice > 0 && avgPrice <= 1) {
+            avgPrice = Math.round(avgPrice * 100);
+          }
+          posExposure = contracts * avgPrice;
         }
-        const posExposure = contracts * avgPrice;
-        console.log(`   📊 Position: ${pos.ticker} | ${contracts} contracts @ ${avgPrice}¢ = $${(posExposure/100).toFixed(2)}`);
+
+        const token = getTokenFromTicker(pos.ticker);
+        console.log(`   📊 Position: ${pos.ticker} (${token}) | ${contracts} contracts | exposure=$${(posExposure/100).toFixed(2)} | avg_price=${pos.average_price} | market_exposure=${pos.market_exposure}`);
         totalExposure += posExposure;
       }
     }
@@ -2377,14 +2387,22 @@ function getExposureByToken() {
     for (const pos of portfolio.positions) {
       const contracts = Math.abs(pos.position || 0);
       if (contracts > 0) {
-        let avgPrice = pos.average_price || 50;
-        // Kalshi returns average_price as decimal (0.85) not cents (85)
-        if (avgPrice > 0 && avgPrice <= 1) {
-          avgPrice = Math.round(avgPrice * 100);
-        }
-        const posRisk = contracts * avgPrice;
-        const token = getTokenFromTicker(pos.ticker);
+        let posRisk;
 
+        // Check market_exposure first (most accurate if available)
+        if (pos.market_exposure && pos.market_exposure > 0) {
+          posRisk = pos.market_exposure;
+        } else {
+          // Fall back to calculating from average_price
+          let avgPrice = pos.average_price || 75; // Conservative fallback (was 50)
+          // Kalshi returns average_price as decimal (0.85) not cents (85)
+          if (avgPrice > 0 && avgPrice <= 1) {
+            avgPrice = Math.round(avgPrice * 100);
+          }
+          posRisk = contracts * avgPrice;
+        }
+
+        const token = getTokenFromTicker(pos.ticker);
         if (token) {
           tokenExposure[token] = (tokenExposure[token] || 0) + posRisk;
         }
