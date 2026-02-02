@@ -1237,60 +1237,72 @@ function getMomentumBetSignal(token) {
   const ret3 = ((latestPrice - price3min) / price3min) * 100;
   const ret5 = ((latestPrice - price5min) / price5min) * 100;
 
-  // Check for aligned momentum (all timeframes agree) - LOOSENED for more action
-  const allUp = ret1 > 0.01 && ret2 > 0.02 && ret3 > 0.03;
-  const allDown = ret1 < -0.01 && ret2 < -0.02 && ret3 < -0.03;
+  // AGGRESSIVE MODE - bet on any directional bias
+  // Check if price is moving in any consistent direction
+  const anyUp = ret1 > 0 && ret2 > 0;    // Just needs 1min and 2min both positive
+  const anyDown = ret1 < 0 && ret2 < 0;  // Just needs 1min and 2min both negative
 
-  // Strong signal: aligned + meaningful move (lowered thresholds)
-  if (allUp && ret3 >= 0.05) {
-    const confidence = ret3 >= 0.15 ? 'very_high' : ret3 >= 0.08 ? 'high' : 'medium';
+  // Strong signal: clear directional move
+  if (anyUp && ret2 >= 0.02) {
+    const confidence = ret2 >= 0.08 ? 'very_high' : ret2 >= 0.04 ? 'high' : 'medium';
     return {
       shouldBet: true,
       side: 'YES',
       confidence,
       momentum: { ret1, ret2, ret3, ret5 },
-      reason: `UP momentum: ${ret3.toFixed(2)}% in 3min`
+      reason: `UP trend: ${ret2.toFixed(3)}% in 2min`
     };
   }
 
-  if (allDown && ret3 <= -0.05) {
-    const confidence = ret3 <= -0.15 ? 'very_high' : ret3 <= -0.08 ? 'high' : 'medium';
+  if (anyDown && ret2 <= -0.02) {
+    const confidence = ret2 <= -0.08 ? 'very_high' : ret2 <= -0.04 ? 'high' : 'medium';
     return {
       shouldBet: true,
       side: 'NO',
       confidence,
       momentum: { ret1, ret2, ret3, ret5 },
-      reason: `DOWN momentum: ${ret3.toFixed(2)}% in 3min`
+      reason: `DOWN trend: ${ret2.toFixed(3)}% in 2min`
     };
   }
 
-  // WEAKER signal: just 2-minute alignment (more trades, slightly lower quality)
-  if (ret1 > 0.02 && ret2 > 0.03) {
+  // MICRO signal: any slight movement in same direction
+  if (ret1 > 0.005 && ret2 > 0.01) {
     return {
       shouldBet: true,
       side: 'YES',
-      confidence: 'medium',
+      confidence: 'low',
       momentum: { ret1, ret2, ret3, ret5 },
-      reason: `Short UP trend: ${ret2.toFixed(2)}% in 2min`
+      reason: `Slight UP: ${ret2.toFixed(3)}% in 2min`
     };
   }
 
-  if (ret1 < -0.02 && ret2 < -0.03) {
+  if (ret1 < -0.005 && ret2 < -0.01) {
     return {
       shouldBet: true,
       side: 'NO',
-      confidence: 'medium',
+      confidence: 'low',
       momentum: { ret1, ret2, ret3, ret5 },
-      reason: `Short DOWN trend: ${ret2.toFixed(2)}% in 2min`
+      reason: `Slight DOWN: ${ret2.toFixed(3)}% in 2min`
     };
   }
 
-  // No clear signal
+  // FALLBACK: Just use 1-minute direction if there's any movement
+  if (Math.abs(ret1) >= 0.01) {
+    return {
+      shouldBet: true,
+      side: ret1 > 0 ? 'YES' : 'NO',
+      confidence: 'low',
+      momentum: { ret1, ret2, ret3, ret5 },
+      reason: `1min move: ${ret1.toFixed(3)}%`
+    };
+  }
+
+  // No signal at all - market is completely flat
   return {
     shouldBet: false,
     side: null,
     momentum: { ret1, ret2, ret3, ret5 },
-    reason: `No momentum (1m:${ret1.toFixed(2)}% 2m:${ret2.toFixed(2)}%)`
+    reason: `Flat (1m:${ret1.toFixed(3)}% 2m:${ret2.toFixed(3)}%)`
   };
 }
 
@@ -2896,36 +2908,28 @@ function analyzeCryptoMarket(parsed) {
   const betPrice = betSide === 'YES' ? (parsed.yesAsk || 0.5) : (parsed.noAsk || 0.5);
   const betPriceCents = Math.round(betPrice * 100);
 
-  // SANITY CHECK: Don't bet against strong market consensus
-  // If market prices our side below 25¢, they see strong opposite momentum
-  // We need VERY high confidence to bet against that
-  if (betPriceCents < 25 && signal.confidence !== 'very_high') {
+  // RELAXED SANITY CHECK: Only block extreme cases
+  // If market prices our side below 15¢, skip (too risky)
+  if (betPriceCents < 15) {
     return {
       ...buildBaseResult(parsed, currentPrice, timeMinutes, signal),
       betSide: null,
       isRecommended: false,
-      reason: `Market strongly disagrees (${betSide} @ ${betPriceCents}¢) - need very high confidence to bet against`
-    };
-  }
-
-  // If market prices our side below 35¢, require at least high confidence
-  if (betPriceCents < 35 && signal.confidence === 'medium') {
-    return {
-      ...buildBaseResult(parsed, currentPrice, timeMinutes, signal),
-      betSide: null,
-      isRecommended: false,
-      reason: `Market disagrees (${betSide} @ ${betPriceCents}¢) - need higher confidence`
+      reason: `Price too low (${betPriceCents}¢) - market strongly disagrees`
     };
   }
 
   // For momentum strategy, probability is based on signal confidence
   let winProbability;
   if (signal.confidence === 'very_high') {
-    winProbability = 68;
+    winProbability = 65;
   } else if (signal.confidence === 'high') {
-    winProbability = 62;
+    winProbability = 60;
+  } else if (signal.confidence === 'medium') {
+    winProbability = 55;
   } else {
-    winProbability = 56;
+    // 'low' confidence - still bet but with lower probability
+    winProbability = 52;
   }
 
   // Edge = our probability - market price
@@ -4130,7 +4134,7 @@ async function runAutoBet() {
     // Combine and filter - EDGE-BASED FILTERING
     // Edge is what determines profitability, not raw probability!
     // A 46% probability at 14¢ has great expected value
-    const MIN_EDGE = 3;        // 3% minimum edge - lowered for more action
+    const MIN_EDGE = 1;        // 1% minimum edge - VERY aggressive
     const MIN_PROB = 0;        // REMOVED - edge is all that matters
 
     // Log ALL markets for debugging
