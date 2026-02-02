@@ -540,6 +540,7 @@ function App() {
     // Fetch everything on initial load
     fetchOpportunities()
     fetchPortfolio()
+    fetchPerformance()  // Fetch performance stats on load
     checkAuth()
 
     // Refresh opportunities every 10 seconds (includes prices)
@@ -547,6 +548,9 @@ function App() {
 
     // Refresh portfolio every 30 seconds
     const portfolioInterval = setInterval(fetchPortfolio, 30000)
+
+    // Refresh performance stats every 60 seconds
+    const perfInterval = setInterval(fetchPerformance, 60000)
 
     // Update ticker time display every second
     const tickerTimeInterval = setInterval(() => {
@@ -556,6 +560,7 @@ function App() {
     return () => {
       clearInterval(oppInterval)
       clearInterval(portfolioInterval)
+      clearInterval(perfInterval)
       clearInterval(tickerTimeInterval)
     }
   }, []) // Empty dependency - only runs on mount
@@ -1070,9 +1075,9 @@ function App() {
           {tab === 'history' && (
             <div className="history-page">
               {/* Overall Bot Stats - from performance tracking */}
-              {performance && performance.summary.totalBets > 0 && (
+              {performance && performance.summary && (
                 <div className="overall-stats-banner">
-                  <h3 className="stats-banner-title">All-Time Bot Stats</h3>
+                  <h3 className="stats-banner-title">All-Time Bot Stats {performance.summary.totalBets === 0 && '(No bets tracked yet)'}</h3>
                   <div className="history-stats">
                     <div className={`stat-summary ${parseFloat(performance.summary.totalProfitDollars) >= 0 ? 'positive' : 'negative'}`}>
                       <span className="stat-label">Total P/L</span>
