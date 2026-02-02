@@ -39,9 +39,9 @@ let config = {
   autoBetEnabled: false,
   // Risk management settings (in cents)
   riskLimits: {
-    maxPerBet: 500,      // $5.00 max per bet
-    maxTotal: 1500,      // $15.00 max total exposure
-    maxPerToken: 500     // $5.00 max per token
+    maxPerBet: 1000,     // $10.00 max per bet
+    maxTotal: 5000,      // $50.00 max total exposure
+    maxPerToken: 2000    // $20.00 max per token
   },
   // Scale-in settings: add to position when probability improves
   scaleIn: {
@@ -4255,19 +4255,22 @@ async function runAutoBet() {
 
     // === MULTI-BET LOOP: Bet on ALL qualifying opportunities ===
     const riskByType = getRiskByType();
-    console.log(`💰 Exposure: $${(riskByType.total/100).toFixed(2)} / $${(getMaxTotalRisk()/100).toFixed(2)}`);
+    const tokenExposure = getExposureByToken();
+    console.log(`💰 Exposure: $${(riskByType.total/100).toFixed(2)} / $${(getMaxTotalRisk()/100).toFixed(2)} max`);
+    console.log(`   By token: ${Object.entries(tokenExposure).map(([t, e]) => `${t}=$${(e/100).toFixed(2)}`).join(', ') || 'none'}`);
+    console.log(`   Remaining: $${(getTotalRemainingBudget()/100).toFixed(2)}`);
 
     let betsPlaced = 0;
     let totalBetAmount = 0;
     const betResults = [];
 
     // Process each opportunity (already sorted by EV)
-    // AUTO-BET places anything with positive edge and price >= 20¢
+    // AUTO-BET places anything with positive edge and price >= 40¢
     const safeOpportunities = opportunities.filter(o => o.isSafe);
     const degenOpportunities = opportunities.filter(o => o.isDegen);
 
     if (degenOpportunities.length > 0) {
-      console.log(`   🎲 ${degenOpportunities.length} DEGEN bets (<20¢ long shots, manual only)`);
+      console.log(`   🎲 ${degenOpportunities.length} DEGEN bets (<40¢ long shots, manual only)`);
     }
 
     if (safeOpportunities.length === 0 && opportunities.length > 0) {
