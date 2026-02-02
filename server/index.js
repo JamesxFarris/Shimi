@@ -5311,6 +5311,17 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
   console.log(`💰 Min edge: ${config.minEdge}% | Max bet: ${config.maxBetPercent}%`);
   console.log(`📈 Performance tracking: ${performanceData.bets.length} historical bets loaded`);
 
+  // JSONBin status
+  if (JSONBIN_API_KEY && JSONBIN_BIN_ID) {
+    console.log(`☁️ JSONBin: CONFIGURED (data will persist across deploys)`);
+  } else if (JSONBIN_API_KEY) {
+    console.log(`☁️ JSONBin: API key set, waiting for first bet to create bin...`);
+    console.log(`   ⚠️ After first bet, check logs for JSONBIN_BIN_ID and add to env vars`);
+  } else {
+    console.log(`⚠️ JSONBin: NOT CONFIGURED - performance data will be LOST on redeploy!`);
+    console.log(`   Set JSONBIN_API_KEY in Render environment variables (free at jsonbin.io)`);
+  }
+
   // Auto-load Kalshi credentials from environment
   await loadCredentialsFromEnv();
 
