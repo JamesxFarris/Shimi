@@ -2663,6 +2663,18 @@ async function runAutoBet() {
     const highConfCount = opportunities.filter(o => parseFloat(o.winProbability) >= 70).length;
     console.log(`   Final: ${opportunities.length} opportunities (${highConfCount} above 70%)`);
 
+    // Show markets approaching the threshold (55-59%)
+    const approaching = allOpps.filter(m => {
+      const prob = parseFloat(m.winProbability) || 0;
+      return prob >= 55 && prob < 60 && m.edge > 0;
+    });
+    if (approaching.length > 0) {
+      console.log(`   📈 ${approaching.length} markets approaching 60% threshold:`);
+      approaching.slice(0, 3).forEach(m => {
+        console.log(`      - ${m.title}: ${m.winProbability}% (${m.betSide})`);
+      });
+    }
+
     if (opportunities.length === 0) {
       console.log('⏳ No valid opportunities - waiting for next scan...');
       console.log('========================================\n');
@@ -2674,14 +2686,9 @@ async function runAutoBet() {
     const currentRisk = getCurrentRiskFromPortfolio();
     console.log(`💰 Risk: $${(currentRisk/100).toFixed(2)} / $${(MAX_TOTAL_RISK_CENTS/100).toFixed(2)} | Remaining: $${(remainingBudget/100).toFixed(2)}`);
 
-    if (remainingBudget < 10) {
-      console.log('⚠️ Risk limit reached - waiting for positions to settle...');
-      return;
-    }
-
+    // Always show the best opportunity found
     const best = opportunities[0];
     const category = best.marketCategory || 'crypto';
-    const assetName = best.assetName || best.cryptoType || 'Unknown';
 
     console.log(`\n💰 BEST OPPORTUNITY [${category.toUpperCase()}]:`);
     console.log(`   ${best.title}`);
@@ -2689,6 +2696,19 @@ async function runAutoBet() {
     console.log(`   Side: ${best.betSide} @ ${(best.betPrice * 100).toFixed(0)}¢ | Win prob: ${best.winProbability}%`);
     console.log(`   Current: $${best.currentPrice?.toFixed(2) || 'N/A'} | Strike: $${best.strikePrice?.toFixed(2) || 'N/A'}`);
     console.log(`   Edge: +${best.edge.toFixed(1)}%`);
+
+    // Show other good opportunities
+    if (opportunities.length > 1) {
+      console.log(`   + ${opportunities.length - 1} more opportunities above 60%`);
+    }
+
+    // Check risk limit AFTER showing opportunities
+    if (remainingBudget < 10) {
+      console.log('⚠️ Risk limit reached - watching but not betting...');
+      console.log('========================================\n');
+      return;
+    }
+
     console.log(`   ${best.isObviousBet ? '✅ HIGH CONFIDENCE' : '⚠️ Model-based'}`);
 
     // Cap bet at remaining risk budget or $1, whichever is less
@@ -2805,7 +2825,7 @@ async function runAutoBet() {
 }
 
 app.post('/api/crypto/auto-bet/toggle', (req, res) => {
-  const { enabled, intervalSeconds = 15 } = req.body; // Check every 15 seconds
+  const { enabled, intervalSeconds = 10 } = req.body; // Check every 10 seconds for faster reaction
 
   if (enabled && !config.autoBetEnabled) {
     config.autoBetEnabled = true;
