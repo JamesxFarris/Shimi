@@ -2171,6 +2171,16 @@ app.post('/api/bet', async (req, res) => {
       return res.status(400).json({ success: false, error: 'ticker and side required' });
     }
 
+    // CRITICAL: Refresh positions from Kalshi FIRST to get accurate risk
+    if (config.isAuthenticated) {
+      try {
+        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
+        portfolio.positions = posData.positions || [];
+      } catch (e) {
+        console.log('Could not refresh positions before bet:', e.message);
+      }
+    }
+
     // Force fresh market data by clearing cache
     marketCache.lastFetch = 0;
     indexMarketCache.lastFetch = 0;
@@ -2366,6 +2376,16 @@ app.post('/api/bet', async (req, res) => {
 // Auto-bet on best opportunity (Place Best Bet button) - now supports all markets
 app.post('/api/crypto/auto-bet', async (req, res) => {
   try {
+    // CRITICAL: Refresh positions from Kalshi FIRST to get accurate risk
+    if (config.isAuthenticated) {
+      try {
+        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
+        portfolio.positions = posData.positions || [];
+      } catch (e) {
+        console.log('Could not refresh positions before auto-bet:', e.message);
+      }
+    }
+
     // Fetch both crypto and index markets
     const [cryptoMarkets, indexMarkets] = await Promise.all([
       fetchCryptoMarkets(),
@@ -2570,7 +2590,18 @@ async function runAutoBet() {
   try {
     console.log('\n🤖 ========== AUTO-BET SCAN ==========');
 
-    // Force fresh data
+    // CRITICAL: Refresh positions from Kalshi FIRST to get accurate risk
+    if (config.isAuthenticated) {
+      try {
+        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
+        portfolio.positions = posData.positions || [];
+        console.log(`📊 Refreshed positions: ${portfolio.positions.length} open positions from Kalshi`);
+      } catch (e) {
+        console.log('⚠️ Could not refresh positions:', e.message);
+      }
+    }
+
+    // Force fresh market data
     marketCache.lastFetch = 0;
     indexMarketCache.lastFetch = 0;
 
