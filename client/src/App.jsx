@@ -61,12 +61,20 @@ const PriceTickerItem = memo(({ token, price, prevPrice }) => {
   )
 })
 
+// Asset config including S&P 500
+const ASSET_CONFIG = {
+  ...TOKEN_CONFIG,
+  SPX: { color: '#ffcc00', name: 'S&P 500', icon: '📈' }
+}
+
 // Opportunity Card
 const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
-  const config = TOKEN_CONFIG[opp.cryptoType] || { color: '#888', name: opp.cryptoType, icon: '?' }
+  const assetType = opp.assetType || opp.cryptoType || 'Unknown'
+  const config = ASSET_CONFIG[assetType] || { color: '#888', name: assetType, icon: '?' }
+  const isIndex = opp.marketCategory === 'index'
 
   return (
-    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''}`}>
+    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''}`}>
       {/* Card Header */}
       <div className="opp-header">
         <div className="opp-token">
@@ -74,11 +82,14 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
             {config.icon}
           </div>
           <div className="token-info">
-            <span className="token-symbol">{opp.cryptoType}</span>
+            <span className="token-symbol">{assetType}</span>
             <span className="token-name">{config.name}</span>
           </div>
         </div>
         <div className="opp-badges">
+          <span className={`badge market-type ${isIndex ? 'index' : 'crypto'}`}>
+            {isIndex ? 'INDEX' : 'CRYPTO'}
+          </span>
           {opp.isObviousBet && <span className="badge safe">HIGH CONF</span>}
           <span className="badge time">{opp.timeRemainingFormatted}</span>
         </div>
@@ -274,6 +285,9 @@ function App() {
   const [betStatus, setBetStatus] = useState(null)
   const [placingBet, setPlacingBet] = useState(null)
   const [tickerTime, setTickerTime] = useState(Date.now())
+  // New: Risk tracking and market filtering
+  const [risk, setRisk] = useState({ current: 0, max: 300, remaining: 300 })
+  const [marketFilter, setMarketFilter] = useState('all') // 'all', 'crypto', 'index'
 
   // Fetch prices directly (faster updates)
   const fetchPrices = useCallback(async () => {
@@ -300,17 +314,25 @@ function App() {
     }
   }, []) // No dependencies - prevents infinite loop
 
-  // Fetch opportunities
+  // Fetch opportunities (now uses unified endpoint for all market types)
   const fetchOpportunities = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/crypto/opportunities`)
+      const res = await fetch(`${API_BASE}/api/opportunities/all`)
       const data = await res.json()
 
       if (data.success) {
         setOpportunities(data.opportunities || [])
+        // Update risk info
+        if (data.risk) {
+          setRisk(data.risk)
+        }
         // Also update prices from opportunities as backup
         if (data.prices) {
-          setPrices(prev => ({ ...prev, ...data.prices }))
+          const allPrices = { ...data.prices.crypto }
+          if (data.prices.index?.SPX) {
+            allPrices.SPX = data.prices.index.SPX
+          }
+          setPrices(prev => ({ ...prev, ...allPrices }))
           setPriceLastUpdated(Date.now())
         }
         setError(null)
@@ -722,6 +744,43 @@ function App() {
           {/* Opportunities Tab */}
           {tab === 'opportunities' && (
             <div className="opportunities-page">
+              {/* Risk Display */}
+              <div className="risk-display">
+                <div className="risk-info">
+                  <span className="risk-label">Risk Exposure</span>
+                  <span className="risk-value">${risk.currentDollars || '0.00'} / ${risk.maxDollars || '3.00'}</span>
+                </div>
+                <div className="risk-bar">
+                  <div
+                    className="risk-fill"
+                    style={{ width: `${Math.min(100, (risk.current / risk.max) * 100)}%` }}
+                  ></div>
+                </div>
+                <span className="risk-remaining">${risk.remainingDollars || '3.00'} available</span>
+              </div>
+
+              {/* Market Filter */}
+              <div className="market-filter">
+                <button
+                  className={`filter-btn ${marketFilter === 'all' ? 'active' : ''}`}
+                  onClick={() => setMarketFilter('all')}
+                >
+                  All Markets
+                </button>
+                <button
+                  className={`filter-btn ${marketFilter === 'crypto' ? 'active' : ''}`}
+                  onClick={() => setMarketFilter('crypto')}
+                >
+                  Crypto
+                </button>
+                <button
+                  className={`filter-btn ${marketFilter === 'index' ? 'active' : ''}`}
+                  onClick={() => setMarketFilter('index')}
+                >
+                  S&P 500
+                </button>
+              </div>
+
               <div className="page-actions">
                 <button
                   className={`action-btn primary ${placingBet === 'auto' ? 'loading' : ''}`}
@@ -747,26 +806,45 @@ function App() {
                 </div>
               )}
 
-              {!loading && opportunities.length === 0 && (
-                <div className="empty-state large">
-                  <span className="empty-icon">🔍</span>
-                  <h3>No Opportunities Found</h3>
-                  <p>Waiting for markets where our probability differs from Kalshi's price...</p>
-                </div>
-              )}
+              {(() => {
+                const filteredOpps = opportunities.filter(opp => {
+                  if (marketFilter === 'all') return true
+                  if (marketFilter === 'crypto') return opp.marketCategory !== 'index'
+                  if (marketFilter === 'index') return opp.marketCategory === 'index'
+                  return true
+                })
 
-              {!loading && opportunities.length > 0 && (
-                <div className="opportunities-grid">
-                  {opportunities.map(opp => (
-                    <OpportunityCard
-                      key={opp.ticker}
-                      opp={opp}
-                      onBet={placeBet}
-                      isPlacing={placingBet === opp.ticker}
-                    />
-                  ))}
-                </div>
-              )}
+                if (!loading && filteredOpps.length === 0) {
+                  return (
+                    <div className="empty-state large">
+                      <span className="empty-icon">🔍</span>
+                      <h3>No Opportunities Found</h3>
+                      <p>
+                        {marketFilter === 'all'
+                          ? 'Waiting for markets where our probability differs from Kalshi\'s price...'
+                          : `No ${marketFilter === 'index' ? 'S&P 500' : 'crypto'} opportunities right now.`}
+                      </p>
+                    </div>
+                  )
+                }
+
+                if (!loading && filteredOpps.length > 0) {
+                  return (
+                    <div className="opportunities-grid">
+                      {filteredOpps.map(opp => (
+                        <OpportunityCard
+                          key={opp.ticker}
+                          opp={opp}
+                          onBet={placeBet}
+                          isPlacing={placingBet === opp.ticker}
+                        />
+                      ))}
+                    </div>
+                  )
+                }
+
+                return null
+              })()}
             </div>
           )}
 

@@ -1746,6 +1746,126 @@ body {
   }
 }
 
+/* ============================================
+   RISK DISPLAY
+   ============================================ */
+
+.risk-display {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.risk-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.risk-label {
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.risk-value {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--neon-cyan);
+}
+
+.risk-bar {
+  height: 8px;
+  background: var(--bg-elevated);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.risk-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--neon-green), var(--neon-yellow), var(--neon-orange));
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.risk-remaining {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ============================================
+   MARKET FILTER
+   ============================================ */
+
+.market-filter {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.filter-btn {
+  flex: 1;
+  padding: 10px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.filter-btn:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--text-muted);
+}
+
+.filter-btn.active {
+  background: var(--bg-elevated);
+  border-color: var(--neon-cyan);
+  color: var(--neon-cyan);
+  box-shadow: 0 0 10px rgba(0, 240, 255, 0.2);
+}
+
+/* ============================================
+   MARKET TYPE BADGES
+   ============================================ */
+
+.badge.market-type {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.badge.market-type.crypto {
+  background: rgba(0, 240, 255, 0.15);
+  color: var(--neon-cyan);
+  border: 1px solid rgba(0, 240, 255, 0.3);
+}
+
+.badge.market-type.index {
+  background: rgba(255, 238, 0, 0.15);
+  color: var(--neon-yellow);
+  border: 1px solid rgba(255, 238, 0, 0.3);
+}
+
+.opp-card.index-market {
+  border-color: rgba(255, 238, 0, 0.3);
+}
+
+.opp-card.index-market:hover {
+  border-color: var(--neon-yellow);
+  box-shadow: 0 0 20px rgba(255, 238, 0, 0.15);
+}
+
 @media (max-width: 768px) {
   .sidebar {
     display: none;

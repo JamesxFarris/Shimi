@@ -513,6 +513,114 @@ let priceInterval = setInterval(fetchCryptoPrices, 10000);
 fetchCryptoPrices();
 
 // ============================================
+// S&P 500 INDEX PRICE TRACKING
+// ============================================
+
+const indexPrices = {
+  SPX: { price: 0, timestamp: 0, history: [], volatility: 0.01 }
+};
+
+// Extended history for S&P 500
+const indexHistoryExtended = { SPX: [] };
+
+async function fetchIndexPrice() {
+  try {
+    // Yahoo Finance API (free, no key needed)
+    const url = 'https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1m&range=1d';
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    const data = await res.json();
+
+    if (data.chart && data.chart.result && data.chart.result[0]) {
+      const result = data.chart.result[0];
+      const price = result.meta.regularMarketPrice;
+      const now = Date.now();
+
+      if (price && price > 0) {
+        indexPrices.SPX.price = price;
+        indexPrices.SPX.timestamp = now;
+
+        // Keep 60 price points for volatility calculation
+        indexPrices.SPX.history.push({ price, time: now });
+        if (indexPrices.SPX.history.length > 60) {
+          indexPrices.SPX.history.shift();
+        }
+
+        // Extended history (2 hours)
+        indexHistoryExtended.SPX.push({ price, time: now });
+        const twoHoursAgo = now - 2 * 60 * 60 * 1000;
+        indexHistoryExtended.SPX = indexHistoryExtended.SPX.filter(p => p.time > twoHoursAgo);
+
+        // Calculate volatility (S&P is much less volatile than crypto)
+        indexPrices.SPX.volatility = calculateIndexVolatility(indexPrices.SPX.history);
+
+        console.log(`📈 S&P 500: $${price.toFixed(2)} | Vol: ${(indexPrices.SPX.volatility * 100).toFixed(2)}%`);
+      }
+    }
+  } catch (error) {
+    console.error('Error fetching S&P 500 price:', error.message);
+  }
+}
+
+function calculateIndexVolatility(history) {
+  // Default S&P 500 15-minute volatility (much lower than crypto)
+  if (history.length < 10) return 0.005; // 0.5% default
+
+  const returns = [];
+  for (let i = 1; i < history.length; i++) {
+    const logReturn = Math.log(history[i].price / history[i-1].price);
+    returns.push(logReturn);
+  }
+
+  const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+  const variance = returns.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / returns.length;
+  const stdDev = Math.sqrt(variance);
+
+  // Scale to 15-minute equivalent
+  const avgInterval = (history[history.length - 1].time - history[0].time) / (history.length - 1);
+  const intervalsIn15Min = (15 * 60 * 1000) / avgInterval;
+  const vol15min = stdDev * Math.sqrt(intervalsIn15Min);
+
+  // Clamp to reasonable range for S&P (0.1% to 3%)
+  return Math.max(0.001, Math.min(0.03, vol15min));
+}
+
+// Start S&P 500 price tracking (every 15 seconds - don't spam Yahoo)
+let indexPriceInterval = setInterval(fetchIndexPrice, 15000);
+fetchIndexPrice();
+
+// ============================================
+// RISK MANAGEMENT
+// ============================================
+
+const MAX_TOTAL_RISK_CENTS = 300; // $3.00 max at risk
+
+function getCurrentRiskFromPortfolio() {
+  // Sum up the cost of all active (unsettled) positions
+  let totalRisk = 0;
+  if (portfolio.positions && Array.isArray(portfolio.positions)) {
+    for (const pos of portfolio.positions) {
+      // Each position's risk is contracts * price paid
+      const contracts = Math.abs(pos.position || 0);
+      const avgPrice = pos.average_price || 50; // cents
+      totalRisk += contracts * avgPrice;
+    }
+  }
+  return totalRisk;
+}
+
+function canPlaceBet(betCostCents) {
+  const currentRisk = getCurrentRiskFromPortfolio();
+  return (currentRisk + betCostCents) <= MAX_TOTAL_RISK_CENTS;
+}
+
+function getRemainingRiskBudget() {
+  const currentRisk = getCurrentRiskFromPortfolio();
+  return Math.max(0, MAX_TOTAL_RISK_CENTS - currentRisk);
+}
+
+// ============================================
 // KALSHI API
 // ============================================
 
@@ -677,6 +785,214 @@ async function fetchCryptoMarkets() {
     console.error('Error fetching markets:', error.message);
     return [];
   }
+}
+
+// ============================================
+// S&P 500 INDEX MARKET FETCHING
+// ============================================
+
+const indexMarketCache = { data: null, lastFetch: 0, ttl: 30000 };
+
+async function fetchIndexMarkets() {
+  const now = Date.now();
+
+  if (indexMarketCache.data && (now - indexMarketCache.lastFetch) < indexMarketCache.ttl) {
+    return indexMarketCache.data;
+  }
+
+  try {
+    // S&P 500 market series on Kalshi
+    const indexSeries = [
+      'KXINX',      // S&P 500 daily range
+      'KXINXU',     // S&P 500 above/below
+      'KXINXD',     // S&P 500 daily direction
+    ];
+
+    const allMarkets = [];
+
+    // Fetch each index series in parallel
+    const fetches = indexSeries.map(async (series) => {
+      try {
+        const data = await kalshiRequest('GET', `/markets?limit=100&status=open&series_ticker=${series}`);
+        return data.markets || [];
+      } catch (e) {
+        console.log(`No markets for ${series}`);
+        return [];
+      }
+    });
+
+    const results = await Promise.all(fetches);
+    results.forEach(markets => allMarkets.push(...markets));
+
+    // Filter for markets closing within reasonable time (today)
+    const indexMarkets = allMarkets.filter(m => {
+      const closeTime = m.close_time ? new Date(m.close_time).getTime() : null;
+      const timeRemaining = closeTime ? closeTime - now : null;
+      // S&P markets settle at end of day, so allow up to 8 hours
+      const isValidTime = timeRemaining && timeRemaining > 60000 && timeRemaining < 8 * 60 * 60 * 1000;
+      return isValidTime;
+    });
+
+    console.log(`📊 Fetched ${allMarkets.length} index markets, ${indexMarkets.length} valid`);
+
+    indexMarketCache.data = indexMarkets;
+    indexMarketCache.lastFetch = now;
+
+    return indexMarkets;
+  } catch (error) {
+    console.error('Error fetching index markets:', error.message);
+    return [];
+  }
+}
+
+// Parse S&P 500 market data
+function parseIndexMarket(market) {
+  const ticker = (market.ticker || '').toUpperCase();
+  const title = (market.title || '').toLowerCase();
+
+  // Extract strike price from title
+  // Example titles: "S&P 500 above 6,000?", "S&P 500 to close between 5,950 and 6,000?"
+  let strikePrice = null;
+  const priceMatches = title.match(/[\d,]+(?:\.\d+)?/g);
+  if (priceMatches) {
+    for (const match of priceMatches) {
+      const price = parseFloat(match.replace(/,/g, ''));
+      // S&P 500 range: 3000-8000
+      if (price >= 3000 && price <= 8000) {
+        strikePrice = price;
+        break;
+      }
+    }
+  }
+
+  // Determine market type
+  let marketType = null;
+  if (title.includes('above') || title.includes('higher') || title.includes('or more') || title.includes('at least')) {
+    marketType = 'above';
+  } else if (title.includes('below') || title.includes('lower') || title.includes('or less') || title.includes('under')) {
+    marketType = 'below';
+  } else if (title.includes('between')) {
+    marketType = 'between';
+  }
+
+  // Time remaining
+  const closeTime = market.close_time ? new Date(market.close_time).getTime() : null;
+  const timeRemaining = closeTime ? closeTime - Date.now() : null;
+  const timeRemainingMinutes = timeRemaining ? timeRemaining / (60 * 1000) : null;
+
+  // Prices (Kalshi returns in cents)
+  const yesAsk = (parseFloat(market.yes_ask) || 0) / 100;
+  const noAsk = (parseFloat(market.no_ask) || 0) / 100;
+
+  return {
+    ticker: market.ticker,
+    title: market.title,
+    assetType: 'SPX',
+    strikePrice,
+    marketType,
+    closeTime: market.close_time,
+    timeRemaining,
+    timeRemainingMinutes,
+    yesAsk,
+    noAsk,
+    volume: parseInt(market.volume) || 0
+  };
+}
+
+// Analyze S&P 500 market for betting opportunity
+function analyzeIndexMarket(parsed) {
+  if (!parsed.strikePrice || !parsed.marketType || parsed.marketType === 'between') {
+    return null;
+  }
+
+  const priceData = indexPrices.SPX;
+  if (!priceData || !priceData.price) {
+    return null;
+  }
+
+  const currentPrice = priceData.price;
+  const volatility = priceData.volatility;
+  const timeMinutes = parsed.timeRemainingMinutes || 60;
+
+  // Calculate how far price is from strike
+  const pctFromStrike = ((currentPrice - parsed.strikePrice) / parsed.strikePrice) * 100;
+
+  // Simple probability model for S&P 500
+  // Use z-score based on volatility
+  const timeHours = timeMinutes / 60;
+  const expectedMove = currentPrice * volatility * Math.sqrt(timeHours / 4); // 4-hour normalized vol
+  const zScore = (parsed.strikePrice - currentPrice) / expectedMove;
+
+  // Convert z-score to probability using normal CDF
+  const probBelow = normalCDF(zScore);
+  const probAbove = 1 - probBelow;
+
+  // Determine win probabilities based on market type
+  let probYesWins, probNoWins;
+  if (parsed.marketType === 'above') {
+    probYesWins = probAbove;
+    probNoWins = probBelow;
+  } else {
+    probYesWins = probBelow;
+    probNoWins = probAbove;
+  }
+
+  // Market implied probabilities
+  const marketProbYes = parsed.yesAsk;
+  const marketProbNo = parsed.noAsk;
+
+  // Calculate edge
+  const yesEdge = (probYesWins - marketProbYes) * 100;
+  const noEdge = (probNoWins - marketProbNo) * 100;
+
+  // Find best bet (highest win probability with positive edge)
+  let bestBet = null;
+  const yesValid = parsed.yesAsk > 0 && parsed.yesAsk < 0.98 && yesEdge > 0.5;
+  const noValid = parsed.noAsk > 0 && parsed.noAsk < 0.98 && noEdge > 0.5;
+
+  if (yesValid && noValid) {
+    if (probYesWins >= probNoWins) {
+      bestBet = { side: 'YES', edge: yesEdge, prob: probYesWins, price: parsed.yesAsk };
+    } else {
+      bestBet = { side: 'NO', edge: noEdge, prob: probNoWins, price: parsed.noAsk };
+    }
+  } else if (yesValid) {
+    bestBet = { side: 'YES', edge: yesEdge, prob: probYesWins, price: parsed.yesAsk };
+  } else if (noValid) {
+    bestBet = { side: 'NO', edge: noEdge, prob: probNoWins, price: parsed.noAsk };
+  }
+
+  if (!bestBet) return null;
+
+  const isHighProb = bestBet.prob >= 0.60;
+  const isSafeBet = bestBet.prob >= 0.70;
+
+  const priceCents = Math.round(bestBet.price * 100);
+  const contractsFor1Dollar = Math.floor(100 / priceCents);
+  const totalCostCents = contractsFor1Dollar * priceCents;
+  const profitIfWinCents = contractsFor1Dollar * 100 - totalCostCents;
+
+  return {
+    ...parsed,
+    marketCategory: 'index',
+    assetType: 'SPX',
+    assetName: 'S&P 500',
+    currentPrice,
+    volatility: (volatility * 100).toFixed(2) + '%',
+    pctFromStrike: pctFromStrike.toFixed(2),
+    zScore: zScore.toFixed(2),
+    winProbability: (bestBet.prob * 100).toFixed(1),
+    edge: bestBet.edge,
+    betSide: bestBet.side,
+    betPrice: bestBet.price,
+    betPriceCents: priceCents,
+    contractsFor1Dollar,
+    profitIfWin: profitIfWinCents,
+    betReason: `S&P ${pctFromStrike > 0 ? 'above' : 'below'} strike by ${Math.abs(pctFromStrike).toFixed(1)}%`,
+    isObviousBet: isSafeBet,
+    isHighProb,
+    timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining)
+  };
 }
 
 // Parse market to extract token, strike price, and determine both sides
@@ -969,6 +1285,103 @@ app.get('/api/crypto/opportunities', async (req, res) => {
   }
 });
 
+// Get ALL opportunities (crypto + index) - unified endpoint
+app.get('/api/opportunities/all', async (req, res) => {
+  try {
+    // Fetch both market types in parallel
+    const [cryptoMarkets, indexMarkets] = await Promise.all([
+      fetchCryptoMarkets(),
+      fetchIndexMarkets()
+    ]);
+
+    // Analyze crypto opportunities
+    const cryptoOpps = cryptoMarkets
+      .map(m => {
+        const analyzed = analyzeCryptoMarket(parseMarket(m));
+        if (analyzed) analyzed.marketCategory = 'crypto';
+        return analyzed;
+      })
+      .filter(m => m !== null && m.edge >= 0.5 && parseFloat(m.winProbability) >= 50);
+
+    // Analyze index opportunities
+    const indexOpps = indexMarkets
+      .map(m => analyzeIndexMarket(parseIndexMarket(m)))
+      .filter(m => m !== null && m.edge >= 0.5 && parseFloat(m.winProbability) >= 50);
+
+    // Combine and sort by win probability
+    const allOpportunities = [...cryptoOpps, ...indexOpps]
+      .sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
+
+    // Get current risk info
+    const currentRisk = getCurrentRiskFromPortfolio();
+    const remainingBudget = getRemainingRiskBudget();
+
+    // Price display
+    const priceDisplay = {
+      crypto: {},
+      index: { SPX: indexPrices.SPX.price }
+    };
+    for (const token of Object.keys(cryptoPrices)) {
+      if (cryptoPrices[token].price > 0) {
+        priceDisplay.crypto[token] = cryptoPrices[token].price;
+      }
+    }
+
+    res.json({
+      success: true,
+      count: allOpportunities.length,
+      cryptoCount: cryptoOpps.length,
+      indexCount: indexOpps.length,
+      prices: priceDisplay,
+      risk: {
+        current: currentRisk,
+        max: MAX_TOTAL_RISK_CENTS,
+        remaining: remainingBudget,
+        currentDollars: (currentRisk / 100).toFixed(2),
+        maxDollars: (MAX_TOTAL_RISK_CENTS / 100).toFixed(2),
+        remainingDollars: (remainingBudget / 100).toFixed(2)
+      },
+      opportunities: allOpportunities
+    });
+  } catch (error) {
+    console.error('Error getting all opportunities:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get current risk exposure
+app.get('/api/risk', async (req, res) => {
+  try {
+    // Refresh portfolio if authenticated
+    if (config.isAuthenticated) {
+      try {
+        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
+        portfolio.positions = posData.positions || [];
+      } catch (e) {
+        console.log('Could not refresh positions:', e.message);
+      }
+    }
+
+    const currentRisk = getCurrentRiskFromPortfolio();
+    const remainingBudget = getRemainingRiskBudget();
+
+    res.json({
+      success: true,
+      risk: {
+        current: currentRisk,
+        max: MAX_TOTAL_RISK_CENTS,
+        remaining: remainingBudget,
+        currentDollars: (currentRisk / 100).toFixed(2),
+        maxDollars: (MAX_TOTAL_RISK_CENTS / 100).toFixed(2),
+        remainingDollars: (remainingBudget / 100).toFixed(2),
+        positionCount: portfolio.positions?.length || 0
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Place a bet
 app.post('/api/bet', async (req, res) => {
   try {
@@ -978,8 +1391,19 @@ app.post('/api/bet', async (req, res) => {
       return res.status(400).json({ success: false, error: 'ticker and side required' });
     }
 
-    const markets = await fetchCryptoMarkets();
-    const market = markets.find(m => m.ticker === ticker);
+    // Search both crypto and index markets
+    const [cryptoMarkets, indexMarkets] = await Promise.all([
+      fetchCryptoMarkets(),
+      fetchIndexMarkets()
+    ]);
+
+    let market = cryptoMarkets.find(m => m.ticker === ticker);
+    let marketType = 'crypto';
+
+    if (!market) {
+      market = indexMarkets.find(m => m.ticker === ticker);
+      marketType = 'index';
+    }
 
     if (!market) {
       return res.status(404).json({ success: false, error: 'Market not found' });
@@ -994,10 +1418,17 @@ app.post('/api/bet', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid market price' });
     }
 
-    // ALWAYS BUY $1 WORTH OF CONTRACTS
-    // E.g., if price is 50 cents, buy 2 contracts ($1.00)
-    // E.g., if price is 33 cents, buy 3 contracts ($0.99)
-    const TARGET_BET_CENTS = 100; // $1.00
+    // Calculate bet size (up to $1, but respect risk limit)
+    const remainingBudget = getRemainingRiskBudget();
+    const TARGET_BET_CENTS = Math.min(100, remainingBudget); // $1.00 max, but respect risk cap
+
+    if (TARGET_BET_CENTS < priceCents) {
+      return res.status(400).json({
+        success: false,
+        error: `Risk limit reached. Only $${(remainingBudget/100).toFixed(2)} remaining of $${(MAX_TOTAL_RISK_CENTS/100).toFixed(2)} max.`
+      });
+    }
+
     const count = Math.floor(TARGET_BET_CENTS / priceCents);
 
     if (count < 1) {
@@ -1098,10 +1529,14 @@ app.post('/api/bet', async (req, res) => {
   }
 });
 
-// Auto-bet on best opportunity (Place Best Bet button)
+// Auto-bet on best opportunity (Place Best Bet button) - now supports all markets
 app.post('/api/crypto/auto-bet', async (req, res) => {
   try {
-    const markets = await fetchCryptoMarkets();
+    // Fetch both crypto and index markets
+    const [cryptoMarkets, indexMarkets] = await Promise.all([
+      fetchCryptoMarkets(),
+      fetchIndexMarkets()
+    ]);
     const now = Date.now();
 
     // Clean up old bets from tracking (older than 30 min)
@@ -1111,8 +1546,20 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       }
     }
 
-    const opportunities = markets
-      .map(m => analyzeCryptoMarket(parseMarket(m)))
+    // Analyze crypto opportunities
+    const cryptoOpps = cryptoMarkets
+      .map(m => {
+        const analyzed = analyzeCryptoMarket(parseMarket(m));
+        if (analyzed) analyzed.marketCategory = 'crypto';
+        return analyzed;
+      });
+
+    // Analyze index opportunities
+    const indexOpps = indexMarkets
+      .map(m => analyzeIndexMarket(parseIndexMarket(m)));
+
+    // Combine and filter
+    const opportunities = [...cryptoOpps, ...indexOpps]
       .filter(m => {
         if (m === null) return false;
         // Skip if we already bet on this exact market
@@ -1125,51 +1572,62 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       // SORT BY WIN PROBABILITY (safest bets first)
       .sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
 
+    const totalScanned = cryptoMarkets.length + indexMarkets.length;
+
     if (opportunities.length === 0) {
       return res.json({
         success: true,
         message: 'No opportunities with 60%+ win probability found. Waiting...',
         bet: null,
-        scanned: markets.length
+        scanned: totalScanned
+      });
+    }
+
+    // Check risk limit
+    const remainingBudget = getRemainingRiskBudget();
+    if (remainingBudget < 10) { // Less than 10 cents remaining
+      return res.json({
+        success: true,
+        message: `Risk limit reached ($${(MAX_TOTAL_RISK_CENTS/100).toFixed(2)} max). Wait for positions to settle.`,
+        bet: null,
+        risk: {
+          current: getCurrentRiskFromPortfolio(),
+          max: MAX_TOTAL_RISK_CENTS,
+          remaining: remainingBudget
+        }
       });
     }
 
     const best = opportunities[0];
-    console.log(`Auto-bet found: ${best.title} | Win prob: ${best.winProbability}% | Side: ${best.betSide}`);
+    const category = best.marketCategory || 'crypto';
+    console.log(`Auto-bet found [${category}]: ${best.title} | Win prob: ${best.winProbability}% | Side: ${best.betSide}`);
 
-    // Fixed $1 max bet - never exceed this
-    const MAX_BET_CENTS = 100; // $1.00 max
-
-    if (config.bankroll < 100) {
-      return res.json({
-        success: true,
-        message: 'Bankroll too low (need $1 minimum)',
-        bet: null
-      });
-    }
+    // Cap bet at remaining risk budget or $1, whichever is less
+    const MAX_BET_CENTS = Math.min(100, remainingBudget);
 
     const priceCents = Math.round(best.betPrice * 100);
 
-    // Calculate contracts but cap total cost at $1
+    // Calculate contracts but cap total cost
     let count = Math.floor(MAX_BET_CENTS / priceCents);
     if (count < 1) {
-      return res.json({ success: true, message: 'Bet size too small', bet: null });
+      return res.json({ success: true, message: 'Bet size too small for risk budget', bet: null });
     }
 
-    // Ensure we don't exceed $1 total
+    // Ensure we don't exceed budget
     const totalCost = count * priceCents;
 
     const betRecord = {
       id: Date.now().toString(),
       ticker: best.ticker,
       title: best.title,
-      cryptoType: best.cryptoType,
+      marketCategory: category,
+      assetType: best.assetType || best.cryptoType,
       side: best.betSide.toLowerCase(),
       count,
       price: priceCents,
       totalCost,
       edge: best.edge,
-      ourProbability: best.ourProbability,
+      winProbability: best.winProbability,
       currentPrice: best.currentPrice,
       strikePrice: best.strikePrice,
       timestamp: new Date().toISOString(),
@@ -1267,9 +1725,13 @@ let autoBetInterval = null;
 
 async function runAutoBet() {
   try {
-    console.log('🤖 Scanning for opportunities...');
+    console.log('🤖 Scanning ALL markets for opportunities...');
 
-    const markets = await fetchCryptoMarkets();
+    // Fetch both crypto and index markets
+    const [cryptoMarkets, indexMarkets] = await Promise.all([
+      fetchCryptoMarkets(),
+      fetchIndexMarkets()
+    ]);
     const now = Date.now();
 
     // Clean up old bets (remove bets older than 30 minutes)
@@ -1279,14 +1741,24 @@ async function runAutoBet() {
       }
     }
 
-    const opportunities = markets
-      .map(m => analyzeCryptoMarket(parseMarket(m)))
+    // Analyze crypto opportunities
+    const cryptoOpps = cryptoMarkets
+      .map(m => {
+        const analyzed = analyzeCryptoMarket(parseMarket(m));
+        if (analyzed) analyzed.marketCategory = 'crypto';
+        return analyzed;
+      });
+
+    // Analyze index opportunities
+    const indexOpps = indexMarkets
+      .map(m => analyzeIndexMarket(parseIndexMarket(m)));
+
+    // Combine and filter
+    const opportunities = [...cryptoOpps, ...indexOpps]
       .filter(m => {
         if (m === null) return false;
         // Skip if we already bet on this exact market
-        if (recentBets.has(m.ticker)) {
-          return false;
-        }
+        if (recentBets.has(m.ticker)) return false;
         // REQUIRE 60%+ WIN PROBABILITY for auto-betting
         const winProb = parseFloat(m.winProbability) || 0;
         if (winProb < 60) return false;
@@ -1295,51 +1767,63 @@ async function runAutoBet() {
       // SORT BY WIN PROBABILITY (safest bets first)
       .sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
 
+    const totalMarkets = cryptoMarkets.length + indexMarkets.length;
     const highConfCount = opportunities.filter(o => parseFloat(o.winProbability) >= 70).length;
-    console.log(`📊 Found ${markets.length} markets, ${opportunities.length} with 60%+ win prob (${highConfCount} above 70%)`);
+    console.log(`📊 Scanned ${totalMarkets} markets (${cryptoMarkets.length} crypto, ${indexMarkets.length} index)`);
+    console.log(`   ${opportunities.length} with 60%+ win prob (${highConfCount} above 70%)`);
 
     if (opportunities.length === 0) {
       console.log('⏳ No opportunities - waiting for next scan...');
       return;
     }
 
-    const best = opportunities[0];
-    console.log(`\n💰 BEST OPPORTUNITY:`);
-    console.log(`   ${best.title}`);
-    console.log(`   ${best.betReason}`);
-    console.log(`   Side: ${best.betSide} @ ${(best.betPrice * 100).toFixed(0)}¢ | Win prob: ${best.winProbability}%`);
-    console.log(`   Current: $${best.currentPrice.toFixed(2)} | Strike: $${best.strikePrice.toFixed(2)} (${best.pctFromStrike}% away)`);
-    console.log(`   Edge: +${best.edge.toFixed(1)}% | Profit if win: ${best.profitIfWin}¢ per contract`);
-    console.log(`   ${best.isObviousBet ? '✅ HIGH CONFIDENCE - Safe bet' : '⚠️ Model-based - Use caution'}`);
+    // Check risk limit
+    const remainingBudget = getRemainingRiskBudget();
+    const currentRisk = getCurrentRiskFromPortfolio();
+    console.log(`💰 Risk: $${(currentRisk/100).toFixed(2)} / $${(MAX_TOTAL_RISK_CENTS/100).toFixed(2)} | Remaining: $${(remainingBudget/100).toFixed(2)}`);
 
-    // Fixed $1 max bet - never exceed this
-    const MAX_BET_CENTS = 100; // $1.00 max
-    let betAmount = Math.min(MAX_BET_CENTS, config.bankroll);
-
-    const priceCents = Math.round(best.betPrice * 100);
-
-    // Calculate contracts but cap total cost at $1
-    let count = Math.floor(betAmount / priceCents);
-    if (count < 1) {
-      console.log('⚠️ Bet size too small');
+    if (remainingBudget < 10) {
+      console.log('⚠️ Risk limit reached - waiting for positions to settle...');
       return;
     }
 
-    // Ensure we don't exceed $1 total
-    const totalCost = count * priceCents;
-    if (totalCost > MAX_BET_CENTS) {
-      count = Math.floor(MAX_BET_CENTS / priceCents);
+    const best = opportunities[0];
+    const category = best.marketCategory || 'crypto';
+    const assetName = best.assetName || best.cryptoType || 'Unknown';
+
+    console.log(`\n💰 BEST OPPORTUNITY [${category.toUpperCase()}]:`);
+    console.log(`   ${best.title}`);
+    console.log(`   ${best.betReason}`);
+    console.log(`   Side: ${best.betSide} @ ${(best.betPrice * 100).toFixed(0)}¢ | Win prob: ${best.winProbability}%`);
+    console.log(`   Current: $${best.currentPrice?.toFixed(2) || 'N/A'} | Strike: $${best.strikePrice?.toFixed(2) || 'N/A'}`);
+    console.log(`   Edge: +${best.edge.toFixed(1)}%`);
+    console.log(`   ${best.isObviousBet ? '✅ HIGH CONFIDENCE' : '⚠️ Model-based'}`);
+
+    // Cap bet at remaining risk budget or $1, whichever is less
+    const MAX_BET_CENTS = Math.min(100, remainingBudget);
+
+    const priceCents = Math.round(best.betPrice * 100);
+
+    // Calculate contracts but cap total cost
+    let count = Math.floor(MAX_BET_CENTS / priceCents);
+    if (count < 1) {
+      console.log('⚠️ Bet size too small for risk budget');
+      return;
     }
+
+    // Ensure we don't exceed budget
+    const totalCost = count * priceCents;
 
     const betRecord = {
       id: Date.now().toString(),
       ticker: best.ticker,
       title: best.title,
-      cryptoType: best.cryptoType,
+      marketCategory: category,
+      assetType: best.assetType || best.cryptoType,
       side: best.betSide.toLowerCase(),
       count,
       price: priceCents,
-      totalCost: count * priceCents,
+      totalCost,
       edge: best.edge,
       timestamp: new Date().toISOString(),
       status: config.isAuthenticated ? 'pending' : 'simulated',
@@ -1353,7 +1837,7 @@ async function runAutoBet() {
       betRecord.orderId = 'SIM-' + Date.now();
       betHistory.unshift(betRecord);
       config.bankroll -= betRecord.totalCost;
-      console.log(`🎰 Simulated: ${betRecord.side.toUpperCase()} on ${best.cryptoType} | $${(betRecord.totalCost/100).toFixed(2)} | Edge: ${best.edge.toFixed(1)}%`);
+      console.log(`🎰 Simulated: ${betRecord.side.toUpperCase()} on ${assetName} | $${(betRecord.totalCost/100).toFixed(2)} | Edge: ${best.edge.toFixed(1)}%`);
       return;
     }
 

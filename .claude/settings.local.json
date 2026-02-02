@@ -15,7 +15,11 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git push:*)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "WebSearch",
+      "WebFetch(domain:docs.kalshi.com)",
+      "WebFetch(domain:kalshi.com)",
+      "WebFetch(domain:help.kalshi.com)"
     ]
   }
 }
