@@ -3885,8 +3885,19 @@ async function runAutoBet() {
     // Combine and filter - EDGE-BASED FILTERING (no arbitrary probability threshold)
     // The model calculates probability; edge = our_prob - market_prob
     // Minimum edge accounts for model uncertainty; minimum prob avoids coin-flips
-    const MIN_EDGE = 3.0;      // Require 3%+ edge to account for model uncertainty
-    const MIN_PROB = 52;       // Soft floor - avoid near 50/50 bets
+    const MIN_EDGE = 2.0;      // Require 2%+ edge (lowered from 3% to catch more opportunities)
+    const MIN_PROB = 51;       // Soft floor - just above coin-flip
+
+    // Log ALL markets with any positive edge for debugging
+    const anyEdge = allOpps.filter(m => m.edge > 0).sort((a, b) => b.edge - a.edge);
+    if (anyEdge.length > 0) {
+      console.log(`   🔍 ALL markets with positive edge:`);
+      anyEdge.slice(0, 5).forEach(m => {
+        console.log(`      - ${m.title?.substring(0, 40)}: prob=${m.winProbability}% edge=+${m.edge?.toFixed(1)}% price=${m.betPriceCents}¢`);
+      });
+    } else {
+      console.log(`   ⚠️ NO markets have positive edge right now`);
+    }
 
     const opportunities = [...cryptoOpps, ...indexOpps]
       .filter(m => {
