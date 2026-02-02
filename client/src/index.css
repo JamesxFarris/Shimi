@@ -3091,6 +3091,31 @@ body {
     padding: 10px;
   }
 
+  /* Move DEGEN/SAFE badges below header on mobile to avoid overlap */
+  .degen-badge,
+  .safe-badge {
+    top: auto;
+    bottom: 50px;
+    right: 8px;
+    padding: 3px 6px;
+    font-size: 9px;
+  }
+
+  .degen-icon,
+  .safe-icon {
+    font-size: 10px;
+  }
+
+  .degen-text,
+  .safe-text {
+    font-size: 8px;
+  }
+
+  .time-badge {
+    font-size: 10px;
+    padding: 4px 8px;
+  }
+
   .token-icon {
     width: 22px;
     height: 22px;
