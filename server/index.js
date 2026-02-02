@@ -2179,11 +2179,23 @@ async function fetchCryptoMarkets() {
   }
 
   try {
-    // Focus only on BTC, ETH, SOL 15-minute markets for speed
+    // 15-minute crypto markets + hourly S&P
     const cryptoSeries = [
-      'KXBTC15M',   // Bitcoin 15-minute up/down
-      'KXETH15M',   // Ethereum 15-minute up/down
-      'KXSOL15M',   // Solana 15-minute up/down
+      // 15-minute crypto (high frequency)
+      'KXBTC15M',   // Bitcoin 15-minute
+      'KXETH15M',   // Ethereum 15-minute
+      'KXSOL15M',   // Solana 15-minute
+      'KXXRP15M',   // XRP 15-minute (if exists)
+      'KXDOGE15M',  // Dogecoin 15-minute (if exists)
+
+      // Hourly crypto
+      'KXBTC1H',    // Bitcoin hourly
+      'KXETH1H',    // Ethereum hourly
+      'KXSOL1H',    // Solana hourly
+
+      // Hourly S&P 500
+      'KXINX1H',    // S&P 500 hourly
+      'KXINXU1H',   // S&P 500 above/below hourly
     ];
 
     const allMarkets = [];
@@ -4718,7 +4730,7 @@ app.use((err, req, res, next) => {
 
 const server = app.listen(PORT, '0.0.0.0', async () => {
   console.log(`🎰 Shimi Crypto Bot running on port ${PORT}`);
-  console.log(`📊 Betting on: BTC, ETH, SOL (15-minute markets)`);
+  console.log(`📊 Markets: BTC/ETH/SOL 15min + hourly, S&P 500 hourly`);
   console.log(`💰 Min edge: ${config.minEdge}% | Max bet: ${config.maxBetPercent}%`);
   console.log(`📈 Performance tracking: ${performanceData.bets.length} historical bets loaded`);
 
