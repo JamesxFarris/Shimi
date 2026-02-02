@@ -3075,7 +3075,7 @@ app.get('/api/opportunities/all', async (req, res) => {
         const winProb = parseFloat(m.winProbability) || 0;
         m.isRecommended = m.edge >= 0.5 && winProb >= 50;
         if (!m.isRecommended) {
-          if (m.edge < 0.5) m.filterReason = `No edge (${m.edge.toFixed(1)}%)`;
+          if (m.edge < 0.5) m.filterReason = `No edge (${parseFloat(m.edge || 0).toFixed(1)}%)`;
           else if (winProb < 50) m.filterReason = `Low prob (${winProb.toFixed(0)}%)`;
         }
         return m;
@@ -3089,7 +3089,7 @@ app.get('/api/opportunities/all', async (req, res) => {
         const winProb = parseFloat(m.winProbability) || 0;
         m.isRecommended = m.edge >= 0.5 && winProb >= 50;
         if (!m.isRecommended) {
-          if (m.edge < 0.5) m.filterReason = `No edge (${m.edge.toFixed(1)}%)`;
+          if (m.edge < 0.5) m.filterReason = `No edge (${parseFloat(m.edge || 0).toFixed(1)}%)`;
           else if (winProb < 50) m.filterReason = `Low prob (${winProb.toFixed(0)}%)`;
         }
         return m;
@@ -4141,9 +4141,10 @@ async function runAutoBet() {
 
     if (withAnyEdge.length > 0) {
       console.log(`   📊 Top 5 by edge:`);
-      withAnyEdge.sort((a, b) => b.edge - a.edge).slice(0, 5).forEach(m => {
+      withAnyEdge.sort((a, b) => parseFloat(b.edge) - parseFloat(a.edge)).slice(0, 5).forEach(m => {
         const momStr = m.hasStrongMomentumSignal ? ` 🚀${m.shortMomentum?.direction || ''}` : '';
-        console.log(`      - ${m.title?.substring(0, 30)}: ${m.winProbability}% @ ${m.betPriceCents}¢ | edge +${m.edge?.toFixed(1)}%${momStr}`);
+        const edgeNum = parseFloat(m.edge) || 0;
+        console.log(`      - ${m.title?.substring(0, 30)}: ${m.winProbability}% @ ${m.betPriceCents}¢ | edge +${edgeNum.toFixed(1)}%${momStr}`);
       });
     }
 
@@ -4187,7 +4188,7 @@ async function runAutoBet() {
     if (opportunities.length > 0) {
       console.log(`   🎯 Top opportunities (by EV):`);
       opportunities.slice(0, 3).forEach(m => {
-        console.log(`      - ${m.title}: ${m.winProbability}% @ ${m.betPriceCents}¢ | Edge: +${m.edge.toFixed(1)}% | EV: ${m.evScore.toFixed(2)}`);
+        console.log(`      - ${m.title}: ${m.winProbability}% @ ${m.betPriceCents}¢ | Edge: +${parseFloat(m.edge || 0).toFixed(1)}% | EV: ${m.evScore.toFixed(2)}`);
       });
     }
 
@@ -4199,7 +4200,7 @@ async function runAutoBet() {
     if (nearThreshold.length > 0) {
       console.log(`   📈 ${nearThreshold.length} markets with small edge (0-${MIN_EDGE}%):`);
       nearThreshold.slice(0, 3).forEach(m => {
-        console.log(`      - ${m.title}: ${m.winProbability}% | Edge: +${m.edge.toFixed(1)}%`);
+        console.log(`      - ${m.title}: ${m.winProbability}% | Edge: +${parseFloat(m.edge || 0).toFixed(1)}%`);
       });
     }
 
@@ -4213,7 +4214,7 @@ async function runAutoBet() {
         const winProb = parseFloat(closest.winProbability) || 0;
         let reason = '';
         if (closest.edge < MIN_EDGE) {
-          reason = `Edge too low: ${closest.edge.toFixed(1)}% (need ${MIN_EDGE}%+)`;
+          reason = `Edge too low: ${parseFloat(closest.edge || 0).toFixed(1)}% (need ${MIN_EDGE}%+)`;
         } else if (winProb < MIN_PROB) {
           reason = `Prob too low: ${winProb}% (need ${MIN_PROB}%+)`;
         } else {
@@ -4337,7 +4338,7 @@ async function runAutoBet() {
           expiryTime: opp.expiry || opp.close_time
         });
 
-        console.log(`   ✅ SIM: ${opp.betSide} ${tokenName} ${count}x@${priceCents}¢ | Edge:+${opp.edge.toFixed(1)}% | Kelly:${betRecord.kellyFraction}`);
+        console.log(`   ✅ SIM: ${opp.betSide} ${tokenName} ${count}x@${priceCents}¢ | Edge:+${parseFloat(opp.edge || 0).toFixed(1)}% | Kelly:${betRecord.kellyFraction}`);
         betsPlaced++;
         totalBetAmount += totalCost;
         betResults.push({ ticker: opp.ticker, side: opp.betSide, count, price: priceCents, edge: opp.edge });
@@ -4447,7 +4448,7 @@ async function runAutoBet() {
             });
 
             const flipNote = betRecord.flipped ? ' (flipped)' : '';
-            console.log(`   ✅ REAL: ${betRecord.side.toUpperCase()} ${tokenName} ${filledCount}x@${betRecord.avgPrice}¢ | Edge:+${betRecord.edge.toFixed(1)}%${flipNote}`);
+            console.log(`   ✅ REAL: ${betRecord.side.toUpperCase()} ${tokenName} ${filledCount}x@${betRecord.avgPrice}¢ | Edge:+${parseFloat(betRecord.edge || 0).toFixed(1)}%${flipNote}`);
             betsPlaced++;
             totalBetAmount += betRecord.totalCost;
             betResults.push({ ticker: opp.ticker, side: betRecord.side, count: filledCount, price: betRecord.avgPrice, edge: betRecord.edge, flipped: betRecord.flipped });
