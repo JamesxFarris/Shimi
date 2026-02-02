@@ -1384,25 +1384,48 @@ function App() {
         </div>
       </main>
 
-      {/* Mobile Bottom Nav */}
-      <nav className="mobile-nav">
-        <button className={`mobile-nav-item ${tab === 'dashboard' ? 'active' : ''}`} onClick={() => setTab('dashboard')}>
-          <span>📊</span>
-          <span>Home</span>
-        </button>
-        <button className={`mobile-nav-item ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
-          <span>📜</span>
-          <span>History</span>
-        </button>
-        <button className={`mobile-nav-item ${tab === 'performance' ? 'active' : ''}`} onClick={() => { setTab('performance'); fetchPerformance(); }}>
-          <span>📈</span>
-          <span>Stats</span>
-        </button>
-        <button className={`mobile-nav-item ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>
-          <span>⚙️</span>
-          <span>Config</span>
-        </button>
-      </nav>
+      {/* Mobile Bottom Bar - Exposure + Nav */}
+      <div className="mobile-bottom-bar">
+        {/* Mobile Exposure Bar */}
+        <div className="mobile-exposure">
+          <div className="mobile-exposure-left">
+            <span className="mobile-balance">{formatCurrency(balance)}</span>
+            <span className={`mobile-mode ${isAuthenticated ? 'live' : 'sim'}`}>
+              {isAuthenticated ? 'LIVE' : 'SIM'}
+            </span>
+          </div>
+          <div className="mobile-exposure-right">
+            <span className="mobile-exposure-label">Exposure</span>
+            <div className="mobile-exposure-bar">
+              <div
+                className="mobile-exposure-fill"
+                style={{ width: `${Math.min(100, ((risk.current || 0) / (risk.max || 1500)) * 100)}%` }}
+              ></div>
+            </div>
+            <span className="mobile-exposure-value">${risk.currentDollars || '0.00'}</span>
+          </div>
+        </div>
+
+        {/* Mobile Nav */}
+        <nav className="mobile-nav">
+          <button className={`mobile-nav-item ${tab === 'dashboard' ? 'active' : ''}`} onClick={() => setTab('dashboard')}>
+            <span>📊</span>
+            <span>Home</span>
+          </button>
+          <button className={`mobile-nav-item ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
+            <span>📜</span>
+            <span>History</span>
+          </button>
+          <button className={`mobile-nav-item ${tab === 'performance' ? 'active' : ''}`} onClick={() => { setTab('performance'); fetchPerformance(); }}>
+            <span>📈</span>
+            <span>Stats</span>
+          </button>
+          <button className={`mobile-nav-item ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>
+            <span>⚙️</span>
+            <span>Config</span>
+          </button>
+        </nav>
+      </div>
 
       {/* Auth Modal */}
       {showAuth && (
