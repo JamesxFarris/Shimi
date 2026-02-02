@@ -189,12 +189,31 @@ function savePerformanceData() {
 
 // Track a new bet
 function trackBet(betInfo) {
+  const now = new Date();
+  const token = betInfo.token || betInfo.assetType || getTokenFromTicker(betInfo.ticker);
+
+  // Calculate ML features
+  const currentPrice = betInfo.currentPrice || 0;
+  const strikePrice = betInfo.strikePrice || 0;
+  const distanceFromStrike = strikePrice > 0 ? ((currentPrice - strikePrice) / strikePrice) * 100 : 0;
+
+  // Time features
+  const expiryTime = betInfo.expiryTime ? new Date(betInfo.expiryTime).getTime() : null;
+  const timeRemainingMs = expiryTime ? expiryTime - now.getTime() : null;
+  const timeRemainingMinutes = timeRemainingMs ? Math.round(timeRemainingMs / 60000) : null;
+
+  // Get volatility if available (from price tracking)
+  let volatility = null;
+  if (token && typeof cryptoPrices !== 'undefined' && cryptoPrices[token]) {
+    volatility = cryptoPrices[token].volatility || null;
+  }
+
   const bet = {
     id: betInfo.id || Date.now().toString(),
-    timestamp: new Date().toISOString(),
+    timestamp: now.toISOString(),
     ticker: betInfo.ticker,
     title: betInfo.title,
-    token: betInfo.token || betInfo.assetType || getTokenFromTicker(betInfo.ticker),
+    token,
     side: betInfo.side,
     contracts: betInfo.count || 1,
     price: betInfo.price,           // cents
@@ -202,11 +221,31 @@ function trackBet(betInfo) {
     predictedProb: betInfo.predictedProb || parseFloat(betInfo.winProbability) || 0,
     marketPrice: betInfo.marketPrice || betInfo.price,
     edge: betInfo.edge || 0,
-    strikePrice: betInfo.strikePrice,
-    currentPriceAtBet: betInfo.currentPrice,
+    strikePrice,
+    currentPriceAtBet: currentPrice,
     expiryTime: betInfo.expiryTime,
     marketType: betInfo.marketType || (betInfo.ticker?.includes('1H') ? 'hourly' :
                                         betInfo.ticker?.includes('15M') ? '15min' : 'daily'),
+
+    // === ML FEATURES ===
+    // Time features (useful for detecting time-of-day patterns)
+    hourOfDay: now.getHours(),
+    dayOfWeek: now.getDay(),  // 0=Sunday, 6=Saturday
+    minuteOfHour: now.getMinutes(),
+
+    // Price features
+    distanceFromStrikePct: parseFloat(distanceFromStrike.toFixed(4)),  // % above/below strike
+    priceToStrikeRatio: strikePrice > 0 ? parseFloat((currentPrice / strikePrice).toFixed(6)) : null,
+
+    // Time remaining feature
+    timeRemainingMinutes,
+
+    // Volatility feature (if available)
+    volatilityAtBet: volatility,
+
+    // Market sentiment (implied from price)
+    impliedProb: betInfo.marketPrice ? betInfo.marketPrice : betInfo.price,  // What market thinks
+
     // Outcome tracking (filled in later)
     outcome: 'pending',  // 'won' | 'lost' | 'pending'
     settlementPrice: null,
@@ -220,7 +259,7 @@ function trackBet(betInfo) {
   performanceData.summary.totalWagered += bet.totalCost;
 
   savePerformanceData();
-  console.log(`📊 Tracked bet: ${bet.side} on ${bet.token} @ ${bet.price}¢ (${bet.predictedProb.toFixed(1)}% predicted)`);
+  console.log(`📊 Tracked bet: ${bet.side} on ${bet.token} @ ${bet.price}¢ (${bet.predictedProb.toFixed(1)}% pred, ${bet.distanceFromStrikePct.toFixed(2)}% from strike)`);
 
   return bet;
 }
@@ -574,6 +613,32 @@ async function loadCredentialsFromEnv() {
 // Track markets we've already bet on to avoid duplicate bets
 // Key: ticker, Value: { timestamp, side, probability, betCount }
 const recentBets = new Map();
+
+// Track pending exposure per token (bets placed that may not be in positions yet)
+// Key: token (BTC, ETH, etc.), Value: { amount: cents, timestamp }
+// This prevents over-betting on same token before Kalshi positions update
+const pendingTokenExposure = new Map();
+
+// Add pending exposure for a token
+function addPendingExposure(token, amountCents) {
+  if (!token) return;
+  const current = pendingTokenExposure.get(token) || { amount: 0, timestamp: Date.now() };
+  current.amount += amountCents;
+  current.timestamp = Date.now();
+  pendingTokenExposure.set(token, current);
+  console.log(`   📝 Pending exposure for ${token}: +$${(amountCents/100).toFixed(2)} = $${(current.amount/100).toFixed(2)} total`);
+}
+
+// Clean up old pending exposure (older than 5 minutes - positions should have updated by then)
+function cleanupPendingExposure() {
+  const now = Date.now();
+  const EXPIRY = 5 * 60 * 1000; // 5 minutes
+  for (const [token, data] of pendingTokenExposure.entries()) {
+    if (now - data.timestamp > EXPIRY) {
+      pendingTokenExposure.delete(token);
+    }
+  }
+}
 
 // Check if we should allow a scale-in bet on this market
 function shouldAllowScaleIn(ticker, currentProbability) {
@@ -2126,11 +2191,14 @@ function getTokenFromTicker(ticker) {
   return null;
 }
 
-// Get total exposure per token - ONLY counts actual Kalshi positions
+// Get total exposure per token - counts Kalshi positions + pending bets
 function getExposureByToken() {
+  // Clean up old pending exposure first
+  cleanupPendingExposure();
+
   const tokenExposure = {};
 
-  // Only count actual Kalshi positions (source of truth)
+  // Count actual Kalshi positions
   if (portfolio.positions && Array.isArray(portfolio.positions)) {
     for (const pos of portfolio.positions) {
       const contracts = Math.abs(pos.position || 0);
@@ -2144,6 +2212,11 @@ function getExposureByToken() {
         }
       }
     }
+  }
+
+  // Add pending exposure (bets placed recently that may not be in positions yet)
+  for (const [token, data] of pendingTokenExposure.entries()) {
+    tokenExposure[token] = (tokenExposure[token] || 0) + data.amount;
   }
 
   return tokenExposure;
@@ -3541,10 +3614,14 @@ app.post('/api/bet', async (req, res) => {
       betHistory.unshift(betRecord);
       config.bankroll -= betRecord.totalCost;
 
+      // Track pending exposure for token limit enforcement
+      const token = market.assetType || getTokenFromTicker(ticker);
+      addPendingExposure(token, betRecord.totalCost);
+
       // Track for performance analysis
       trackBet({
         ...betRecord,
-        token: market.assetType || getTokenFromTicker(ticker),
+        token,
         predictedProb: parseFloat(req.body.winProbability) || 60,
         edge: parseFloat(req.body.edge) || 5,
         strikePrice: market.strikePrice,
@@ -3627,11 +3704,15 @@ app.post('/api/bet', async (req, res) => {
       betRecord.totalCost = filledCount * (order.average_fill_price || priceCents);
       betHistory.unshift(betRecord);
 
+      // Track pending exposure for token limit enforcement
+      const token = market.assetType || getTokenFromTicker(ticker);
+      addPendingExposure(token, betRecord.totalCost);
+
       // Track for performance analysis
       trackBet({
         ...betRecord,
         count: filledCount,
-        token: market.assetType || getTokenFromTicker(ticker),
+        token,
         predictedProb: parseFloat(req.body.winProbability) || 60,
         edge: parseFloat(req.body.edge) || 5,
         strikePrice: market.strikePrice,
@@ -3841,10 +3922,14 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       betHistory.unshift(betRecord);
       config.bankroll -= betRecord.totalCost;
 
+      // Track pending exposure for token limit enforcement
+      const token = best.assetType || best.cryptoType || getTokenFromTicker(best.ticker);
+      addPendingExposure(token, betRecord.totalCost);
+
       // Track for performance analysis
       trackBet({
         ...betRecord,
-        token: best.assetType || best.cryptoType || getTokenFromTicker(best.ticker),
+        token,
         predictedProb: parseFloat(best.winProbability),
         marketPrice: priceCents,
         marketType: best.ticker?.includes('15M') ? '15min' : 'daily',
@@ -3927,11 +4012,15 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       betRecord.totalCost = filledCount * (order.average_fill_price || priceCents);
       betHistory.unshift(betRecord);
 
+      // Track pending exposure for token limit enforcement
+      const token = best.assetType || best.cryptoType || getTokenFromTicker(best.ticker);
+      addPendingExposure(token, betRecord.totalCost);
+
       // Track for performance analysis
       trackBet({
         ...betRecord,
         count: filledCount,
-        token: best.assetType || best.cryptoType || getTokenFromTicker(best.ticker),
+        token,
         predictedProb: parseFloat(best.winProbability),
         marketPrice: betRecord.avgPrice,
         marketType: best.ticker?.includes('15M') ? '15min' : 'daily',
@@ -4350,6 +4439,9 @@ async function runAutoBet() {
         betHistory.unshift(betRecord);
         config.bankroll -= betRecord.totalCost;
 
+        // Track pending exposure for token limit enforcement
+        addPendingExposure(tokenName, betRecord.totalCost);
+
         trackBet({
           ...betRecord,
           token: tokenName,
@@ -4459,6 +4551,9 @@ async function runAutoBet() {
             betRecord.avgPrice = order.average_fill_price || priceCents;
             betRecord.totalCost = filledCount * betRecord.avgPrice;
             betHistory.unshift(betRecord);
+
+            // Track pending exposure for token limit enforcement
+            addPendingExposure(tokenName, betRecord.totalCost);
 
             trackBet({
               ...betRecord,
