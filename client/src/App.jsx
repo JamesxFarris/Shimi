@@ -693,7 +693,7 @@ function App() {
             <span className="nav-icon">◈</span>
             <span className="nav-text">Dashboard</span>
           </button>
-          <button className={`nav-item ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
+          <button className={`nav-item ${tab === 'history' ? 'active' : ''}`} onClick={() => { setTab('history'); fetchPerformance(); }}>
             <span className="nav-icon">◰</span>
             <span className="nav-text">History</span>
           </button>
@@ -953,43 +953,72 @@ function App() {
           {/* History Tab */}
           {tab === 'history' && (
             <div className="history-page">
-              {/* Stats Summary */}
-              {betStats.totalBets > 0 && (
-                <div className="history-stats">
-                  <div className={`stat-summary ${betStats.totalProfit >= 0 ? 'positive' : 'negative'}`}>
-                    <span className="stat-label">Total P/L</span>
-                    <span className="stat-value">
-                      {betStats.totalProfit >= 0 ? '+' : ''}{formatCurrency(betStats.totalProfit)}
-                    </span>
+              {/* Overall Bot Stats - from performance tracking */}
+              {performance && performance.summary.totalBets > 0 && (
+                <div className="overall-stats-banner">
+                  <h3 className="stats-banner-title">All-Time Bot Stats</h3>
+                  <div className="history-stats">
+                    <div className={`stat-summary ${parseFloat(performance.summary.totalProfitDollars) >= 0 ? 'positive' : 'negative'}`}>
+                      <span className="stat-label">Total P/L</span>
+                      <span className="stat-value">
+                        {parseFloat(performance.summary.totalProfitDollars) >= 0 ? '+' : ''}${performance.summary.totalProfitDollars}
+                      </span>
+                    </div>
+                    <div className="stat-summary">
+                      <span className="stat-label">ROI</span>
+                      <span className={`stat-value ${parseFloat(performance.summary.roi) >= 0 ? 'positive' : 'negative'}`}>
+                        {performance.summary.roi}%
+                      </span>
+                    </div>
+                    <div className="stat-summary">
+                      <span className="stat-label">Win Rate</span>
+                      <span className={`stat-value ${parseFloat(performance.summary.winRate) >= 50 ? 'positive' : 'negative'}`}>
+                        {performance.summary.winRate}%
+                      </span>
+                    </div>
+                    <div className="stat-summary">
+                      <span className="stat-label">Total Bets</span>
+                      <span className="stat-value">{performance.summary.totalBets}</span>
+                    </div>
                   </div>
-                  <div className="stat-summary">
-                    <span className="stat-label">Win Rate</span>
-                    <span className="stat-value">{betStats.winRate}%</span>
-                  </div>
-                  <div className="stat-summary wins">
-                    <span className="stat-label">Wins</span>
-                    <span className="stat-value">{betStats.wins}</span>
-                  </div>
-                  <div className="stat-summary losses">
-                    <span className="stat-label">Losses</span>
-                    <span className="stat-value">{betStats.losses}</span>
+                  <div className="history-stats secondary">
+                    <div className="stat-summary wins">
+                      <span className="stat-label">Wins</span>
+                      <span className="stat-value">{performance.summary.wins}</span>
+                    </div>
+                    <div className="stat-summary losses">
+                      <span className="stat-label">Losses</span>
+                      <span className="stat-value">{performance.summary.losses}</span>
+                    </div>
+                    <div className="stat-summary pending">
+                      <span className="stat-label">Pending</span>
+                      <span className="stat-value">{performance.summary.pendingBets}</span>
+                    </div>
+                    <div className="stat-summary">
+                      <span className="stat-label">Wagered</span>
+                      <span className="stat-value">${performance.summary.totalWageredDollars}</span>
+                    </div>
                   </div>
                 </div>
               )}
 
-              {betHistory.length === 0 ? (
-                <div className="empty-state large">
-                  <span className="empty-icon">📜</span>
-                  <h3>No Bet History</h3>
-                  <p>Place your first bet to see history here</p>
-                </div>
-              ) : (
-                <div className="history-list">
-                  {betHistory.map(bet => (
-                    <HistoryItem key={bet.id} bet={bet} currentTime={tickerTime} />
-                  ))}
-                </div>
-              )}
+              {/* Recent Activity Section */}
+              <div className="recent-history-section">
+                <h3 className="section-subtitle">Recent Activity (Last 20)</h3>
+                {betHistory.length === 0 ? (
+                  <div className="empty-state large">
+                    <span className="empty-icon">📜</span>
+                    <h3>No Bet History</h3>
+                    <p>Place your first bet to see history here</p>
+                  </div>
+                ) : (
+                  <div className="history-list">
+                    {betHistory.map(bet => (
+                      <HistoryItem key={bet.id} bet={bet} currentTime={tickerTime} />
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -1407,7 +1436,7 @@ function App() {
             <span>📊</span>
             <span>Home</span>
           </button>
-          <button className={`mobile-nav-item ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
+          <button className={`mobile-nav-item ${tab === 'history' ? 'active' : ''}`} onClick={() => { setTab('history'); fetchPerformance(); }}>
             <span>📜</span>
             <span>History</span>
           </button>

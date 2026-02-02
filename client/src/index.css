@@ -1676,6 +1676,71 @@ body {
   border-color: rgba(255, 51, 102, 0.3);
 }
 
+.stat-summary.pending {
+  border-color: rgba(255, 200, 0, 0.3);
+}
+
+.stat-summary.pending .stat-value {
+  color: #ffcc00;
+}
+
+/* Overall Stats Banner */
+.overall-stats-banner {
+  background: linear-gradient(135deg, rgba(0, 40, 80, 0.6) 0%, rgba(20, 30, 50, 0.8) 100%);
+  border: 1px solid rgba(0, 200, 255, 0.3);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.stats-banner-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--neon-cyan);
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.overall-stats-banner .history-stats {
+  margin-bottom: 8px;
+}
+
+.overall-stats-banner .history-stats.secondary {
+  margin-bottom: 0;
+}
+
+.overall-stats-banner .history-stats.secondary .stat-summary {
+  background: rgba(0, 20, 40, 0.5);
+  padding: 8px;
+}
+
+.overall-stats-banner .history-stats.secondary .stat-value {
+  font-size: 14px;
+}
+
+.stat-summary .stat-value.positive {
+  color: var(--neon-green);
+}
+
+.stat-summary .stat-value.negative {
+  color: var(--accent-red);
+}
+
+/* Recent History Section */
+.recent-history-section {
+  margin-top: 8px;
+}
+
+.section-subtitle {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 /* History List */
 .history-list {
   display: flex;
