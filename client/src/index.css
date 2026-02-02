@@ -695,52 +695,6 @@ body {
   contain: layout style;
 }
 
-/* Shimi Logo Watermark on background */
-.content-area::before {
-  content: '//SHIMI';
-  position: fixed;
-  top: 50%;
-  left: calc(50% + 90px); /* Offset for sidebar */
-  transform: translate(-50%, -50%);
-  font-family: var(--font-display);
-  font-size: 60px;
-  font-weight: 800;
-  letter-spacing: 5px;
-  color: rgba(0, 240, 255, 0.025);
-  pointer-events: none;
-  z-index: 0;
-  white-space: nowrap;
-}
-
-/* Flickering magenta // that overlays the cyan // */
-.content-area::after {
-  content: '//';
-  position: fixed;
-  top: 50%;
-  left: calc(50% + 90px);
-  transform: translate(calc(-50% - 100px), -50%); /* Position over the // in //SHIMI */
-  font-family: var(--font-display);
-  font-size: 60px;
-  font-weight: 800;
-  letter-spacing: 5px;
-  color: rgba(255, 0, 255, 0.06);
-  text-shadow: 0 0 20px rgba(255, 0, 255, 0.1);
-  pointer-events: none;
-  z-index: 0;
-  animation: pinkFlicker 3s ease-in-out infinite;
-}
-
-@keyframes pinkFlicker {
-  0%, 100% { opacity: 1; }
-  15% { opacity: 0.3; }
-  16% { opacity: 0.8; }
-  25% { opacity: 0.5; }
-  30% { opacity: 1; }
-  50% { opacity: 0.4; }
-  51% { opacity: 0.9; }
-  70% { opacity: 0.5; }
-  85% { opacity: 0.95; }
-}
 
 /* ============================================
    Stats Cards - Premium Dashboard Style
@@ -1081,9 +1035,9 @@ body {
   align-items: center;
   justify-content: center;
   padding: 20px 15px;
-  background: linear-gradient(180deg, rgba(0, 10, 20, 0.3) 0%, rgba(5, 15, 30, 0.5) 100%);
+  background: linear-gradient(180deg, rgba(0, 10, 20, 0.2) 0%, rgba(5, 15, 30, 0.3) 100%);
   border-radius: var(--radius-lg);
-  border: 1px solid rgba(0, 240, 255, 0.1);
+  border: 1px solid rgba(0, 240, 255, 0.05);
   min-width: 80px;
 }
 
@@ -1100,8 +1054,9 @@ body {
   font-family: var(--font-mono);
   font-size: 24px;
   font-weight: 700;
-  color: var(--neon-cyan);
-  text-shadow: 0 0 20px rgba(0, 240, 255, 0.6);
+  color: rgba(0, 240, 255, 0.4);
+  text-shadow: 0 0 10px rgba(0, 240, 255, 0.2);
+  animation: shimiPulse 3s ease-in-out infinite;
 }
 
 .shimi-text {
@@ -1109,12 +1064,18 @@ body {
   font-size: 32px;
   font-weight: 800;
   letter-spacing: 8px;
-  background: linear-gradient(180deg, var(--neon-cyan) 0%, var(--neon-magenta) 100%);
+  background: linear-gradient(180deg, rgba(0, 240, 255, 0.5) 0%, rgba(255, 0, 170, 0.5) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
   text-shadow: none;
-  filter: drop-shadow(0 0 15px rgba(0, 240, 255, 0.4));
+  filter: drop-shadow(0 0 8px rgba(0, 240, 255, 0.15));
+  animation: shimiPulse 3s ease-in-out infinite;
+}
+
+@keyframes shimiPulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 0.9; }
 }
 
 .shimi-tagline {
@@ -1122,10 +1083,11 @@ body {
   font-size: 8px;
   font-weight: 600;
   letter-spacing: 3px;
-  color: var(--text-muted);
+  color: rgba(136, 153, 166, 0.5);
   text-transform: uppercase;
   writing-mode: vertical-rl;
   text-orientation: mixed;
+  animation: shimiPulse 3s ease-in-out infinite;
 }
 
 @media (max-width: 900px) {
@@ -3030,19 +2992,6 @@ body {
     padding: 8px;
   }
 
-  /* Background watermark for tablet */
-  .content-area::before {
-    font-size: 40px;
-    left: 50%;
-    letter-spacing: 4px;
-  }
-
-  .content-area::after {
-    font-size: 40px;
-    left: 50%;
-    transform: translate(calc(-50% - 70px), -50%);
-  }
-
   .opp-card {
     padding: 10px;
   }
@@ -3152,18 +3101,6 @@ body {
     letter-spacing: 1px;
   }
 
-  /* Background watermark for mobile */
-  .content-area::before {
-    font-size: 30px;
-    left: 50%;
-    letter-spacing: 3px;
-  }
-
-  .content-area::after {
-    font-size: 30px;
-    left: 50%;
-    transform: translate(calc(-50% - 52px), -50%);
-  }
 }
 
 /* ============================================
