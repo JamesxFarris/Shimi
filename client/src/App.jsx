@@ -283,13 +283,12 @@ const HistoryItem = ({ bet, currentTime }) => {
 }
 
 // Stats Card
-const StatsCard = ({ title, value, subtitle, icon, color }) => (
+const StatsCard = ({ title, value, icon, color }) => (
   <div className="stats-card" style={{ '--card-color': color }}>
     <div className="stats-card-icon">{icon}</div>
     <div className="stats-card-content">
       <span className="stats-card-value">{value}</span>
       <span className="stats-card-title">{title}</span>
-      {subtitle && <span className="stats-card-subtitle">{subtitle}</span>}
     </div>
   </div>
 )
@@ -847,30 +846,26 @@ function App() {
                 <StatsCard
                   title="Balance"
                   value={balanceLoading ? '---' : formatCurrency(balance)}
-                  subtitle={balanceLoading ? 'Loading...' : isAuthenticated ? 'Live' : 'Simulated'}
-                  icon="💰"
+                  icon="◈"
                   color="#00ff88"
                 />
                 <StatsCard
-                  title="Opportunities"
+                  title="Signals"
                   value={opportunities.length}
-                  subtitle="Markets with edge"
-                  icon="🎯"
-                  color="#a855f7"
+                  icon="⬡"
+                  color="#bf00ff"
                 />
                 <StatsCard
-                  title="Avg Edge"
+                  title="Edge"
                   value={`+${avgEdge.toFixed(1)}%`}
-                  subtitle="Current markets"
-                  icon="📈"
-                  color="#4da6ff"
+                  icon="◐"
+                  color="#00f0ff"
                 />
                 <StatsCard
-                  title="Total Bets"
+                  title="Bets"
                   value={totalBets}
-                  subtitle={`$${totalWagered.toFixed(2)} wagered`}
-                  icon="🎰"
-                  color="#ffd700"
+                  icon="▣"
+                  color="#ff00aa"
                 />
               </div>
 
