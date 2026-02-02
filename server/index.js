@@ -1985,7 +1985,14 @@ function analyzeIndexMarket(parsed) {
     bestBet = { side: 'NO', edge: noEdge, prob: probNoWins, price: parsed.noAsk };
   }
 
-  if (!bestBet) return null;
+  // No valid bet found - log why for high-priced markets
+  if (!bestBet) {
+    const maxPrice = Math.max(parsed.yesAsk || 0, parsed.noAsk || 0);
+    if (maxPrice > 0.75) {
+      console.log(`   ⚠️ Skipped SPX market: YES@${Math.round((parsed.yesAsk||0)*100)}¢ NO@${Math.round((parsed.noAsk||0)*100)}¢ | Our prob: ${(probYesWins*100).toFixed(0)}% | Need >${Math.round(maxPrice*100)}% to bet`);
+    }
+    return null;
+  }
 
   const isHighProb = bestBet.prob >= 0.60;
   const isSafeBet = bestBet.prob >= 0.70;
@@ -2184,8 +2191,13 @@ function analyzeCryptoMarket(parsed) {
     bestBet = { side: 'NO', edge: noEdge, prob: probNoWins, price: parsed.noAsk };
   }
 
-  // No valid bet found
+  // No valid bet found - log why for high-priced markets
   if (!bestBet) {
+    // Log markets where prices are too high for our model
+    const maxPrice = Math.max(parsed.yesAsk || 0, parsed.noAsk || 0);
+    if (maxPrice > 0.75) {
+      console.log(`   ⚠️ Skipped ${parsed.cryptoType} market: YES@${Math.round((parsed.yesAsk||0)*100)}¢ NO@${Math.round((parsed.noAsk||0)*100)}¢ | Our prob: ${(probYesWins*100).toFixed(0)}% | Need >${Math.round(maxPrice*100)}% to bet`);
+    }
     return null;
   }
 
