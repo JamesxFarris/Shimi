@@ -38,7 +38,18 @@ let config = {
   minBetAmount: 100, // $1 fixed bets
   fixedBetAmount: 100, // Always bet $1
   minEdge: 5, // 5% minimum - model has uncertainty, need buffer
-  autoBetEnabled: false
+  autoBetEnabled: false,
+  // Risk management settings (in cents)
+  riskLimits: {
+    hourly: {
+      maxPerBet: 200,    // $2.00 max per bet
+      maxTotal: 500      // $5.00 max total exposure
+    },
+    other: {
+      maxPerBet: 200,    // $2.00 max per bet
+      maxTotal: 1000     // $10.00 max total exposure
+    }
+  }
 };
 
 let betHistory = [];
@@ -1136,13 +1147,19 @@ fetchIndexPrice();
 // RISK MANAGEMENT
 // ============================================
 
-// Separate risk limits by market timeframe
-// Separate risk limits by market timeframe
-const MAX_RISK_CENTS = {
-  hourly: 500,   // $5.00 max for hourly markets
-  other: 500     // $5.00 max for daily/15min/other markets
-};
-const MAX_TOTAL_RISK_CENTS = MAX_RISK_CENTS.hourly + MAX_RISK_CENTS.other; // $10 total
+// Risk limits are now configurable via config.riskLimits
+// Helper functions to get current limits
+function getMaxRisk(type) {
+  return config.riskLimits[type]?.maxTotal || 500;
+}
+
+function getMaxPerBet(type) {
+  return config.riskLimits[type]?.maxPerBet || 200;
+}
+
+function getMaxTotalRisk() {
+  return getMaxRisk('hourly') + getMaxRisk('other');
+}
 
 // Determine if a ticker is an hourly market
 function isHourlyMarket(ticker) {
@@ -1201,31 +1218,21 @@ function getCurrentRiskFromPortfolio() {
 
 function canPlaceBet(betCostCents, ticker) {
   const risk = getRiskByType();
-  const isHourly = isHourlyMarket(ticker);
-
-  if (isHourly) {
-    return (risk.hourly + betCostCents) <= MAX_RISK_CENTS.hourly;
-  } else {
-    return (risk.other + betCostCents) <= MAX_RISK_CENTS.other;
-  }
+  const type = isHourlyMarket(ticker) ? 'hourly' : 'other';
+  return (risk[type] + betCostCents) <= getMaxRisk(type);
 }
 
 function getRemainingRiskBudget(ticker) {
   const risk = getRiskByType();
-  const isHourly = isHourlyMarket(ticker);
-
-  if (isHourly) {
-    return Math.max(0, MAX_RISK_CENTS.hourly - risk.hourly);
-  } else {
-    return Math.max(0, MAX_RISK_CENTS.other - risk.other);
-  }
+  const type = isHourlyMarket(ticker) ? 'hourly' : 'other';
+  return Math.max(0, getMaxRisk(type) - risk[type]);
 }
 
 // Get total remaining budget (for display)
 function getTotalRemainingBudget() {
   const risk = getRiskByType();
-  const hourlyRemaining = Math.max(0, MAX_RISK_CENTS.hourly - risk.hourly);
-  const otherRemaining = Math.max(0, MAX_RISK_CENTS.other - risk.other);
+  const hourlyRemaining = Math.max(0, getMaxRisk('hourly') - risk.hourly);
+  const otherRemaining = Math.max(0, getMaxRisk('other') - risk.other);
   return hourlyRemaining + otherRemaining;
 }
 
@@ -1992,26 +1999,26 @@ app.get('/api/opportunities/all', async (req, res) => {
       risk: {
         // Total risk
         current: riskByType.total,
-        max: MAX_TOTAL_RISK_CENTS,
+        max: getMaxTotalRisk(),
         remaining: getTotalRemainingBudget(),
         currentDollars: (riskByType.total / 100).toFixed(2),
-        maxDollars: (MAX_TOTAL_RISK_CENTS / 100).toFixed(2),
+        maxDollars: (getMaxTotalRisk() / 100).toFixed(2),
         remainingDollars: (getTotalRemainingBudget() / 100).toFixed(2),
         // Hourly pool
         hourly: {
           current: riskByType.hourly,
-          max: MAX_RISK_CENTS.hourly,
-          remaining: Math.max(0, MAX_RISK_CENTS.hourly - riskByType.hourly),
+          max: getMaxRisk('hourly'),
+          remaining: Math.max(0, getMaxRisk('hourly') - riskByType.hourly),
           currentDollars: (riskByType.hourly / 100).toFixed(2),
-          maxDollars: (MAX_RISK_CENTS.hourly / 100).toFixed(2)
+          maxDollars: (getMaxRisk('hourly') / 100).toFixed(2)
         },
         // Other pool (daily, 15min, etc)
         other: {
           current: riskByType.other,
-          max: MAX_RISK_CENTS.other,
-          remaining: Math.max(0, MAX_RISK_CENTS.other - riskByType.other),
+          max: getMaxRisk('other'),
+          remaining: Math.max(0, getMaxRisk('other') - riskByType.other),
           currentDollars: (riskByType.other / 100).toFixed(2),
-          maxDollars: (MAX_RISK_CENTS.other / 100).toFixed(2)
+          maxDollars: (getMaxRisk('other') / 100).toFixed(2)
         }
       },
       opportunities: allOpportunities
@@ -2072,18 +2079,18 @@ app.get('/api/risk', async (req, res) => {
     }
 
     const currentRisk = kalshiRisk + localRisk;
-    const remainingBudget = Math.max(0, MAX_TOTAL_RISK_CENTS - currentRisk);
+    const remainingBudget = Math.max(0, getMaxTotalRisk() - currentRisk);
 
-    console.log(`📊 Risk: Kalshi=$${(kalshiRisk/100).toFixed(2)} (${kalshiTickers.size} positions), Local=$${(localRisk/100).toFixed(2)} (${unsettledBets.length} bets), Total=$${(currentRisk/100).toFixed(2)} / $${(MAX_TOTAL_RISK_CENTS/100).toFixed(2)}`);
+    console.log(`📊 Risk: Kalshi=$${(kalshiRisk/100).toFixed(2)} (${kalshiTickers.size} positions), Local=$${(localRisk/100).toFixed(2)} (${unsettledBets.length} bets), Total=$${(currentRisk/100).toFixed(2)} / $${(getMaxTotalRisk()/100).toFixed(2)}`);
 
     res.json({
       success: true,
       risk: {
         current: currentRisk,
-        max: MAX_TOTAL_RISK_CENTS,
+        max: getMaxTotalRisk(),
         remaining: remainingBudget,
         currentDollars: (currentRisk / 100).toFixed(2),
-        maxDollars: (MAX_TOTAL_RISK_CENTS / 100).toFixed(2),
+        maxDollars: (getMaxTotalRisk() / 100).toFixed(2),
         remainingDollars: (remainingBudget / 100).toFixed(2),
         positionCount: kalshiTickers.size,
         unsettledBetCount: unsettledBets.length,
@@ -2094,6 +2101,45 @@ app.get('/api/risk', async (req, res) => {
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
+});
+
+// Get risk settings
+app.get('/api/settings/risk', (req, res) => {
+  res.json({
+    success: true,
+    riskLimits: config.riskLimits
+  });
+});
+
+// Update risk settings
+app.post('/api/settings/risk', (req, res) => {
+  const { hourly, other } = req.body;
+
+  if (hourly) {
+    if (hourly.maxPerBet !== undefined) {
+      config.riskLimits.hourly.maxPerBet = Math.max(10, Math.min(1000, parseInt(hourly.maxPerBet) || 200));
+    }
+    if (hourly.maxTotal !== undefined) {
+      config.riskLimits.hourly.maxTotal = Math.max(100, Math.min(10000, parseInt(hourly.maxTotal) || 500));
+    }
+  }
+
+  if (other) {
+    if (other.maxPerBet !== undefined) {
+      config.riskLimits.other.maxPerBet = Math.max(10, Math.min(1000, parseInt(other.maxPerBet) || 200));
+    }
+    if (other.maxTotal !== undefined) {
+      config.riskLimits.other.maxTotal = Math.max(100, Math.min(10000, parseInt(other.maxTotal) || 1000));
+    }
+  }
+
+  console.log(`⚙️ Risk settings updated:`, JSON.stringify(config.riskLimits));
+
+  res.json({
+    success: true,
+    riskLimits: config.riskLimits,
+    message: 'Risk settings updated'
+  });
 });
 
 // ============================================
@@ -2271,17 +2317,18 @@ app.post('/api/bet', async (req, res) => {
       });
     }
 
-    // Calculate bet size (up to $1, but respect risk limit for this market type)
+    // Calculate bet size based on configurable limits
     const isHourly = isHourlyMarket(ticker);
+    const poolType = isHourly ? 'hourly' : 'other';
     const remainingBudget = getRemainingRiskBudget(ticker);
-    const poolMax = isHourly ? MAX_RISK_CENTS.hourly : MAX_RISK_CENTS.other;
-    const poolName = isHourly ? 'hourly' : 'other';
-    const TARGET_BET_CENTS = Math.min(100, remainingBudget); // $1.00 max, but respect risk cap
+    const poolMax = getMaxRisk(poolType);
+    const maxPerBet = getMaxPerBet(poolType);
+    const TARGET_BET_CENTS = Math.min(maxPerBet, remainingBudget); // Configurable max per bet
 
     if (TARGET_BET_CENTS < priceCents) {
       return res.status(400).json({
         success: false,
-        error: `Risk limit reached for ${poolName} markets. Only $${(remainingBudget/100).toFixed(2)} remaining of $${(poolMax/100).toFixed(2)} max.`
+        error: `Risk limit reached for ${poolType} markets. Only $${(remainingBudget/100).toFixed(2)} remaining of $${(poolMax/100).toFixed(2)} max.`
       });
     }
 
@@ -2395,27 +2442,27 @@ app.post('/api/bet', async (req, res) => {
         newBalance: portfolio.balance / 100,
         risk: {
           current: riskByType.total,
-          max: MAX_TOTAL_RISK_CENTS,
+          max: getMaxTotalRisk(),
           remaining: getTotalRemainingBudget(),
           currentDollars: (riskByType.total / 100).toFixed(2),
-          maxDollars: (MAX_TOTAL_RISK_CENTS / 100).toFixed(2),
+          maxDollars: (getMaxTotalRisk() / 100).toFixed(2),
           remainingDollars: (getTotalRemainingBudget() / 100).toFixed(2),
           hourly: {
             current: riskByType.hourly,
-            max: MAX_RISK_CENTS.hourly,
+            max: getMaxRisk('hourly'),
             currentDollars: (riskByType.hourly / 100).toFixed(2),
-            maxDollars: (MAX_RISK_CENTS.hourly / 100).toFixed(2)
+            maxDollars: (getMaxRisk('hourly') / 100).toFixed(2)
           },
           other: {
             current: riskByType.other,
-            max: MAX_RISK_CENTS.other,
+            max: getMaxRisk('other'),
             currentDollars: (riskByType.other / 100).toFixed(2),
-            maxDollars: (MAX_RISK_CENTS.other / 100).toFixed(2)
+            maxDollars: (getMaxRisk('other') / 100).toFixed(2)
           }
         }
       });
 
-      console.log(`✅ Bet placed. Risk now: $${(currentRisk / 100).toFixed(2)} / $${(MAX_TOTAL_RISK_CENTS / 100).toFixed(2)}`);
+      console.log(`✅ Bet placed. Risk now: $${(currentRisk / 100).toFixed(2)} / $${(getMaxTotalRisk() / 100).toFixed(2)}`);
     } catch (orderError) {
       console.error('Kalshi order error:', orderError.message);
       res.status(400).json({ success: false, error: `Kalshi: ${orderError.message}` });
@@ -2496,7 +2543,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     // Check risk limit for this market's pool
     const isHourly = isHourlyMarket(best.ticker);
     const remainingBudget = getRemainingRiskBudget(best.ticker);
-    const poolMax = isHourly ? MAX_RISK_CENTS.hourly : MAX_RISK_CENTS.other;
+    const poolMax = isHourly ? getMaxRisk('hourly') : getMaxRisk('other');
     const poolName = isHourly ? 'hourly' : 'other';
 
     if (remainingBudget < 10) { // Less than 10 cents remaining in this pool
@@ -2508,10 +2555,11 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       });
     }
     const category = best.marketCategory || 'crypto';
+    const maxPerBet = getMaxPerBet(poolName === 'HOURLY' ? 'hourly' : 'other');
     console.log(`Auto-bet found [${category}]: ${best.title} | Win prob: ${best.winProbability}% | Side: ${best.betSide}`);
 
-    // Cap bet at remaining risk budget or $1, whichever is less
-    const MAX_BET_CENTS = Math.min(100, remainingBudget);
+    // Cap bet at remaining risk budget or max per bet, whichever is less
+    const MAX_BET_CENTS = Math.min(maxPerBet, remainingBudget);
 
     const priceCents = Math.round(best.betPrice * 100);
 
@@ -2635,22 +2683,22 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
         newBalance: portfolio.balance / 100,
         risk: {
           current: riskByType.total,
-          max: MAX_TOTAL_RISK_CENTS,
+          max: getMaxTotalRisk(),
           remaining: getTotalRemainingBudget(),
           currentDollars: (riskByType.total / 100).toFixed(2),
-          maxDollars: (MAX_TOTAL_RISK_CENTS / 100).toFixed(2),
+          maxDollars: (getMaxTotalRisk() / 100).toFixed(2),
           remainingDollars: (getTotalRemainingBudget() / 100).toFixed(2),
           hourly: {
             current: riskByType.hourly,
-            max: MAX_RISK_CENTS.hourly,
+            max: getMaxRisk('hourly'),
             currentDollars: (riskByType.hourly / 100).toFixed(2),
-            maxDollars: (MAX_RISK_CENTS.hourly / 100).toFixed(2)
+            maxDollars: (getMaxRisk('hourly') / 100).toFixed(2)
           },
           other: {
             current: riskByType.other,
-            max: MAX_RISK_CENTS.other,
+            max: getMaxRisk('other'),
             currentDollars: (riskByType.other / 100).toFixed(2),
-            maxDollars: (MAX_RISK_CENTS.other / 100).toFixed(2)
+            maxDollars: (getMaxRisk('other') / 100).toFixed(2)
           }
         }
       });
@@ -2778,11 +2826,11 @@ async function runAutoBet() {
     const isHourly = isHourlyMarket(best.ticker);
     const remainingBudget = getRemainingRiskBudget(best.ticker);
     const riskByType = getRiskByType();
-    const poolMax = isHourly ? MAX_RISK_CENTS.hourly : MAX_RISK_CENTS.other;
+    const poolMax = isHourly ? getMaxRisk('hourly') : getMaxRisk('other');
     const poolCurrent = isHourly ? riskByType.hourly : riskByType.other;
     const poolName = isHourly ? 'HOURLY' : 'OTHER';
 
-    console.log(`💰 Risk [${poolName}]: $${(poolCurrent/100).toFixed(2)} / $${(poolMax/100).toFixed(2)} | Total: $${(riskByType.total/100).toFixed(2)} / $${(MAX_TOTAL_RISK_CENTS/100).toFixed(2)}`);
+    console.log(`💰 Risk [${poolName}]: $${(poolCurrent/100).toFixed(2)} / $${(poolMax/100).toFixed(2)} | Total: $${(riskByType.total/100).toFixed(2)} / $${(getMaxTotalRisk()/100).toFixed(2)}`);
 
     console.log(`\n💰 BEST OPPORTUNITY [${category.toUpperCase()}]:`);
     console.log(`   ${best.title}`);
@@ -2805,8 +2853,9 @@ async function runAutoBet() {
 
     console.log(`   ${best.isObviousBet ? '✅ HIGH CONFIDENCE' : '⚠️ Model-based'}`);
 
-    // Cap bet at remaining risk budget or $1, whichever is less
-    const MAX_BET_CENTS = Math.min(100, remainingBudget);
+    // Cap bet at remaining risk budget or max per bet, whichever is less
+    const maxPerBet = getMaxPerBet(isHourly ? 'hourly' : 'other');
+    const MAX_BET_CENTS = Math.min(maxPerBet, remainingBudget);
 
     const priceCents = Math.round(best.betPrice * 100);
 

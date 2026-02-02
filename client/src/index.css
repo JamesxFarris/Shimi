@@ -2618,3 +2618,71 @@ body {
     font-size: 13px;
   }
 }
+
+/* ============================================
+   RISK SETTINGS
+   ============================================ */
+
+.risk-settings {
+  display: flex;
+  gap: 20px;
+}
+
+.risk-pool-settings {
+  flex: 1;
+  padding: 12px;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-md);
+}
+
+.risk-pool-settings h4 {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--neon-cyan);
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.settings-input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.settings-input-group label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.settings-input-group input {
+  padding: 8px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text-primary);
+  width: 100%;
+}
+
+.settings-input-group input:focus {
+  outline: none;
+  border-color: var(--neon-cyan);
+  box-shadow: 0 0 0 2px rgba(0, 240, 255, 0.1);
+}
+
+.settings-input-group input::-webkit-inner-spin-button,
+.settings-input-group input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+@media (max-width: 768px) {
+  .risk-settings {
+    flex-direction: column;
+  }
+}

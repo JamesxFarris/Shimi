@@ -545,6 +545,41 @@ function App() {
     }
   }
 
+  // Update risk settings (debounced)
+  const updateRiskSettings = async (poolType, field, value) => {
+    try {
+      const body = {}
+      body[poolType] = { [field]: value }
+
+      const res = await fetch(`${API_BASE}/api/settings/risk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      })
+      const data = await res.json()
+      if (data.success) {
+        // Update local risk state with new limits
+        setRisk(prev => ({
+          ...prev,
+          hourly: {
+            ...prev.hourly,
+            max: data.riskLimits.hourly.maxTotal,
+            maxDollars: (data.riskLimits.hourly.maxTotal / 100).toFixed(2)
+          },
+          other: {
+            ...prev.other,
+            max: data.riskLimits.other.maxTotal,
+            maxDollars: (data.riskLimits.other.maxTotal / 100).toFixed(2)
+          },
+          max: data.riskLimits.hourly.maxTotal + data.riskLimits.other.maxTotal,
+          maxDollars: ((data.riskLimits.hourly.maxTotal + data.riskLimits.other.maxTotal) / 100).toFixed(2)
+        }))
+      }
+    } catch (err) {
+      console.error('Error updating risk settings:', err)
+    }
+  }
+
   // Auth handlers
   const handleAuth = async (e) => {
     e.preventDefault()
@@ -1183,6 +1218,63 @@ function App() {
                       <span className={`settings-value ${isAuthenticated ? 'live' : ''}`}>
                         {isAuthenticated ? 'Live' : 'Simulation'}
                       </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Risk Settings */}
+                <div className="settings-card">
+                  <h3 className="settings-card-title">Risk Limits</h3>
+                  <div className="risk-settings">
+                    <div className="risk-pool-settings">
+                      <h4>Hourly Markets</h4>
+                      <div className="settings-input-group">
+                        <label>Max per bet ($)</label>
+                        <input
+                          type="number"
+                          min="0.10"
+                          max="10.00"
+                          step="0.10"
+                          defaultValue="2.00"
+                          onChange={(e) => updateRiskSettings('hourly', 'maxPerBet', Math.round(parseFloat(e.target.value) * 100))}
+                        />
+                      </div>
+                      <div className="settings-input-group">
+                        <label>Max total ($)</label>
+                        <input
+                          type="number"
+                          min="1.00"
+                          max="100.00"
+                          step="1.00"
+                          defaultValue="5.00"
+                          onChange={(e) => updateRiskSettings('hourly', 'maxTotal', Math.round(parseFloat(e.target.value) * 100))}
+                        />
+                      </div>
+                    </div>
+                    <div className="risk-pool-settings">
+                      <h4>Other Markets (15min, daily)</h4>
+                      <div className="settings-input-group">
+                        <label>Max per bet ($)</label>
+                        <input
+                          type="number"
+                          min="0.10"
+                          max="10.00"
+                          step="0.10"
+                          defaultValue="2.00"
+                          onChange={(e) => updateRiskSettings('other', 'maxPerBet', Math.round(parseFloat(e.target.value) * 100))}
+                        />
+                      </div>
+                      <div className="settings-input-group">
+                        <label>Max total ($)</label>
+                        <input
+                          type="number"
+                          min="1.00"
+                          max="100.00"
+                          step="1.00"
+                          defaultValue="10.00"
+                          onChange={(e) => updateRiskSettings('other', 'maxTotal', Math.round(parseFloat(e.target.value) * 100))}
+                        />
+                      </div>
                     </div>
                   </div>
                 </div>
