@@ -292,7 +292,6 @@ function App() {
   // News & Sentiment
   const [sentiment, setSentiment] = useState(null)
   const [newsAlerts, setNewsAlerts] = useState([])
-  const [showAlertBanner, setShowAlertBanner] = useState(false)
 
   // Fetch prices directly (faster updates)
   const fetchPrices = useCallback(async () => {
@@ -385,22 +384,14 @@ function App() {
 
       if (data.success) {
         setSentiment(data)
-        // Check for new alerts
-        if (data.alerts && data.alerts.length > 0) {
-          const latestAlert = data.alerts[0]
-          // Show banner for alerts less than 2 minutes old
-          const alertAge = Date.now() - new Date(latestAlert.timestamp).getTime()
-          if (alertAge < 2 * 60 * 1000 && !newsAlerts.some(a => a.id === latestAlert.id)) {
-            setShowAlertBanner(true)
-            setTimeout(() => setShowAlertBanner(false), 10000) // Hide after 10s
-          }
+        if (data.alerts) {
           setNewsAlerts(data.alerts)
         }
       }
     } catch (err) {
       console.error('Sentiment fetch error:', err)
     }
-  }, [newsAlerts])
+  }, [])
 
   // Initial load - runs once
   useEffect(() => {
@@ -677,19 +668,7 @@ function App() {
           </div>
         </div>
 
-        {/* News Alert Banner */}
-        {showAlertBanner && newsAlerts[0] && (
-          <div className={`news-alert-banner ${newsAlerts[0].direction}`} onClick={() => setShowAlertBanner(false)}>
-            <span className="alert-icon">🚨</span>
-            <div className="alert-content">
-              <span className="alert-headline">{newsAlerts[0].headline}</span>
-              <span className="alert-meta">
-                {newsAlerts[0].direction.toUpperCase()} | Score: {newsAlerts[0].score} | {newsAlerts[0].source}
-              </span>
-            </div>
-            <button className="alert-close">×</button>
-          </div>
-        )}
+        {/* News Alert Banner - disabled, view in Sentiment tab instead */}
 
         {/* Status Banner */}
         {betStatus && (
