@@ -1157,6 +1157,14 @@ function getCurrentRiskFromPortfolio() {
 
   console.log(`📊 Risk calc: ${portfolio.positions?.length || 0} Kalshi positions, ${betHistory.length} local bets`);
 
+  // Debug: show first few bets in history
+  if (betHistory.length > 0) {
+    console.log(`   Recent bets in history:`);
+    betHistory.slice(0, 5).forEach(b => {
+      console.log(`     - ${b.ticker} | status=${b.status} | cost=${b.totalCost} | time=${b.timestamp}`);
+    });
+  }
+
   if (portfolio.positions && Array.isArray(portfolio.positions)) {
     for (const pos of portfolio.positions) {
       // Each position's risk is contracts * price paid
@@ -2617,6 +2625,11 @@ async function runAutoBet() {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
         portfolio.positions = posData.positions || [];
         console.log(`📊 Refreshed positions: ${portfolio.positions.length} open positions from Kalshi`);
+        if (portfolio.positions.length > 0) {
+          portfolio.positions.forEach(p => {
+            console.log(`   Position: ${p.ticker} | position=${p.position} | avg_price=${p.average_price}`);
+          });
+        }
       } catch (e) {
         console.log('⚠️ Could not refresh positions:', e.message);
       }
