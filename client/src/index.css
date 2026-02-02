@@ -443,6 +443,8 @@ body {
 
 .price-ticker-container {
   height: 36px;
+  min-height: 36px;
+  max-height: 36px;
   background: linear-gradient(180deg, #0a0f1a 0%, #0d1424 100%);
   border-bottom: 1px solid var(--neon-cyan);
   position: relative;
@@ -450,6 +452,7 @@ body {
   align-items: center;
   overflow: hidden;
   box-shadow: 0 2px 10px rgba(0, 240, 255, 0.1);
+  contain: strict;
 }
 
 .price-ticker {
@@ -739,6 +742,7 @@ body {
   border: 1px solid rgba(0, 240, 255, 0.1);
   box-sizing: border-box;
   max-width: 100%;
+  contain: layout style;
 }
 
 .stats-card {
@@ -751,7 +755,9 @@ body {
   gap: 12px;
   position: relative;
   overflow: hidden;
-  transition: all 0.3s ease;
+  transition: transform 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+  min-height: 64px;
+  max-height: 80px;
 }
 
 .stats-card:hover {
@@ -3100,4 +3106,39 @@ body {
 .scale-in-settings .settings-input-group input[type="checkbox"] {
   width: auto;
   accent-color: var(--neon-purple);
+}
+
+/* ============================================
+   TOKEN LIMITS GRID
+   ============================================ */
+
+.token-limits-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.token-limits-grid .settings-input-group {
+  background: var(--bg-card);
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+}
+
+.token-limits-grid .settings-input-group label {
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--neon-cyan);
+  margin-bottom: 4px;
+}
+
+.token-limits-grid .settings-input-group input {
+  text-align: center;
+}
+
+@media (max-width: 768px) {
+  .token-limits-grid {
+    grid-template-columns: 1fr;
+  }
 }

@@ -325,7 +325,11 @@ function App() {
   const [riskSettings, setRiskSettings] = useState({
     hourly: { maxPerBet: 200, maxTotal: 500 },
     other: { maxPerBet: 200, maxTotal: 1000 },
-    maxPerToken: 500  // $5.00 max per token
+    tokenLimits: {
+      BTC: 500,
+      ETH: 500,
+      SOL: 500
+    }
   })
   const [scaleInSettings, setScaleInSettings] = useState({
     enabled: true,
@@ -335,9 +339,6 @@ function App() {
   })
   const [settingsSaved, setSettingsSaved] = useState(false)
   const [marketFilter, setMarketFilter] = useState('all') // 'all', 'crypto', 'index'
-  // News & Sentiment
-  const [sentiment, setSentiment] = useState(null)
-  const [newsAlerts, setNewsAlerts] = useState([])
 
   // Fetch prices directly (faster updates)
   const fetchPrices = useCallback(async () => {
@@ -422,22 +423,6 @@ function App() {
     } catch (err) {}
   }, [])
 
-  // Fetch sentiment data
-  const fetchSentiment = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/sentiment`)
-      const data = await res.json()
-
-      if (data.success) {
-        setSentiment(data)
-        if (data.alerts) {
-          setNewsAlerts(data.alerts)
-        }
-      }
-    } catch (err) {
-      console.error('Sentiment fetch error:', err)
-    }
-  }, [])
 
   // Initial load - runs once
   useEffect(() => {
@@ -445,16 +430,12 @@ function App() {
     fetchOpportunities()
     fetchPortfolio()
     checkAuth()
-    fetchSentiment()
 
     // Refresh opportunities every 10 seconds (includes prices)
     const oppInterval = setInterval(fetchOpportunities, 10000)
 
     // Refresh portfolio every 30 seconds
     const portfolioInterval = setInterval(fetchPortfolio, 30000)
-
-    // Refresh sentiment every 30 seconds
-    const sentimentInterval = setInterval(fetchSentiment, 30000)
 
     // Update ticker time display every second
     const tickerTimeInterval = setInterval(() => {
@@ -464,7 +445,6 @@ function App() {
     return () => {
       clearInterval(oppInterval)
       clearInterval(portfolioInterval)
-      clearInterval(sentimentInterval)
       clearInterval(tickerTimeInterval)
     }
   }, []) // Empty dependency - only runs on mount
@@ -710,19 +690,9 @@ function App() {
             <span className="nav-icon">◈</span>
             <span className="nav-text">Dashboard</span>
           </button>
-          <button className={`nav-item ${tab === 'opportunities' ? 'active' : ''}`} onClick={() => setTab('opportunities')}>
-            <span className="nav-icon">⬡</span>
-            <span className="nav-text">Signals</span>
-            {opportunities.length > 0 && <span className="nav-badge">{opportunities.length}</span>}
-          </button>
           <button className={`nav-item ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
             <span className="nav-icon">◰</span>
             <span className="nav-text">History</span>
-          </button>
-          <button className={`nav-item ${tab === 'sentiment' ? 'active' : ''}`} onClick={() => setTab('sentiment')}>
-            <span className="nav-icon">📰</span>
-            <span className="nav-text">Sentiment</span>
-            {newsAlerts.length > 0 && <span className="nav-badge alert">{newsAlerts.length}</span>}
           </button>
           <button className={`nav-item ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>
             <span className="nav-icon">⚙</span>
@@ -775,9 +745,7 @@ function App() {
           <div className="top-bar-left">
             <h2 className="page-title">
               {tab === 'dashboard' && 'Dashboard'}
-              {tab === 'opportunities' && 'Betting Opportunities'}
               {tab === 'history' && 'Bet History'}
-              {tab === 'sentiment' && 'News & Sentiment'}
               {tab === 'settings' && 'Settings'}
             </h2>
           </div>
@@ -895,15 +863,10 @@ function App() {
                 </div>
               </div>
 
-              {/* Top Opportunities Preview */}
+              {/* Top Opportunities */}
               <div className="top-opportunities">
                 <div className="section-header">
                   <h3 className="section-title">Top Opportunities</h3>
-                  {opportunities.length > 0 && (
-                    <button className="view-all-btn" onClick={() => setTab('opportunities')}>
-                      View All →
-                    </button>
-                  )}
                 </div>
 
                 {loading ? (
@@ -918,8 +881,8 @@ function App() {
                     <p>Waiting for price mispricings...</p>
                   </div>
                 ) : (
-                  <div className="opportunities-preview">
-                    {opportunities.slice(0, 3).map(opp => (
+                  <div className="opportunities-grid">
+                    {opportunities.map(opp => (
                       <OpportunityCard
                         key={opp.ticker}
                         opp={opp}
@@ -933,112 +896,6 @@ function App() {
             </div>
           )}
 
-          {/* Opportunities Tab */}
-          {tab === 'opportunities' && (
-            <div className="opportunities-page">
-              {/* Risk Display */}
-              <div className="risk-display">
-                <div className="risk-info">
-                  <span className="risk-label">Risk Exposure</span>
-                  <span className="risk-value">${risk.currentDollars || '0.00'} / ${risk.maxDollars || '5.00'}</span>
-                </div>
-                <div className="risk-bar">
-                  <div
-                    className="risk-fill"
-                    style={{ width: `${Math.min(100, (risk.current / (risk.max || 500)) * 100)}%` }}
-                  ></div>
-                </div>
-                <span className="risk-remaining">${risk.remainingDollars || '5.00'} available</span>
-              </div>
-
-              {/* Market Filter */}
-              <div className="market-filter">
-                <button
-                  className={`filter-btn ${marketFilter === 'all' ? 'active' : ''}`}
-                  onClick={() => setMarketFilter('all')}
-                >
-                  All Markets
-                </button>
-                <button
-                  className={`filter-btn ${marketFilter === 'crypto' ? 'active' : ''}`}
-                  onClick={() => setMarketFilter('crypto')}
-                >
-                  Crypto
-                </button>
-                <button
-                  className={`filter-btn ${marketFilter === 'index' ? 'active' : ''}`}
-                  onClick={() => setMarketFilter('index')}
-                >
-                  S&P 500
-                </button>
-              </div>
-
-              <div className="page-actions">
-                <button
-                  className={`action-btn primary ${placingBet === 'auto' ? 'loading' : ''}`}
-                  onClick={placeAutoBet}
-                  disabled={opportunities.length === 0 || placingBet}
-                >
-                  <span className="action-icon">⚡</span>
-                  {placingBet === 'auto' ? 'Placing...' : 'Place Best Bet'}
-                </button>
-                <button
-                  className={`action-btn ${autoBetEnabled ? 'danger' : 'secondary'}`}
-                  onClick={toggleAutoBet}
-                >
-                  <span className="action-icon">{autoBetEnabled ? '⏹' : '▶'}</span>
-                  {autoBetEnabled ? 'Stop Auto' : 'Auto 15s'}
-                </button>
-              </div>
-
-              {loading && (
-                <div className="loading-state">
-                  <div className="spinner"></div>
-                  <p>Scanning crypto markets...</p>
-                </div>
-              )}
-
-              {(() => {
-                const filteredOpps = opportunities.filter(opp => {
-                  if (marketFilter === 'all') return true
-                  if (marketFilter === 'crypto') return opp.marketCategory !== 'index'
-                  if (marketFilter === 'index') return opp.marketCategory === 'index'
-                  return true
-                })
-
-                if (!loading && filteredOpps.length === 0) {
-                  return (
-                    <div className="empty-state large">
-                      <span className="empty-icon">🔍</span>
-                      <h3>No Opportunities Found</h3>
-                      <p>
-                        {marketFilter === 'all'
-                          ? 'Waiting for markets where our probability differs from Kalshi\'s price...'
-                          : `No ${marketFilter === 'index' ? 'S&P 500' : 'crypto'} opportunities right now.`}
-                      </p>
-                    </div>
-                  )
-                }
-
-                if (!loading && filteredOpps.length > 0) {
-                  return (
-                    <div className="opportunities-grid">
-                      {filteredOpps.map(opp => (
-                        <OpportunityCard
-                          key={opp.ticker}
-                          opp={opp}
-                          onBet={placeBet}
-                          isPlacing={placingBet === opp.ticker}
-                        />
-                      ))}
-                    </div>
-                  )
-                }
-
-                return null
-              })()}
-            </div>
-          )}
 
           {/* History Tab */}
           {tab === 'history' && (
@@ -1083,162 +940,6 @@ function App() {
             </div>
           )}
 
-          {/* Sentiment Tab */}
-          {tab === 'sentiment' && (
-            <div className="sentiment-page">
-              {/* Overall Sentiment Card */}
-              {sentiment?.overall && (
-                <div className={`sentiment-overview ${sentiment.overall.score > 20 ? 'bullish' : sentiment.overall.score < -20 ? 'bearish' : 'neutral'}`}>
-                  <div className="sentiment-header">
-                    <h3 className="sentiment-label">Market Sentiment</h3>
-                    <span className={`sentiment-badge ${sentiment.overall.label.toLowerCase().replace(' ', '-')}`}>
-                      {sentiment.overall.label}
-                    </span>
-                  </div>
-                  <div className="sentiment-score-display">
-                    <div className="sentiment-meter">
-                      <div className="meter-bar">
-                        <div
-                          className="meter-fill"
-                          style={{
-                            width: `${Math.abs(sentiment.overall.score)}%`,
-                            marginLeft: sentiment.overall.score > 0 ? '50%' : `${50 - Math.abs(sentiment.overall.score)}%`
-                          }}
-                        ></div>
-                        <div className="meter-center"></div>
-                      </div>
-                      <div className="meter-labels">
-                        <span>Bearish</span>
-                        <span>Neutral</span>
-                        <span>Bullish</span>
-                      </div>
-                    </div>
-                    <div className="sentiment-signals">
-                      <div className="signal bullish">
-                        <span className="signal-icon">📈</span>
-                        <span className="signal-count">{sentiment.overall.bullishSignals || 0}</span>
-                        <span className="signal-label">Bullish</span>
-                      </div>
-                      <div className="signal bearish">
-                        <span className="signal-icon">📉</span>
-                        <span className="signal-count">{sentiment.overall.bearishSignals || 0}</span>
-                        <span className="signal-label">Bearish</span>
-                      </div>
-                    </div>
-                  </div>
-                  <p className="sentiment-description">{sentiment.overall.description}</p>
-                </div>
-              )}
-
-              <div className="sentiment-grid">
-                {/* Recent Alerts */}
-                <div className="sentiment-card alerts-card">
-                  <h3 className="card-title">
-                    <span className="title-icon">🚨</span>
-                    Recent Alerts
-                  </h3>
-                  {newsAlerts.length === 0 ? (
-                    <div className="empty-alerts">
-                      <span>No urgent news detected</span>
-                    </div>
-                  ) : (
-                    <div className="alerts-list">
-                      {newsAlerts.slice(0, 5).map(alert => (
-                        <div key={alert.id} className={`alert-item ${alert.direction}`}>
-                          <div className="alert-direction">
-                            {alert.direction === 'bullish' ? '📈' : alert.direction === 'bearish' ? '📉' : '➡️'}
-                          </div>
-                          <div className="alert-info">
-                            <span className="alert-title">{alert.headline}</span>
-                            <div className="alert-tags">
-                              {alert.keywords?.slice(0, 3).map((kw, i) => (
-                                <span key={i} className="alert-tag">{kw}</span>
-                              ))}
-                            </div>
-                            <span className="alert-time">
-                              {new Date(alert.timestamp).toLocaleTimeString()} - {alert.source}
-                            </span>
-                          </div>
-                          <div className="alert-score">+{alert.score}</div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Reddit Trending */}
-                <div className="sentiment-card reddit-card">
-                  <h3 className="card-title">
-                    <span className="title-icon">🔥</span>
-                    Reddit Trending
-                  </h3>
-                  {sentiment?.reddit?.length > 0 ? (
-                    <div className="reddit-list">
-                      {sentiment.reddit.slice(0, 10).map((item, idx) => (
-                        <div key={item.ticker} className="reddit-item">
-                          <span className="reddit-rank">#{idx + 1}</span>
-                          <span className="reddit-ticker">{item.ticker}</span>
-                          <span className="reddit-mentions">{item.mentions.toLocaleString()} mentions</span>
-                          <span className={`reddit-change ${item.mentionsChange24h > 0 ? 'up' : item.mentionsChange24h < 0 ? 'down' : ''}`}>
-                            {item.mentionsChange24h > 0 ? '+' : ''}{item.mentionsChange24h || 0}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="empty-reddit">
-                      <span>Loading Reddit data...</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* News Feed */}
-              <div className="sentiment-card news-card">
-                <h3 className="card-title">
-                  <span className="title-icon">📰</span>
-                  Latest News
-                </h3>
-                {sentiment?.news?.length > 0 ? (
-                  <div className="news-list">
-                    {sentiment.news.map((article, idx) => (
-                      <a
-                        key={idx}
-                        href={article.link}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className={`news-item ${article.urgency?.direction || 'neutral'} ${article.urgency?.isUrgent ? 'urgent' : ''}`}
-                      >
-                        <div className="news-urgency">
-                          {article.urgency?.isUrgent && <span className="urgent-badge">URGENT</span>}
-                          {article.urgency?.direction === 'bullish' && <span className="direction-icon bullish">📈</span>}
-                          {article.urgency?.direction === 'bearish' && <span className="direction-icon bearish">📉</span>}
-                        </div>
-                        <div className="news-content">
-                          <span className="news-title">{article.title}</span>
-                          <div className="news-meta">
-                            <span className="news-source">{article.source}</span>
-                            <span className="news-time">
-                              {Math.round((Date.now() - new Date(article.pubDate).getTime()) / 60000)} min ago
-                            </span>
-                            {article.urgency?.score > 0 && (
-                              <span className={`news-score ${article.urgency.direction}`}>
-                                Score: {article.urgency.score}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </a>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="empty-news">
-                    <span>Loading news feed...</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
 
           {/* Settings Tab */}
           {tab === 'settings' && (
@@ -1356,26 +1057,71 @@ function App() {
                     </div>
                   </div>
                   <div className="risk-pool-settings" style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-color)' }}>
-                    <h4>Per-Token Limit</h4>
+                    <h4>Per-Token Limits</h4>
                     <p style={{ fontSize: '14px', color: 'var(--text-muted)', marginBottom: '12px' }}>
-                      Maximum exposure per token (e.g., max $5 across ALL SOL markets combined)
+                      Maximum exposure per token across ALL markets combined
                     </p>
-                    <div className="settings-input-group">
-                      <label>Max per token ($)</label>
-                      <input
-                        type="number"
-                        min="1.00"
-                        max="50.00"
-                        step="1.00"
-                        value={(riskSettings.maxPerToken / 100).toFixed(2)}
-                        onChange={(e) => {
-                          setSettingsSaved(false)
-                          setRiskSettings(prev => ({
-                            ...prev,
-                            maxPerToken: Math.round(parseFloat(e.target.value || 0) * 100)
-                          }))
-                        }}
-                      />
+                    <div className="token-limits-grid">
+                      <div className="settings-input-group">
+                        <label>BTC ($)</label>
+                        <input
+                          type="number"
+                          min="1.00"
+                          max="50.00"
+                          step="1.00"
+                          value={((riskSettings.tokenLimits?.BTC || 500) / 100).toFixed(2)}
+                          onChange={(e) => {
+                            setSettingsSaved(false)
+                            setRiskSettings(prev => ({
+                              ...prev,
+                              tokenLimits: {
+                                ...prev.tokenLimits,
+                                BTC: Math.round(parseFloat(e.target.value || 0) * 100)
+                              }
+                            }))
+                          }}
+                        />
+                      </div>
+                      <div className="settings-input-group">
+                        <label>ETH ($)</label>
+                        <input
+                          type="number"
+                          min="1.00"
+                          max="50.00"
+                          step="1.00"
+                          value={((riskSettings.tokenLimits?.ETH || 500) / 100).toFixed(2)}
+                          onChange={(e) => {
+                            setSettingsSaved(false)
+                            setRiskSettings(prev => ({
+                              ...prev,
+                              tokenLimits: {
+                                ...prev.tokenLimits,
+                                ETH: Math.round(parseFloat(e.target.value || 0) * 100)
+                              }
+                            }))
+                          }}
+                        />
+                      </div>
+                      <div className="settings-input-group">
+                        <label>SOL ($)</label>
+                        <input
+                          type="number"
+                          min="1.00"
+                          max="50.00"
+                          step="1.00"
+                          value={((riskSettings.tokenLimits?.SOL || 500) / 100).toFixed(2)}
+                          onChange={(e) => {
+                            setSettingsSaved(false)
+                            setRiskSettings(prev => ({
+                              ...prev,
+                              tokenLimits: {
+                                ...prev.tokenLimits,
+                                SOL: Math.round(parseFloat(e.target.value || 0) * 100)
+                              }
+                            }))
+                          }}
+                        />
+                      </div>
                     </div>
                   </div>
                   <button className={`save-settings-btn ${settingsSaved ? 'saved' : ''}`} onClick={saveRiskSettings}>
@@ -1488,17 +1234,13 @@ function App() {
           <span>📊</span>
           <span>Home</span>
         </button>
-        <button className={`mobile-nav-item ${tab === 'opportunities' ? 'active' : ''}`} onClick={() => setTab('opportunities')}>
-          <span>🎯</span>
-          <span>Bets</span>
-        </button>
-        <button className={`mobile-nav-item ${tab === 'sentiment' ? 'active' : ''}`} onClick={() => setTab('sentiment')}>
-          <span>📰</span>
-          <span>News</span>
-        </button>
         <button className={`mobile-nav-item ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
           <span>📜</span>
           <span>History</span>
+        </button>
+        <button className={`mobile-nav-item ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>
+          <span>⚙️</span>
+          <span>Config</span>
         </button>
       </nav>
 
