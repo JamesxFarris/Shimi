@@ -290,9 +290,9 @@ function App() {
     maxDollars: '15.00'
   })
   const [riskSettings, setRiskSettings] = useState({
-    maxPerBet: 800,
-    maxTotal: 3500,
-    maxPerToken: 1500
+    maxPerBet: 500,
+    maxTotal: 1500,
+    maxPerToken: 500
   })
   const [scaleInSettings, setScaleInSettings] = useState({
     enabled: true,

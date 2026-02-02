@@ -37,11 +37,11 @@ let config = {
   maxBetPercent: 15,
   minEdge: 3, // 3% minimum - lowered for more action
   autoBetEnabled: false,
-  // Risk management settings (in cents) - AGGRESSIVE MODE
+  // Risk management settings (in cents)
   riskLimits: {
-    maxPerBet: 800,      // $8.00 max per bet
-    maxTotal: 3500,      // $35.00 max total exposure
-    maxPerToken: 1500    // $15.00 max per token
+    maxPerBet: 500,      // $5.00 max per bet
+    maxTotal: 1500,      // $15.00 max total exposure
+    maxPerToken: 500     // $5.00 max per token
   },
   // Scale-in settings: add to position when probability improves
   scaleIn: {
