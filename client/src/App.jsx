@@ -302,9 +302,9 @@ function App() {
     maxDollars: '15.00'
   })
   const [riskSettings, setRiskSettings] = useState({
-    maxPerBet: 200,
-    maxTotal: 1500,
-    maxPerToken: 500
+    maxPerBet: 800,
+    maxTotal: 3500,
+    maxPerToken: 1500
   })
   const [scaleInSettings, setScaleInSettings] = useState({
     enabled: true,
@@ -314,7 +314,6 @@ function App() {
   })
   const [settingsSaved, setSettingsSaved] = useState(false)
   const [marketFilter, setMarketFilter] = useState('all') // 'all', 'crypto', 'index'
-  const [showAllMarkets, setShowAllMarkets] = useState(false) // Show markets without edge
   const [marketStats, setMarketStats] = useState({ totalAnalyzed: 0, recommended: 0, filteredNoEdge: 0, filteredLowProb: 0 })
   // Performance tracking
   const [performance, setPerformance] = useState(null)
@@ -345,10 +344,9 @@ function App() {
   }, []) // No dependencies - prevents infinite loop
 
   // Fetch opportunities (now uses unified endpoint for all market types)
-  const fetchOpportunities = useCallback(async (forceShowAll = null) => {
+  const fetchOpportunities = useCallback(async () => {
     try {
-      const showAll = forceShowAll !== null ? forceShowAll : showAllMarkets
-      const res = await fetch(`${API_BASE}/api/opportunities/all${showAll ? '?showAll=true' : ''}`)
+      const res = await fetch(`${API_BASE}/api/opportunities/all`)
       const data = await res.json()
 
       if (data.success) {
@@ -912,14 +910,6 @@ function App() {
                       </span>
                     )}
                   </h3>
-                  {showAllMarkets && (
-                    <button
-                      className="toggle-all-btn"
-                      onClick={() => { setShowAllMarkets(false); fetchOpportunities(false); }}
-                    >
-                      Hide No-Edge Markets
-                    </button>
-                  )}
                 </div>
 
                 {loading ? (
@@ -936,14 +926,6 @@ function App() {
                         ? `Analyzed ${marketStats.totalAnalyzed} markets: ${marketStats.filteredNoEdge} have no edge (price too high)`
                         : 'Waiting for price mispricings...'}
                     </p>
-                    {marketStats.filteredNoEdge > 0 && (
-                      <button
-                        className="show-all-btn"
-                        onClick={() => { setShowAllMarkets(true); fetchOpportunities(true); }}
-                      >
-                        Show All Markets ({marketStats.totalAnalyzed})
-                      </button>
-                    )}
                   </div>
                 ) : (
                   <div className="opportunities-grid">

@@ -37,11 +37,11 @@ let config = {
   maxBetPercent: 15,
   minEdge: 5, // 5% minimum - model has uncertainty, need buffer
   autoBetEnabled: false,
-  // Risk management settings (in cents)
+  // Risk management settings (in cents) - AGGRESSIVE MODE
   riskLimits: {
-    maxPerBet: 200,      // $2.00 max per bet
-    maxTotal: 1500,      // $15.00 max total exposure
-    maxPerToken: 500     // $5.00 max per token (e.g., max $5 on all SOL markets combined)
+    maxPerBet: 800,      // $8.00 max per bet
+    maxTotal: 3500,      // $35.00 max total exposure
+    maxPerToken: 1500    // $15.00 max per token
   },
   // Scale-in settings: add to position when probability improves
   scaleIn: {
@@ -76,6 +76,39 @@ let lastScanStatus = {
 // Track all bets and their outcomes to measure model accuracy
 
 const PERFORMANCE_FILE = path.join(__dirname, 'performance_data.json');
+const STATE_FILE = path.join(__dirname, 'autobet_state.json');
+
+// ============================================
+// AUTO-BET STATE PERSISTENCE
+// ============================================
+// Save/restore auto-bet state so it survives server restarts
+
+function loadAutoBetState() {
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
+      console.log(`🔄 Loaded auto-bet state: ${data.enabled ? 'ENABLED' : 'disabled'}`);
+      return data;
+    }
+  } catch (err) {
+    console.log('Could not load auto-bet state:', err.message);
+  }
+  return { enabled: false, intervalSeconds: 15 };
+}
+
+function saveAutoBetState(enabled, intervalSeconds = 15) {
+  try {
+    const state = {
+      enabled,
+      intervalSeconds,
+      savedAt: new Date().toISOString()
+    };
+    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+    console.log(`💾 Saved auto-bet state: ${enabled ? 'ENABLED' : 'disabled'}`);
+  } catch (err) {
+    console.log('Could not save auto-bet state:', err.message);
+  }
+}
 
 let performanceData = {
   bets: [],           // All tracked bets with outcomes
@@ -4307,21 +4340,23 @@ async function runAutoBet() {
 }
 
 app.post('/api/crypto/auto-bet/toggle', (req, res) => {
-  const { enabled, intervalSeconds = 10 } = req.body; // Check every 10 seconds for faster reaction
+  const { enabled, intervalSeconds = 15 } = req.body; // Check every 15 seconds
 
   if (enabled && !config.autoBetEnabled) {
     config.autoBetEnabled = true;
+    saveAutoBetState(true, intervalSeconds); // Persist state
 
     runAutoBet();
     autoBetInterval = setInterval(runAutoBet, intervalSeconds * 1000);
 
     res.json({
       success: true,
-      message: `Auto-betting enabled (every ${intervalSeconds}s)`,
+      message: `Auto-betting enabled (every ${intervalSeconds}s) - will persist across restarts`,
       enabled: true
     });
   } else if (!enabled && config.autoBetEnabled) {
     config.autoBetEnabled = false;
+    saveAutoBetState(false); // Persist state
     if (autoBetInterval) {
       clearInterval(autoBetInterval);
       autoBetInterval = null;
@@ -4798,6 +4833,23 @@ app.use((err, req, res, next) => {
   res.status(500).json({ success: false, error: 'Internal server error' });
 });
 
+// ============================================
+// HEALTH CHECK - Keep Render alive
+// ============================================
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    autoBetEnabled: config.autoBetEnabled,
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Also respond to /ping for simpler monitoring
+app.get('/ping', (req, res) => {
+  res.send('pong');
+});
+
 const server = app.listen(PORT, '0.0.0.0', async () => {
   console.log(`🎰 Shimi Crypto Bot running on port ${PORT}`);
   console.log(`📊 Markets: BTC/ETH/SOL 15min + hourly, S&P 500 hourly`);
@@ -4806,6 +4858,20 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
 
   // Auto-load Kalshi credentials from environment
   await loadCredentialsFromEnv();
+
+  // Restore auto-bet state from previous session
+  const savedState = loadAutoBetState();
+  if (savedState.enabled) {
+    console.log(`🤖 Restoring auto-bet from previous session...`);
+    config.autoBetEnabled = true;
+
+    // Wait a few seconds for prices to load before first scan
+    setTimeout(() => {
+      runAutoBet();
+      autoBetInterval = setInterval(runAutoBet, (savedState.intervalSeconds || 15) * 1000);
+      console.log(`✅ Auto-bet restored and running (every ${savedState.intervalSeconds || 15}s)`);
+    }, 5000);
+  }
 
   // Check pending settlements every 2 minutes
   setInterval(async () => {
