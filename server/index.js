@@ -2183,14 +2183,21 @@ app.post('/api/bet', async (req, res) => {
       });
     }
 
-    // Real bet - use market order for immediate fill
+    // Real bet - use limit order at current ask price
     const orderRequest = {
       ticker,
       action: 'buy',
       side: side.toLowerCase(),
-      type: 'market',
+      type: 'limit',
       count
     };
+
+    // Add the appropriate price field based on side
+    if (side.toLowerCase() === 'yes') {
+      orderRequest.yes_price = priceCents;
+    } else {
+      orderRequest.no_price = priceCents;
+    }
 
     console.log('Placing order:', JSON.stringify(orderRequest));
 
@@ -2369,14 +2376,21 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       });
     }
 
-    // Real bet - use market order for immediate fill
+    // Real bet - use limit order at current ask price
     const orderRequest = {
       ticker: best.ticker,
       action: 'buy',
       side: best.betSide.toLowerCase(),
-      type: 'market',
+      type: 'limit',
       count
     };
+
+    // Add the appropriate price field based on side
+    if (best.betSide.toLowerCase() === 'yes') {
+      orderRequest.yes_price = priceCents;
+    } else {
+      orderRequest.no_price = priceCents;
+    }
 
     console.log('Auto-bet placing order:', JSON.stringify(orderRequest));
 
@@ -2580,15 +2594,22 @@ async function runAutoBet() {
       return;
     }
 
-    // Real bet - use market order for immediate fill
+    // Real bet - use limit order at current ask price
     console.log(`\n💸 PLACING REAL BET...`);
     const orderRequest = {
       ticker: best.ticker,
       action: 'buy',
       side: best.betSide.toLowerCase(),
-      type: 'market',
+      type: 'limit',
       count
     };
+
+    // Add the appropriate price field based on side
+    if (best.betSide.toLowerCase() === 'yes') {
+      orderRequest.yes_price = priceCents;
+    } else {
+      orderRequest.no_price = priceCents;
+    }
     console.log(`   Order: ${JSON.stringify(orderRequest)}`);
 
     const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
