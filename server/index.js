@@ -2478,7 +2478,7 @@ app.post('/api/bet', async (req, res) => {
       const status = order.status;
       const filledCount = order.filled_count || 0;
 
-      if (status === 'canceled' || filledCount === 0) {
+      if (filledCount === 0) {
         return res.status(400).json({
           success: false,
           error: `Order not filled. Status: ${status}. No liquidity at current price.`
@@ -2738,7 +2738,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       const status = order.status;
       const filledCount = order.filled_count || 0;
 
-      if (status === 'canceled' || filledCount === 0) {
+      if (filledCount === 0) {
         // Remove from recent bets so we can try again
         recentBets.delete(best.ticker);
         return res.status(400).json({
@@ -3053,7 +3053,7 @@ async function runAutoBet() {
     const status = order.status;
     const filledCount = order.filled_count || 0;
 
-    if (status === 'canceled' || filledCount === 0) {
+    if (filledCount === 0) {
       console.error(`❌ Order not filled. Status: ${status}. No liquidity.`);
       recentBets.delete(best.ticker);
       console.log('========================================\n');
