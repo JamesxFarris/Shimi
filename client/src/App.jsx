@@ -174,8 +174,8 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
           <span className="btn-loading">Placing bet...</span>
         ) : (
           <>
-            <span className="btn-action">Buy {opp.contractsFor1Dollar || 1}× @ {opp.betPriceCents || Math.round(opp.betPrice * 100)}¢</span>
-            <span className="btn-profit">Win +{opp.profitIfWin}¢</span>
+            <span className="btn-action">Buy {opp.contractsFor1Dollar || 1}× @ {opp.betPriceCents || Math.round(opp.betPrice * 100)}¢{opp.feeCents ? ` (${opp.feeCents}¢ fee)` : ''}</span>
+            <span className="btn-profit">Net +{opp.profitIfWin}¢</span>
           </>
         )}
       </button>

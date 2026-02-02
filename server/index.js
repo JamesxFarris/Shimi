@@ -1721,7 +1721,8 @@ function analyzeIndexMarket(parsed) {
   const priceCents = Math.round(bestBet.price * 100);
   const contractsFor1Dollar = Math.floor(100 / priceCents);
   const totalCostCents = contractsFor1Dollar * priceCents;
-  const profitIfWinCents = contractsFor1Dollar * 100 - totalCostCents;
+  const feeCents = calculateKalshiFee(contractsFor1Dollar, bestBet.price);
+  const profitIfWinCents = contractsFor1Dollar * 100 - totalCostCents - feeCents;
 
   // Build reason string
   const momentumDesc = momentum.direction === 'bullish' ? '📈' : momentum.direction === 'bearish' ? '📉' : '➡️';
@@ -1742,7 +1743,8 @@ function analyzeIndexMarket(parsed) {
     betPrice: bestBet.price,
     betPriceCents: priceCents,
     contractsFor1Dollar,
-    profitIfWin: profitIfWinCents,
+    feeCents,
+    profitIfWin: profitIfWinCents, // After fees
     betReason: `${momentumDesc} S&P ${pctFromStrike > 0 ? 'above' : 'below'} by ${Math.abs(pctFromStrike).toFixed(1)}%`,
     isObviousBet: isSafeBet,
     isHighProb,
@@ -1928,11 +1930,12 @@ function analyzeCryptoMarket(parsed) {
   const priceCents = Math.round(bestBet.price * 100);
   const contractsFor1Dollar = Math.floor(100 / priceCents);
   const totalCostCents = contractsFor1Dollar * priceCents;
+  const feeCents = calculateKalshiFee(contractsFor1Dollar, bestBet.price);
   const payoutIfWinCents = contractsFor1Dollar * 100; // Each contract pays $1
-  const profitIfWinCents = payoutIfWinCents - totalCostCents;
+  const profitIfWinCents = payoutIfWinCents - totalCostCents - feeCents;
 
-  // Expected profit accounting for probability
-  const expectedProfit = (bestBet.prob * profitIfWinCents - (1 - bestBet.prob) * totalCostCents);
+  // Expected profit accounting for probability (include fee in both win and loss)
+  const expectedProfit = (bestBet.prob * profitIfWinCents - (1 - bestBet.prob) * (totalCostCents + feeCents));
   const profitPotential = (profitIfWinCents / totalCostCents) * 100;
 
   // Fixed bet amount ($1) for sustainable growth
@@ -1956,8 +1959,9 @@ function analyzeCryptoMarket(parsed) {
     betPrice: bestBet.price,
     betPriceCents: priceCents,
     contractsFor1Dollar,
+    feeCents,
     betReason,
-    profitIfWin: profitIfWinCents, // Total profit in cents for $1 bet
+    profitIfWin: profitIfWinCents, // Total profit in cents for $1 bet (after fees)
     expectedProfit: expectedProfit.toFixed(1),
     profitPotential,
     recommendedBet,
@@ -1971,6 +1975,18 @@ function analyzeCryptoMarket(parsed) {
     analysisMethod: prediction.analysis.method,
     timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining)
   };
+}
+
+// Calculate Kalshi taker fee
+// Formula: ceil(0.07 × contracts × price × (1 - price))
+// Capped at $0.02 (2 cents) per contract
+function calculateKalshiFee(contracts, priceInDollars) {
+  // Price should be between 0 and 1 (e.g., 0.65 for 65 cents)
+  const price = Math.min(1, Math.max(0, priceInDollars));
+  const feePerContract = Math.ceil(0.07 * price * (1 - price) * 100) / 100; // In dollars
+  const cappedFeePerContract = Math.min(0.02, feePerContract); // Cap at 2 cents
+  const totalFeeDollars = cappedFeePerContract * contracts;
+  return Math.round(totalFeeDollars * 100); // Return in cents
 }
 
 function formatTimeRemaining(ms) {
