@@ -4040,7 +4040,7 @@ async function runAutoBet() {
     // Combine and filter - EDGE-BASED FILTERING
     // Edge is what determines profitability, not raw probability!
     // A 46% probability at 14¢ has great expected value
-    const MIN_EDGE = 5;        // 5% minimum edge for buffer against model error
+    const MIN_EDGE = 3;        // 3% minimum edge - lowered for more action
     const MIN_PROB = 0;        // REMOVED - edge is all that matters
 
     // Log ALL markets for debugging
