@@ -36,11 +36,11 @@
   --accent-blue: #00f0ff;
   --accent-purple: #bf00ff;
 
-  /* Text Colors */
-  --text-primary: #e8e8e8;
-  --text-secondary: #8a8a9a;
-  --text-muted: #5a5a6a;
-  --text-dim: #3a3a4a;
+  /* Text Colors - Improved Readability */
+  --text-primary: #f0f0f5;
+  --text-secondary: #b0b0c0;
+  --text-muted: #8090a0;
+  --text-dim: #506070;
 
   /* Borders & Effects */
   --border-color: #252535;
@@ -185,8 +185,8 @@ body {
 .logo-subtitle {
   display: block;
   font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text-muted);
+  font-size: 13px;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 3px;
   margin-top: 8px;
@@ -268,7 +268,7 @@ body {
   background: var(--neon-magenta);
   color: white;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   padding: 2px 8px;
   border-radius: 2px;
@@ -305,7 +305,7 @@ body {
 .balance-label {
   display: block;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 1px;
@@ -337,7 +337,7 @@ body {
   align-items: center;
   gap: 8px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-muted);
   padding: 8px 12px;
   background: var(--bg-card);
@@ -530,9 +530,9 @@ body {
 
 .ticker-symbol {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: #ffffff;
   letter-spacing: 1px;
 }
 
@@ -890,6 +890,69 @@ body {
   background: linear-gradient(180deg, rgba(0, 10, 20, 0.5) 0%, rgba(5, 15, 30, 0.8) 100%);
   border-radius: var(--radius-lg);
   border: 1px solid rgba(0, 240, 255, 0.1);
+  position: relative;
+  min-height: 300px;
+}
+
+/* Shimi Logo Watermark */
+.opportunities-preview::before,
+.opportunities-grid::before {
+  content: '//SHIMI';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--font-display);
+  font-size: 120px;
+  font-weight: 800;
+  letter-spacing: 12px;
+  color: rgba(0, 240, 255, 0.03);
+  text-shadow: none;
+  pointer-events: none;
+  z-index: 0;
+  white-space: nowrap;
+}
+
+/* Flickering magenta lines around the watermark */
+.opportunities-preview::after,
+.opportunities-grid::after {
+  content: '//';
+  position: absolute;
+  top: 50%;
+  left: calc(50% - 180px);
+  transform: translateY(-50%);
+  font-family: var(--font-display);
+  font-size: 120px;
+  font-weight: 800;
+  color: rgba(255, 0, 255, 0.06);
+  text-shadow:
+    0 0 30px rgba(255, 0, 255, 0.1),
+    0 0 60px rgba(255, 0, 255, 0.05);
+  pointer-events: none;
+  z-index: 0;
+  animation: pinkFlicker 3s ease-in-out infinite;
+}
+
+@keyframes pinkFlicker {
+  0%, 100% {
+    opacity: 1;
+    text-shadow:
+      0 0 30px rgba(255, 0, 255, 0.15),
+      0 0 60px rgba(255, 0, 255, 0.08);
+  }
+  15% { opacity: 0.4; }
+  16% { opacity: 0.9; }
+  25% { opacity: 0.7; }
+  30% {
+    opacity: 1;
+    text-shadow:
+      0 0 40px rgba(255, 0, 255, 0.2),
+      0 0 80px rgba(255, 0, 255, 0.1);
+  }
+  50% { opacity: 0.5; }
+  51% { opacity: 0.85; }
+  70% { opacity: 0.6; }
+  85% { opacity: 0.95; }
 }
 
 /* Opportunity Card */
@@ -985,7 +1048,7 @@ body {
 
 .badge {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   padding: 6px 12px;
   border-radius: 4px;
@@ -1037,10 +1100,11 @@ body {
 
 .price-label {
   font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-muted);
+  font-size: 12px;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 1px;
+  font-weight: 500;
 }
 
 .price-value {
@@ -1088,7 +1152,7 @@ body {
 .stat-label {
   display: block;
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 12px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -1159,7 +1223,7 @@ body {
 
 .rec-reason {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 
@@ -1238,7 +1302,7 @@ body {
 }
 
 .stat-summary .stat-label {
-  font-size: 10px;
+  font-size: 12px;
   margin-bottom: 8px;
 }
 
@@ -1408,7 +1472,7 @@ body {
 
 .bet-info-label {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 1px;
@@ -1646,13 +1710,13 @@ body {
 
 .token-item .token-symbol {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 700;
   color: var(--text-primary);
 }
 
 .token-item .token-name {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -1783,7 +1847,7 @@ body {
 .form-group label {
   display: block;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -1930,7 +1994,7 @@ body {
 
 .risk-remaining {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 
@@ -1964,7 +2028,7 @@ body {
 
 .risk-display-sidebar .risk-label {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 1px;
@@ -2030,7 +2094,7 @@ body {
    ============================================ */
 
 .badge.market-type {
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.5px;
 }
@@ -2088,7 +2152,7 @@ body {
     background: none;
     border: none;
     color: var(--text-muted);
-    font-size: 10px;
+    font-size: 12px;
     cursor: pointer;
   }
 
@@ -2215,7 +2279,7 @@ body {
 
 .alert-meta {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 
@@ -2363,7 +2427,7 @@ body {
   justify-content: space-between;
   margin-top: 8px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -2397,7 +2461,7 @@ body {
 
 .signal-label {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-muted);
   text-transform: uppercase;
 }
@@ -2495,7 +2559,7 @@ body {
 
 .alert-tag {
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 12px;
   padding: 2px 6px;
   background: var(--bg-card);
   border-radius: 2px;
@@ -2504,7 +2568,7 @@ body {
 
 .alert-time {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -2536,7 +2600,7 @@ body {
 
 .reddit-rank {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-muted);
   width: 24px;
 }
@@ -2552,13 +2616,13 @@ body {
 .reddit-mentions {
   flex: 1;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-secondary);
 }
 
 .reddit-change {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   padding: 2px 6px;
   border-radius: 2px;
 }
@@ -2663,7 +2727,7 @@ body {
   flex-wrap: wrap;
   gap: 12px;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -2759,7 +2823,7 @@ body {
 
 .settings-input-group label {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-muted);
 }
 
@@ -2849,7 +2913,7 @@ body {
    ============================================ */
 
 .scale-in-badge {
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--neon-purple);
   background: rgba(128, 90, 255, 0.2);
