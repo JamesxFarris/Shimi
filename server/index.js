@@ -2874,11 +2874,10 @@ function analyzeCryptoMarket(parsed) {
   const ev = (ourProbability / 100) * potentialWin - ((100 - ourProbability) / 100) * betPriceCents;
 
   // === SAFE vs DEGEN ===
-  // SAFE: medium+ confidence, reasonable price (30-85¢), positive edge
-  // DEGEN: low confidence OR extreme prices
-  const isSafe = (confidence === 'medium' || confidence === 'high' || confidence === 'very_high')
-                  && betPriceCents >= 30 && betPriceCents <= 85 && edge > 0;
-  const isDegen = !isSafe;
+  // SAFE: any positive edge with non-extreme price (auto-bet will place these)
+  // DEGEN: very low price (<20¢) = long shot, or no edge
+  const isSafe = edge > 0 && betPriceCents >= 20;
+  const isDegen = edge > 0 && betPriceCents < 20; // Long shots only
 
   // Build reason string
   const dirStr = isAboveStrike ? 'above' : 'below';
@@ -4263,24 +4262,34 @@ async function runAutoBet() {
     const betResults = [];
 
     // Process each opportunity (already sorted by EV)
-    // AUTO-BET ONLY PLACES SAFE BETS - Degen bets require manual click
-    const safeOpportunities = opportunities.filter(o => !o.isDegen);
+    // AUTO-BET places anything with positive edge and price >= 20¢
+    const safeOpportunities = opportunities.filter(o => o.isSafe);
     const degenOpportunities = opportunities.filter(o => o.isDegen);
 
     if (degenOpportunities.length > 0) {
-      console.log(`   🎲 ${degenOpportunities.length} DEGEN bets available (manual only)`);
+      console.log(`   🎲 ${degenOpportunities.length} DEGEN bets (<20¢ long shots, manual only)`);
     }
 
-    if (safeOpportunities.length === 0) {
-      console.log('   📊 No safe bets - only degen opportunities available');
+    if (safeOpportunities.length === 0 && opportunities.length > 0) {
+      console.log('   📊 Only long-shot bets available (manual only)');
       lastScanStatus.blockedReason = 'degen_only';
       console.log('========================================\n');
       return;
     }
 
-    console.log(`   ✅ ${safeOpportunities.length} safe bets to process`);
+    if (safeOpportunities.length === 0) {
+      console.log('   📊 No opportunities with positive edge');
+      lastScanStatus.blockedReason = 'no_edge';
+      console.log('========================================\n');
+      return;
+    }
+
+    console.log(`   ✅ ${safeOpportunities.length} bets to place (edge > 0, price >= 20¢)`);
 
     for (const opp of safeOpportunities) {
+      const tokenName = getTokenFromTicker(opp.ticker) || opp.assetType || opp.cryptoType || 'token';
+      console.log(`   🔄 Processing: ${tokenName} ${opp.betSide} @ ${opp.betPriceCents}¢ (edge +${parseFloat(opp.edge).toFixed(1)}%)`);
+
       // Check if we've hit overall limits
       if (getTotalRemainingBudget() < 10) {
         console.log('   ⚠️ Exposure limit reached - stopping');
@@ -4289,7 +4298,8 @@ async function runAutoBet() {
 
       const remainingBudget = getRemainingRiskBudget();
       const remainingTokenBudget = getRemainingTokenBudget(opp.ticker, opp.assetType || opp.cryptoType);
-      const tokenName = getTokenFromTicker(opp.ticker) || opp.assetType || opp.cryptoType || 'token';
+
+      console.log(`      Budget: $${(remainingBudget/100).toFixed(2)} remaining, $${(remainingTokenBudget/100).toFixed(2)} for ${tokenName}`);
 
       // Skip if budget exhausted
       if (remainingBudget < 10) {
@@ -4311,20 +4321,17 @@ async function runAutoBet() {
       const maxBetCents = Math.min(getMaxPerBet(), remainingBudget, remainingTokenBudget);
       const kellyBetSize = calculateKellyBet(winProb, priceCents, actualBankroll, maxBetCents);
 
-      // Check if Kelly recommends betting
-      if (kellyBetSize < priceCents) {
-        // Log why Kelly rejected
-        const edge = winProb - priceCents;
-        if (edge <= 0) {
-          console.log(`   ⏭️ ${tokenName}: No edge (prob ${winProb.toFixed(1)}% ≤ price ${priceCents}¢)`);
-        } else {
-          console.log(`   ⏭️ ${tokenName}: Kelly too small (${kellyBetSize}¢ < ${priceCents}¢ min)`);
-        }
+      console.log(`      Kelly: prob=${winProb.toFixed(1)}%, price=${priceCents}¢, bankroll=$${(actualBankroll/100).toFixed(2)}, kelly=${kellyBetSize}¢`);
+
+      // SIMPLIFIED: Just bet if edge > 0, use Kelly for sizing but always bet at least 1 contract
+      const minBet = priceCents; // At least 1 contract
+      const betSize = Math.max(kellyBetSize, minBet);
+
+      const count = Math.floor(betSize / priceCents);
+      if (count < 1) {
+        console.log(`   ⏭️ ${tokenName}: Count < 1 (shouldn't happen)`);
         continue;
       }
-
-      const count = Math.floor(kellyBetSize / priceCents);
-      if (count < 1) continue;
 
       const totalCost = count * priceCents;
 
@@ -4344,7 +4351,7 @@ async function runAutoBet() {
         totalCost,
         edge: opp.edge,
         winProbability: opp.winProbability,
-        kellyFraction: (kellyBetSize / config.bankroll * 100).toFixed(1) + '%',
+        kellyFraction: (betSize / config.bankroll * 100).toFixed(1) + '%',
         timestamp: new Date().toISOString(),
         status: config.isAuthenticated ? 'pending' : 'simulated',
         auto: true,
