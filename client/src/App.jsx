@@ -325,7 +325,8 @@ function App() {
   })
   const [riskSettings, setRiskSettings] = useState({
     hourly: { maxPerBet: 200, maxTotal: 500 },
-    other: { maxPerBet: 200, maxTotal: 1000 }
+    other: { maxPerBet: 200, maxTotal: 1000 },
+    maxPerToken: 500  // $5.00 max per token
   })
   const [scaleInSettings, setScaleInSettings] = useState({
     enabled: true,
@@ -1359,6 +1360,29 @@ function App() {
                           onChange={(e) => updateRiskSettings('other', 'maxTotal', Math.round(parseFloat(e.target.value || 0) * 100))}
                         />
                       </div>
+                    </div>
+                  </div>
+                  <div className="risk-pool-settings" style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-color)' }}>
+                    <h4>Per-Token Limit</h4>
+                    <p style={{ fontSize: '14px', color: 'var(--text-muted)', marginBottom: '12px' }}>
+                      Maximum exposure per token (e.g., max $5 across ALL SOL markets combined)
+                    </p>
+                    <div className="settings-input-group">
+                      <label>Max per token ($)</label>
+                      <input
+                        type="number"
+                        min="1.00"
+                        max="50.00"
+                        step="1.00"
+                        value={(riskSettings.maxPerToken / 100).toFixed(2)}
+                        onChange={(e) => {
+                          setSettingsSaved(false)
+                          setRiskSettings(prev => ({
+                            ...prev,
+                            maxPerToken: Math.round(parseFloat(e.target.value || 0) * 100)
+                          }))
+                        }}
+                      />
                     </div>
                   </div>
                   <button className={`save-settings-btn ${settingsSaved ? 'saved' : ''}`} onClick={saveRiskSettings}>
