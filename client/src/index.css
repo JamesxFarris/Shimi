@@ -476,7 +476,7 @@ body {
 
 @keyframes tickerScroll {
   0% { transform: translateX(0); }
-  100% { transform: translateX(-50%); }
+  100% { transform: translateX(-33.333%); }
 }
 
 .price-ticker::-webkit-scrollbar {
@@ -1262,15 +1262,17 @@ body {
   width: 100%;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
+  justify-content: center;
+  padding: 12px 16px;
   border: none;
   border-radius: var(--radius-sm);
-  font-family: var(--font-body);
+  font-family: var(--font-mono);
   font-weight: 600;
-  font-size: 12px;
+  font-size: 13px;
+  letter-spacing: 0.5px;
   cursor: pointer;
   transition: all 0.2s;
+  min-height: 44px;
 }
 
 .bet-btn.yes {

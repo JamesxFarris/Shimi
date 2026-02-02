@@ -170,14 +170,7 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
         onClick={() => onBet(opp)}
         disabled={isPlacing}
       >
-        {isPlacing ? (
-          <span className="btn-loading">Placing bet...</span>
-        ) : (
-          <>
-            <span className="btn-action">Buy {opp.contractsFor1Dollar || 1}× @ {opp.betPriceCents || Math.round(opp.betPrice * 100)}¢{opp.feeCents ? ` (${opp.feeCents}¢ fee)` : ''}</span>
-            <span className="btn-profit">Net +{opp.profitIfWin}¢</span>
-          </>
-        )}
+        {isPlacing ? 'Placing...' : `${opp.betSide} @ ${opp.betPriceCents || Math.round(opp.betPrice * 100)}¢`}
       </button>
     </div>
   )
@@ -784,23 +777,22 @@ function App() {
         {/* Price Ticker - Wall Street Style */}
         <div className="price-ticker-container">
           <div className="price-ticker">
-            {/* Duplicate items for seamless loop */}
-            {[...Array(2)].map((_, dupeIndex) =>
-              Object.entries(prices)
-                .filter(([_, p]) => p > 0)
-                .sort(([a], [b]) => {
-                  const order = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK', 'MATIC', 'DOT', 'SHIB', 'LTC', 'UNI', 'ATOM', 'APT']
-                  return order.indexOf(a) - order.indexOf(b)
-                })
-                .map(([token, price]) => (
+            {/* Triplicate items for seamless infinite loop */}
+            {[0, 1, 2].map((dupeIndex) => {
+              const tokenOrder = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK', 'MATIC', 'DOT', 'SHIB', 'LTC', 'UNI', 'ATOM', 'APT']
+              return tokenOrder.map((token) => {
+                const price = prices[token]
+                if (!price || price <= 0) return null
+                return (
                   <PriceTickerItem
                     key={`${token}-${dupeIndex}`}
                     token={token}
                     price={price}
                     prevPrice={prevPrices[token]}
                   />
-                ))
-            )}
+                )
+              })
+            })}
           </div>
           <div className="ticker-fade-left"></div>
           <div className="ticker-fade-right"></div>
@@ -810,7 +802,6 @@ function App() {
               {Object.keys(prices).filter(k => prices[k] > 0).length > 0
                 ? `${Object.keys(prices).filter(k => prices[k] > 0).length} LIVE`
                 : 'Loading prices...'}
-              {priceLastUpdated && ` • ${Math.floor((tickerTime - priceLastUpdated) / 1000)}s`}
             </span>
           </div>
         </div>
