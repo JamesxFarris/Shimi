@@ -673,6 +673,53 @@ body {
   flex: 1;
   padding: 24px;
   overflow-y: auto;
+  position: relative;
+}
+
+/* Shimi Logo Watermark on background */
+.content-area::before {
+  content: 'SHIMI';
+  position: fixed;
+  top: 50%;
+  left: calc(50% + 120px); /* Offset for sidebar */
+  transform: translate(-50%, -50%);
+  font-family: var(--font-display);
+  font-size: 140px;
+  font-weight: 800;
+  letter-spacing: 16px;
+  color: rgba(0, 240, 255, 0.025);
+  pointer-events: none;
+  z-index: 0;
+  white-space: nowrap;
+}
+
+/* Flickering magenta // prefix on background */
+.content-area::after {
+  content: '//';
+  position: fixed;
+  top: 50%;
+  left: calc(50% + 120px - 280px); /* Offset for sidebar + logo positioning */
+  transform: translateY(-50%);
+  font-family: var(--font-display);
+  font-size: 140px;
+  font-weight: 800;
+  color: rgba(255, 0, 255, 0.05);
+  text-shadow: 0 0 30px rgba(255, 0, 255, 0.08);
+  pointer-events: none;
+  z-index: 0;
+  animation: pinkFlicker 3s ease-in-out infinite;
+}
+
+@keyframes pinkFlicker {
+  0%, 100% { opacity: 1; }
+  15% { opacity: 0.3; }
+  16% { opacity: 0.8; }
+  25% { opacity: 0.5; }
+  30% { opacity: 1; }
+  50% { opacity: 0.4; }
+  51% { opacity: 0.9; }
+  70% { opacity: 0.5; }
+  85% { opacity: 0.95; }
 }
 
 /* ============================================
@@ -891,56 +938,6 @@ body {
   border-radius: var(--radius-lg);
   border: 1px solid rgba(0, 240, 255, 0.1);
   position: relative;
-  min-height: 300px;
-}
-
-/* Shimi Logo Watermark - just SHIMI text */
-.opportunities-preview::before,
-.opportunities-grid::before {
-  content: 'SHIMI';
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  font-family: var(--font-display);
-  font-size: 100px;
-  font-weight: 800;
-  letter-spacing: 12px;
-  color: rgba(0, 240, 255, 0.04);
-  pointer-events: none;
-  z-index: 0;
-  white-space: nowrap;
-}
-
-/* Flickering magenta // prefix */
-.opportunities-preview::after,
-.opportunities-grid::after {
-  content: '//';
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(calc(-50% - 220px), -50%);
-  font-family: var(--font-display);
-  font-size: 100px;
-  font-weight: 800;
-  color: rgba(255, 0, 255, 0.08);
-  text-shadow:
-    0 0 20px rgba(255, 0, 255, 0.1);
-  pointer-events: none;
-  z-index: 0;
-  animation: pinkFlicker 3s ease-in-out infinite;
-}
-
-@keyframes pinkFlicker {
-  0%, 100% { opacity: 1; }
-  15% { opacity: 0.3; }
-  16% { opacity: 0.8; }
-  25% { opacity: 0.5; }
-  30% { opacity: 1; }
-  50% { opacity: 0.4; }
-  51% { opacity: 0.9; }
-  70% { opacity: 0.5; }
-  85% { opacity: 0.95; }
 }
 
 /* Opportunity Card */
@@ -2182,15 +2179,16 @@ body {
     padding: 12px;
   }
 
-  .opportunities-preview::before,
-  .opportunities-grid::before {
-    font-size: 60px;
+  /* Background watermark for tablet */
+  .content-area::before {
+    font-size: 80px;
+    left: 50%;
+    letter-spacing: 10px;
   }
 
-  .opportunities-preview::after,
-  .opportunities-grid::after {
-    font-size: 60px;
-    transform: translate(calc(-50% - 130px), -50%);
+  .content-area::after {
+    font-size: 80px;
+    left: calc(50% - 180px);
   }
 
   .opp-card {
@@ -2311,15 +2309,16 @@ body {
     letter-spacing: 2px;
   }
 
-  .opportunities-preview::before,
-  .opportunities-grid::before {
-    font-size: 40px;
+  /* Background watermark for mobile */
+  .content-area::before {
+    font-size: 50px;
+    left: 50%;
+    letter-spacing: 6px;
   }
 
-  .opportunities-preview::after,
-  .opportunities-grid::after {
-    font-size: 40px;
-    transform: translate(calc(-50% - 85px), -50%);
+  .content-area::after {
+    font-size: 50px;
+    left: calc(50% - 115px);
   }
 }
 
