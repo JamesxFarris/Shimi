@@ -328,8 +328,7 @@ function App() {
         setOpportunities(data.opportunities || [])
         // Update risk info
         if (data.risk) {
-          console.log('📊 Risk update from opportunities:', data.risk)
-          setRisk(data.risk)
+                    setRisk(data.risk)
         }
         // Also update prices from opportunities as backup
         if (data.prices) {
@@ -453,8 +452,7 @@ function App() {
         setBalance(data.newBalance)
         // Update risk if returned
         if (data.risk) {
-          console.log('📊 Risk update from manual bet:', data.risk)
-          setRisk(data.risk)
+                    setRisk(data.risk)
         }
         setBetStatus({
           type: 'success',
@@ -501,8 +499,7 @@ function App() {
         setBalance(data.newBalance)
         // Update risk if returned
         if (data.risk) {
-          console.log('📊 Risk update from auto-bet:', data.risk)
-          setRisk(data.risk)
+                    setRisk(data.risk)
         }
         setBetStatus({
           type: 'success',

@@ -1155,26 +1155,13 @@ function getCurrentRiskFromPortfolio() {
   let kalshiRisk = 0;
   const kalshiTickers = new Set();
 
-  console.log(`📊 Risk calc: ${portfolio.positions?.length || 0} Kalshi positions, ${betHistory.length} local bets`);
-
-  // Debug: show first few bets in history
-  if (betHistory.length > 0) {
-    console.log(`   Recent bets in history:`);
-    betHistory.slice(0, 5).forEach(b => {
-      console.log(`     - ${b.ticker} | status=${b.status} | cost=${b.totalCost} | time=${b.timestamp}`);
-    });
-  }
-
   if (portfolio.positions && Array.isArray(portfolio.positions)) {
     for (const pos of portfolio.positions) {
-      // Each position's risk is contracts * price paid
       const contracts = Math.abs(pos.position || 0);
       if (contracts > 0) {
-        const avgPrice = pos.average_price || 50; // cents
-        const posRisk = contracts * avgPrice;
-        kalshiRisk += posRisk;
+        const avgPrice = pos.average_price || 50;
+        kalshiRisk += contracts * avgPrice;
         kalshiTickers.add(pos.ticker);
-        console.log(`   Kalshi: ${pos.ticker} | ${contracts} contracts @ ${avgPrice}¢ = $${(posRisk/100).toFixed(2)}`);
       }
     }
   }
@@ -1184,16 +1171,13 @@ function getCurrentRiskFromPortfolio() {
   const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
   let localRisk = 0;
   const unsettledBets = betHistory.filter(bet => {
-    // Must be unsettled status
     if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') {
       return false;
     }
-    // Must be recent
     const betTime = new Date(bet.timestamp).getTime();
     if (betTime < twoHoursAgo) {
       return false;
     }
-    // Must not already be counted in Kalshi positions
     if (kalshiTickers.has(bet.ticker)) {
       return false;
     }
@@ -1201,15 +1185,10 @@ function getCurrentRiskFromPortfolio() {
   });
 
   for (const bet of unsettledBets) {
-    const betRisk = bet.totalCost || (bet.count * bet.price) || 0;
-    localRisk += betRisk;
-    console.log(`   Local: ${bet.ticker} | status=${bet.status} | $${(betRisk/100).toFixed(2)}`);
+    localRisk += bet.totalCost || (bet.count * bet.price) || 0;
   }
 
-  const totalRisk = kalshiRisk + localRisk;
-  console.log(`   TOTAL: Kalshi=$${(kalshiRisk/100).toFixed(2)} + Local=$${(localRisk/100).toFixed(2)} = $${(totalRisk/100).toFixed(2)}`);
-
-  return totalRisk;
+  return kalshiRisk + localRisk;
 }
 
 function canPlaceBet(betCostCents) {
@@ -1948,21 +1927,13 @@ app.get('/api/opportunities/all', async (req, res) => {
       .sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
 
     // Refresh positions before calculating risk
-    console.log(`🔐 Auth status: ${config.isAuthenticated ? 'AUTHENTICATED' : 'NOT AUTHENTICATED'}`);
     if (config.isAuthenticated) {
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
-        console.log(`📊 Raw positions response:`, JSON.stringify(posData, null, 2));
-        portfolio.positions = posData.positions || posData.market_positions || [];
-        console.log(`📊 Fetched ${portfolio.positions.length} positions from Kalshi`);
-        portfolio.positions.forEach(p => {
-          console.log(`   - ${p.ticker}: ${p.position} contracts @ ${p.average_price}¢`);
-        });
+        portfolio.positions = posData.market_positions || posData.positions || [];
       } catch (e) {
-        console.log('❌ Could not refresh positions:', e.message);
+        console.log('Could not refresh positions:', e.message);
       }
-    } else {
-      console.log('⚠️ Not authenticated - using local betHistory only');
     }
 
     // Get current risk info
@@ -2010,7 +1981,7 @@ app.get('/api/risk', async (req, res) => {
     if (config.isAuthenticated) {
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
-        portfolio.positions = posData.positions || [];
+        portfolio.positions = posData.market_positions || posData.positions || [];
       } catch (e) {
         console.log('Could not refresh positions:', e.message);
       }
@@ -2192,7 +2163,7 @@ app.post('/api/bet', async (req, res) => {
     if (config.isAuthenticated) {
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
-        portfolio.positions = posData.positions || [];
+        portfolio.positions = posData.market_positions || posData.positions || [];
       } catch (e) {
         console.log('Could not refresh positions before bet:', e.message);
       }
@@ -2357,7 +2328,7 @@ app.post('/api/bet', async (req, res) => {
       // Refresh positions for risk tracking
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
-        portfolio.positions = posData.positions || [];
+        portfolio.positions = posData.market_positions || posData.positions || [];
       } catch (e) {
         console.log('Could not refresh positions after bet:', e.message);
       }
@@ -2400,7 +2371,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     if (config.isAuthenticated) {
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
-        portfolio.positions = posData.positions || [];
+        portfolio.positions = posData.market_positions || posData.positions || [];
       } catch (e) {
         console.log('Could not refresh positions before auto-bet:', e.message);
       }
@@ -2584,7 +2555,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       // Refresh positions for accurate risk calculation
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
-        portfolio.positions = posData.positions || [];
+        portfolio.positions = posData.market_positions || posData.positions || [];
       } catch (e) {
         console.log('Could not refresh positions after auto-bet:', e.message);
       }
@@ -2632,7 +2603,7 @@ async function runAutoBet() {
     if (config.isAuthenticated) {
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
-        portfolio.positions = posData.positions || [];
+        portfolio.positions = posData.market_positions || posData.positions || [];
         console.log(`📊 Refreshed positions: ${portfolio.positions.length} open positions from Kalshi`);
         if (portfolio.positions.length > 0) {
           portfolio.positions.forEach(p => {
