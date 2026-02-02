@@ -621,12 +621,22 @@ const pendingTokenExposure = new Map();
 
 // Add pending exposure for a token
 function addPendingExposure(token, amountCents) {
-  if (!token) return;
+  if (!token) {
+    console.log(`⚠️ addPendingExposure called with no token!`);
+    return;
+  }
   const current = pendingTokenExposure.get(token) || { amount: 0, timestamp: Date.now() };
   current.amount += amountCents;
   current.timestamp = Date.now();
   pendingTokenExposure.set(token, current);
-  console.log(`   📝 Pending exposure for ${token}: +$${(amountCents/100).toFixed(2)} = $${(current.amount/100).toFixed(2)} total`);
+  console.log(`   📝 PENDING EXPOSURE: ${token} +$${(amountCents/100).toFixed(2)} → NOW $${(current.amount/100).toFixed(2)} total pending`);
+
+  // Log all pending exposure
+  const allPending = [];
+  for (const [t, d] of pendingTokenExposure.entries()) {
+    allPending.push(`${t}=$${(d.amount/100).toFixed(2)}`);
+  }
+  console.log(`   📝 All pending: ${allPending.join(', ')}`);
 }
 
 // Clean up old pending exposure (older than 5 minutes - positions should have updated by then)
@@ -2230,11 +2240,20 @@ function getMaxPerToken() {
 // Get remaining budget for a specific token
 function getRemainingTokenBudget(ticker, assetType) {
   const token = getTokenFromTicker(ticker) || assetType;
-  if (!token) return getMaxPerToken(); // If can't determine token, use full budget
+  if (!token) {
+    console.log(`⚠️ Could not determine token from ticker=${ticker}, assetType=${assetType}`);
+    return getMaxPerToken(); // If can't determine token, use full budget
+  }
 
   const tokenExposure = getExposureByToken();
   const currentExposure = tokenExposure[token] || 0;
-  return Math.max(0, getMaxPerToken() - currentExposure);
+  const maxPerToken = getMaxPerToken();
+  const remaining = Math.max(0, maxPerToken - currentExposure);
+
+  // Debug log for token limit tracking
+  console.log(`   💵 Token ${token}: exposure=$${(currentExposure/100).toFixed(2)}, max=$${(maxPerToken/100).toFixed(2)}, remaining=$${(remaining/100).toFixed(2)}`);
+
+  return remaining;
 }
 
 // ============================================
