@@ -296,19 +296,15 @@ function App() {
   // New: Risk tracking and market filtering
   const [risk, setRisk] = useState({
     current: 0,
-    max: 1000,
-    remaining: 1000,
-    hourly: { current: 0, max: 500, currentDollars: '0.00', maxDollars: '5.00' },
-    other: { current: 0, max: 500, currentDollars: '0.00', maxDollars: '5.00' }
+    max: 1500,
+    remaining: 1500,
+    currentDollars: '0.00',
+    maxDollars: '15.00'
   })
   const [riskSettings, setRiskSettings] = useState({
-    hourly: { maxPerBet: 200, maxTotal: 500 },
-    other: { maxPerBet: 200, maxTotal: 1000 },
-    tokenLimits: {
-      BTC: 500,
-      ETH: 500,
-      SOL: 500
-    }
+    maxPerBet: 200,
+    maxTotal: 1500,
+    maxPerToken: 500
   })
   const [scaleInSettings, setScaleInSettings] = useState({
     enabled: true,
@@ -586,14 +582,11 @@ function App() {
   }
 
   // Update local risk settings state (doesn't save until Save clicked)
-  const updateRiskSettings = (poolType, field, value) => {
+  const updateRiskSettings = (field, value) => {
     setSettingsSaved(false)
     setRiskSettings(prev => ({
       ...prev,
-      [poolType]: {
-        ...prev[poolType],
-        [field]: value
-      }
+      [field]: value
     }))
   }
 
@@ -610,19 +603,10 @@ function App() {
         // Update local risk state with new limits
         setRisk(prev => ({
           ...prev,
-          hourly: {
-            ...prev.hourly,
-            max: data.riskLimits.hourly.maxTotal,
-            maxDollars: (data.riskLimits.hourly.maxTotal / 100).toFixed(2)
-          },
-          other: {
-            ...prev.other,
-            max: data.riskLimits.other.maxTotal,
-            maxDollars: (data.riskLimits.other.maxTotal / 100).toFixed(2)
-          },
-          max: data.riskLimits.hourly.maxTotal + data.riskLimits.other.maxTotal,
-          maxDollars: ((data.riskLimits.hourly.maxTotal + data.riskLimits.other.maxTotal) / 100).toFixed(2)
+          max: data.riskLimits.maxTotal,
+          maxDollars: (data.riskLimits.maxTotal / 100).toFixed(2)
         }))
+        setRiskSettings(data.riskLimits)
         setSettingsSaved(true)
         setTimeout(() => setSettingsSaved(false), 3000)
       }
@@ -735,23 +719,13 @@ function App() {
           </div>
           <div className="risk-display-sidebar">
             <div className="risk-header">
-              <span className="risk-label">Hourly Markets</span>
-              <span className="risk-value">${risk.hourly?.currentDollars || '0.00'} / ${risk.hourly?.maxDollars || '5.00'}</span>
+              <span className="risk-label">Exposure</span>
+              <span className="risk-value">${risk.currentDollars || '0.00'} / ${risk.maxDollars || '15.00'}</span>
             </div>
             <div className="risk-bar-small">
               <div
                 className="risk-fill-small"
-                style={{ width: `${Math.min(100, ((risk.hourly?.current || 0) / (risk.hourly?.max || 500)) * 100)}%` }}
-              ></div>
-            </div>
-            <div className="risk-header" style={{ marginTop: '8px' }}>
-              <span className="risk-label">Other Markets</span>
-              <span className="risk-value">${risk.other?.currentDollars || '0.00'} / ${risk.other?.maxDollars || '5.00'}</span>
-            </div>
-            <div className="risk-bar-small">
-              <div
-                className="risk-fill-small"
-                style={{ width: `${Math.min(100, ((risk.other?.current || 0) / (risk.other?.max || 500)) * 100)}%` }}
+                style={{ width: `${Math.min(100, ((risk.current || 0) / (risk.max || 1500)) * 100)}%` }}
               ></div>
             </div>
           </div>
@@ -1258,20 +1232,16 @@ function App() {
                       <span className="settings-value">{formatCurrency(balance)}</span>
                     </div>
                     <div className="settings-item">
-                      <span className="settings-label">Max per Bet (Hourly)</span>
-                      <span className="settings-value">${(riskSettings.hourly.maxPerBet / 100).toFixed(2)}</span>
+                      <span className="settings-label">Max per Bet</span>
+                      <span className="settings-value">${((riskSettings.maxPerBet || 200) / 100).toFixed(2)}</span>
                     </div>
                     <div className="settings-item">
-                      <span className="settings-label">Max per Bet (Other)</span>
-                      <span className="settings-value">${(riskSettings.other.maxPerBet / 100).toFixed(2)}</span>
+                      <span className="settings-label">Max Exposure</span>
+                      <span className="settings-value">${((riskSettings.maxTotal || 1500) / 100).toFixed(2)}</span>
                     </div>
                     <div className="settings-item">
-                      <span className="settings-label">Min Edge (High Conf)</span>
-                      <span className="settings-value">0.5%</span>
-                    </div>
-                    <div className="settings-item">
-                      <span className="settings-label">Min Edge (Normal)</span>
-                      <span className="settings-value">3%</span>
+                      <span className="settings-label">Min Edge</span>
+                      <span className="settings-value">5%</span>
                     </div>
                     <div className="settings-item">
                       <span className="settings-label">Auto-bet Status</span>
@@ -1293,82 +1263,25 @@ function App() {
                   <h3 className="settings-card-title">Risk Limits</h3>
                   <div className="risk-settings">
                     <div className="risk-pool-settings">
-                      <h4>Hourly Markets</h4>
+                      <h4>Exposure Limits</h4>
                       <DollarStepper
                         label="Max per bet"
-                        value={Math.round(riskSettings.hourly.maxPerBet / 100)}
-                        onChange={(v) => updateRiskSettings('hourly', 'maxPerBet', v * 100)}
+                        value={Math.round((riskSettings.maxPerBet || 200) / 100)}
+                        onChange={(v) => updateRiskSettings('maxPerBet', v * 100)}
                         min={1}
                         max={10}
                       />
                       <DollarStepper
-                        label="Max total"
-                        value={Math.round(riskSettings.hourly.maxTotal / 100)}
-                        onChange={(v) => updateRiskSettings('hourly', 'maxTotal', v * 100)}
+                        label="Max total exposure"
+                        value={Math.round((riskSettings.maxTotal || 1500) / 100)}
+                        onChange={(v) => updateRiskSettings('maxTotal', v * 100)}
                         min={1}
                         max={100}
                       />
-                    </div>
-                    <div className="risk-pool-settings">
-                      <h4>Other Markets (15min, daily)</h4>
                       <DollarStepper
-                        label="Max per bet"
-                        value={Math.round(riskSettings.other.maxPerBet / 100)}
-                        onChange={(v) => updateRiskSettings('other', 'maxPerBet', v * 100)}
-                        min={1}
-                        max={10}
-                      />
-                      <DollarStepper
-                        label="Max total"
-                        value={Math.round(riskSettings.other.maxTotal / 100)}
-                        onChange={(v) => updateRiskSettings('other', 'maxTotal', v * 100)}
-                        min={1}
-                        max={100}
-                      />
-                    </div>
-                  </div>
-                  <div className="risk-pool-settings" style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-color)' }}>
-                    <h4>Per-Token Limits</h4>
-                    <p style={{ fontSize: '14px', color: 'var(--text-muted)', marginBottom: '12px' }}>
-                      Maximum exposure per token across ALL markets combined
-                    </p>
-                    <div className="token-limits-grid">
-                      <DollarStepper
-                        label="BTC"
-                        value={Math.round((riskSettings.tokenLimits?.BTC || 500) / 100)}
-                        onChange={(v) => {
-                          setSettingsSaved(false)
-                          setRiskSettings(prev => ({
-                            ...prev,
-                            tokenLimits: { ...prev.tokenLimits, BTC: v * 100 }
-                          }))
-                        }}
-                        min={1}
-                        max={50}
-                      />
-                      <DollarStepper
-                        label="ETH"
-                        value={Math.round((riskSettings.tokenLimits?.ETH || 500) / 100)}
-                        onChange={(v) => {
-                          setSettingsSaved(false)
-                          setRiskSettings(prev => ({
-                            ...prev,
-                            tokenLimits: { ...prev.tokenLimits, ETH: v * 100 }
-                          }))
-                        }}
-                        min={1}
-                        max={50}
-                      />
-                      <DollarStepper
-                        label="SOL"
-                        value={Math.round((riskSettings.tokenLimits?.SOL || 500) / 100)}
-                        onChange={(v) => {
-                          setSettingsSaved(false)
-                          setRiskSettings(prev => ({
-                            ...prev,
-                            tokenLimits: { ...prev.tokenLimits, SOL: v * 100 }
-                          }))
-                        }}
+                        label="Max per token"
+                        value={Math.round((riskSettings.maxPerToken || 500) / 100)}
+                        onChange={(v) => updateRiskSettings('maxPerToken', v * 100)}
                         min={1}
                         max={50}
                       />

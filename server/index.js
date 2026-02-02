@@ -37,16 +37,10 @@ let config = {
   maxBetPercent: 15,
   minEdge: 5, // 5% minimum - model has uncertainty, need buffer
   autoBetEnabled: false,
-  // Risk management settings (in cents) - bet sizing uses maxPerBet
+  // Risk management settings (in cents)
   riskLimits: {
-    hourly: {
-      maxPerBet: 200,    // $2.00 max per bet
-      maxTotal: 500      // $5.00 max total exposure
-    },
-    other: {
-      maxPerBet: 200,    // $2.00 max per bet
-      maxTotal: 1000     // $10.00 max total exposure
-    },
+    maxPerBet: 200,      // $2.00 max per bet
+    maxTotal: 1500,      // $15.00 max total exposure
     maxPerToken: 500     // $5.00 max per token (e.g., max $5 on all SOL markets combined)
   },
   // Scale-in settings: add to position when probability improves
@@ -1899,13 +1893,12 @@ fetchIndexPrice();
 // ============================================
 
 // Risk limits are now configurable via config.riskLimits
-// Helper functions to get current limits
-function getMaxRisk(type) {
-  return config.riskLimits[type]?.maxTotal || 500;
+function getMaxRisk() {
+  return config.riskLimits.maxTotal;
 }
 
-function getMaxPerBet(type) {
-  return config.riskLimits[type]?.maxPerBet || 200;
+function getMaxPerBet() {
+  return config.riskLimits.maxPerBet;
 }
 
 // Kelly Criterion bet sizing - mathematically optimal for long-term growth
@@ -1942,20 +1935,12 @@ function calculateKellyBet(probability, priceCents, bankrollCents, maxBetCents) 
 }
 
 function getMaxTotalRisk() {
-  return getMaxRisk('hourly') + getMaxRisk('other');
+  return config.riskLimits.maxTotal;
 }
 
-// Determine if a ticker is an hourly market
-function isHourlyMarket(ticker) {
-  if (!ticker) return false;
-  // Hourly series end in 1H (e.g., KXBTC1H, KXETH1H)
-  return ticker.includes('1H') || ticker.includes('-1H-');
-}
-
-// Get risk breakdown by market type
-function getRiskByType() {
-  let hourlyRisk = 0;
-  let otherRisk = 0;
+// Get current total exposure
+function getCurrentExposure() {
+  let totalExposure = 0;
   const kalshiTickers = new Set();
 
   // Count Kalshi positions
@@ -1964,14 +1949,8 @@ function getRiskByType() {
       const contracts = Math.abs(pos.position || 0);
       if (contracts > 0) {
         const avgPrice = pos.average_price || 50;
-        const posRisk = contracts * avgPrice;
+        totalExposure += contracts * avgPrice;
         kalshiTickers.add(pos.ticker);
-
-        if (isHourlyMarket(pos.ticker)) {
-          hourlyRisk += posRisk;
-        } else {
-          otherRisk += posRisk;
-        }
       }
     }
   }
@@ -1983,41 +1962,33 @@ function getRiskByType() {
     const betTime = new Date(bet.timestamp).getTime();
     if (betTime < twoHoursAgo) continue;
     if (kalshiTickers.has(bet.ticker)) continue;
-
-    const betRisk = bet.totalCost || (bet.count * bet.price) || 0;
-    if (isHourlyMarket(bet.ticker)) {
-      hourlyRisk += betRisk;
-    } else {
-      otherRisk += betRisk;
-    }
+    totalExposure += bet.totalCost || (bet.count * bet.price) || 0;
   }
 
-  return { hourly: hourlyRisk, other: otherRisk, total: hourlyRisk + otherRisk };
+  return totalExposure;
+}
+
+// Simplified - just returns total exposure (for backward compat)
+function getRiskByType() {
+  const total = getCurrentExposure();
+  return { total };
 }
 
 function getCurrentRiskFromPortfolio() {
-  const { total } = getRiskByType();
-  return total;
+  return getCurrentExposure();
 }
 
-function canPlaceBet(betCostCents, ticker) {
-  const risk = getRiskByType();
-  const type = isHourlyMarket(ticker) ? 'hourly' : 'other';
-  return (risk[type] + betCostCents) <= getMaxRisk(type);
+function canPlaceBet(betCostCents) {
+  return (getCurrentExposure() + betCostCents) <= config.riskLimits.maxTotal;
 }
 
-function getRemainingRiskBudget(ticker) {
-  const risk = getRiskByType();
-  const type = isHourlyMarket(ticker) ? 'hourly' : 'other';
-  return Math.max(0, getMaxRisk(type) - risk[type]);
+function getRemainingRiskBudget() {
+  return Math.max(0, config.riskLimits.maxTotal - getCurrentExposure());
 }
 
 // Get total remaining budget (for display)
 function getTotalRemainingBudget() {
-  const risk = getRiskByType();
-  const hourlyRemaining = Math.max(0, getMaxRisk('hourly') - risk.hourly);
-  const otherRemaining = Math.max(0, getMaxRisk('other') - risk.other);
-  return hourlyRemaining + otherRemaining;
+  return getRemainingRiskBudget();
 }
 
 // Extract token symbol from market ticker (e.g., KXBTC-24... -> BTC, KXSOL1H... -> SOL)
@@ -2211,11 +2182,6 @@ async function fetchCryptoMarkets() {
     // Fetch crypto markets directly by series ticker instead of filtering 1000+ markets
     // This ensures we get the 15-minute crypto markets that would otherwise be buried
     const cryptoSeries = [
-      // HOURLY markets (separate risk pool)
-      'KXBTC1H',    // Bitcoin hourly up/down
-      'KXETH1H',    // Ethereum hourly up/down
-      'KXSOL1H',    // Solana hourly up/down
-
       // 15-minute markets (short term, high frequency)
       'KXBTC15M',   // Bitcoin 15-minute up/down
       'KXETH15M',   // Ethereum 15-minute up/down
@@ -3010,29 +2976,12 @@ app.get('/api/opportunities/all', async (req, res) => {
       indexCount: indexOpps.filter(m => m.isRecommended).length,
       prices: priceDisplay,
       risk: {
-        // Total risk
         current: riskByType.total,
         max: getMaxTotalRisk(),
         remaining: getTotalRemainingBudget(),
         currentDollars: (riskByType.total / 100).toFixed(2),
         maxDollars: (getMaxTotalRisk() / 100).toFixed(2),
-        remainingDollars: (getTotalRemainingBudget() / 100).toFixed(2),
-        // Hourly pool
-        hourly: {
-          current: riskByType.hourly,
-          max: getMaxRisk('hourly'),
-          remaining: Math.max(0, getMaxRisk('hourly') - riskByType.hourly),
-          currentDollars: (riskByType.hourly / 100).toFixed(2),
-          maxDollars: (getMaxRisk('hourly') / 100).toFixed(2)
-        },
-        // Other pool (daily, 15min, etc)
-        other: {
-          current: riskByType.other,
-          max: getMaxRisk('other'),
-          remaining: Math.max(0, getMaxRisk('other') - riskByType.other),
-          currentDollars: (riskByType.other / 100).toFixed(2),
-          maxDollars: (getMaxRisk('other') / 100).toFixed(2)
-        }
+        remainingDollars: (getTotalRemainingBudget() / 100).toFixed(2)
       },
       opportunities: allOpportunities
     });
@@ -3126,27 +3075,14 @@ app.get('/api/settings/risk', (req, res) => {
 
 // Update risk settings
 app.post('/api/settings/risk', (req, res) => {
-  const { hourly, other, maxPerToken } = req.body;
+  const { maxPerBet, maxTotal, maxPerToken } = req.body;
 
-  if (hourly) {
-    if (hourly.maxPerBet !== undefined) {
-      config.riskLimits.hourly.maxPerBet = Math.max(10, Math.min(1000, parseInt(hourly.maxPerBet) || 200));
-    }
-    if (hourly.maxTotal !== undefined) {
-      config.riskLimits.hourly.maxTotal = Math.max(100, Math.min(10000, parseInt(hourly.maxTotal) || 500));
-    }
+  if (maxPerBet !== undefined) {
+    config.riskLimits.maxPerBet = Math.max(10, Math.min(1000, parseInt(maxPerBet) || 200));
   }
-
-  if (other) {
-    if (other.maxPerBet !== undefined) {
-      config.riskLimits.other.maxPerBet = Math.max(10, Math.min(1000, parseInt(other.maxPerBet) || 200));
-    }
-    if (other.maxTotal !== undefined) {
-      config.riskLimits.other.maxTotal = Math.max(100, Math.min(10000, parseInt(other.maxTotal) || 1000));
-    }
+  if (maxTotal !== undefined) {
+    config.riskLimits.maxTotal = Math.max(100, Math.min(10000, parseInt(maxTotal) || 1500));
   }
-
-  // Max per token (e.g., max $5 on all SOL markets combined)
   if (maxPerToken !== undefined) {
     config.riskLimits.maxPerToken = Math.max(100, Math.min(5000, parseInt(maxPerToken) || 500));
   }
@@ -3370,12 +3306,9 @@ app.post('/api/bet', async (req, res) => {
     }
 
     // Calculate bet size based on configurable limits
-    const isHourly = isHourlyMarket(ticker);
-    const poolType = isHourly ? 'hourly' : 'other';
-    const remainingBudget = getRemainingRiskBudget(ticker);
+    const remainingBudget = getRemainingRiskBudget();
     const remainingTokenBudget = getRemainingTokenBudget(ticker, market.assetType);
-    const poolMax = getMaxRisk(poolType);
-    const maxPerBet = getMaxPerBet(poolType);
+    const maxPerBet = getMaxPerBet();
     const maxPerToken = getMaxPerToken();
 
     // Take minimum of: max per bet, pool budget, and token budget
@@ -3552,23 +3485,11 @@ app.post('/api/bet', async (req, res) => {
           remaining: getTotalRemainingBudget(),
           currentDollars: (riskByType.total / 100).toFixed(2),
           maxDollars: (getMaxTotalRisk() / 100).toFixed(2),
-          remainingDollars: (getTotalRemainingBudget() / 100).toFixed(2),
-          hourly: {
-            current: riskByType.hourly,
-            max: getMaxRisk('hourly'),
-            currentDollars: (riskByType.hourly / 100).toFixed(2),
-            maxDollars: (getMaxRisk('hourly') / 100).toFixed(2)
-          },
-          other: {
-            current: riskByType.other,
-            max: getMaxRisk('other'),
-            currentDollars: (riskByType.other / 100).toFixed(2),
-            maxDollars: (getMaxRisk('other') / 100).toFixed(2)
-          }
+          remainingDollars: (getTotalRemainingBudget() / 100).toFixed(2)
         }
       });
 
-      console.log(`✅ Bet placed. Risk now: $${(currentRisk / 100).toFixed(2)} / $${(getMaxTotalRisk() / 100).toFixed(2)}`);
+      console.log(`✅ Bet placed. Risk now: $${(riskByType.total / 100).toFixed(2)} / $${(getMaxTotalRisk() / 100).toFixed(2)}`);
     } catch (orderError) {
       console.error('Kalshi order error:', orderError.message);
       res.status(400).json({ success: false, error: `Kalshi: ${orderError.message}` });
@@ -3654,22 +3575,19 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
 
     const best = opportunities[0];
 
-    // Check risk limit for this market's pool
-    const isHourly = isHourlyMarket(best.ticker);
-    const remainingBudget = getRemainingRiskBudget(best.ticker);
-    const poolMax = isHourly ? getMaxRisk('hourly') : getMaxRisk('other');
-    const poolName = isHourly ? 'hourly' : 'other';
+    // Check risk limit
+    const remainingBudget = getRemainingRiskBudget();
 
-    if (remainingBudget < 10) { // Less than 10 cents remaining in this pool
+    if (remainingBudget < 10) { // Less than 10 cents remaining
       return res.json({
         success: true,
-        message: `Risk limit reached for ${poolName} markets ($${(poolMax/100).toFixed(2)} max). Wait for positions to settle.`,
+        message: `Exposure limit reached ($${(getMaxTotalRisk()/100).toFixed(2)} max). Wait for positions to settle.`,
         bet: null,
         risk: getRiskByType()
       });
     }
     const category = best.marketCategory || 'crypto';
-    const maxPerBet = getMaxPerBet(poolName === 'HOURLY' ? 'hourly' : 'other');
+    const maxPerBet = getMaxPerBet();
     const remainingTokenBudget = getRemainingTokenBudget(best.ticker, best.assetType || best.cryptoType);
     console.log(`Auto-bet found [${category}]: ${best.title} | Win prob: ${best.winProbability}% | Side: ${best.betSide}`);
 
@@ -3866,19 +3784,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
           remaining: getTotalRemainingBudget(),
           currentDollars: (riskByType.total / 100).toFixed(2),
           maxDollars: (getMaxTotalRisk() / 100).toFixed(2),
-          remainingDollars: (getTotalRemainingBudget() / 100).toFixed(2),
-          hourly: {
-            current: riskByType.hourly,
-            max: getMaxRisk('hourly'),
-            currentDollars: (riskByType.hourly / 100).toFixed(2),
-            maxDollars: (getMaxRisk('hourly') / 100).toFixed(2)
-          },
-          other: {
-            current: riskByType.other,
-            max: getMaxRisk('other'),
-            currentDollars: (riskByType.other / 100).toFixed(2),
-            maxDollars: (getMaxRisk('other') / 100).toFixed(2)
-          }
+          remainingDollars: (getTotalRemainingBudget() / 100).toFixed(2)
         }
       });
     } catch (orderError) {
@@ -4100,7 +4006,7 @@ async function runAutoBet() {
 
     // === MULTI-BET LOOP: Bet on ALL qualifying opportunities ===
     const riskByType = getRiskByType();
-    console.log(`💰 Risk: Hourly $${(riskByType.hourly/100).toFixed(2)}/$${(getMaxRisk('hourly')/100).toFixed(2)} | Other $${(riskByType.other/100).toFixed(2)}/$${(getMaxRisk('other')/100).toFixed(2)}`);
+    console.log(`💰 Exposure: $${(riskByType.total/100).toFixed(2)} / $${(getMaxTotalRisk()/100).toFixed(2)}`);
 
     let betsPlaced = 0;
     let totalBetAmount = 0;
@@ -4110,19 +4016,17 @@ async function runAutoBet() {
     for (const opp of opportunities) {
       // Check if we've hit overall limits
       if (getTotalRemainingBudget() < 10) {
-        console.log('   ⚠️ Total risk limit reached - stopping');
+        console.log('   ⚠️ Exposure limit reached - stopping');
         break;
       }
 
-      const isHourly = isHourlyMarket(opp.ticker);
-      const poolType = isHourly ? 'hourly' : 'other';
-      const remainingBudget = getRemainingRiskBudget(opp.ticker);
+      const remainingBudget = getRemainingRiskBudget();
       const remainingTokenBudget = getRemainingTokenBudget(opp.ticker, opp.assetType || opp.cryptoType);
       const tokenName = getTokenFromTicker(opp.ticker) || opp.assetType || opp.cryptoType || 'token';
 
-      // Skip if pool is exhausted
+      // Skip if budget exhausted
       if (remainingBudget < 10) {
-        console.log(`   ⏭️ ${tokenName}: Pool limit reached`);
+        console.log(`   ⏭️ ${tokenName}: Exposure limit reached`);
         continue;
       }
 
@@ -4136,7 +4040,7 @@ async function runAutoBet() {
       const winProb = parseFloat(opp.winProbability);
 
       // Kelly Criterion bet sizing
-      const maxBetCents = Math.min(getMaxPerBet(poolType), remainingBudget, remainingTokenBudget);
+      const maxBetCents = Math.min(getMaxPerBet(), remainingBudget, remainingTokenBudget);
       const kellyBetSize = calculateKellyBet(winProb, priceCents, config.bankroll, maxBetCents);
 
       if (kellyBetSize < priceCents) {
