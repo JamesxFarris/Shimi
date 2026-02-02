@@ -2183,7 +2183,10 @@ app.post('/api/bet', async (req, res) => {
       });
     }
 
-    // Real bet - use limit order at current ask price
+    // Real bet - use limit order slightly above ask to ensure fill
+    // Add 2 cent buffer to improve fill rate
+    const fillPrice = Math.min(priceCents + 2, 99);
+
     const orderRequest = {
       ticker,
       action: 'buy',
@@ -2194,12 +2197,12 @@ app.post('/api/bet', async (req, res) => {
 
     // Add the appropriate price field based on side
     if (side.toLowerCase() === 'yes') {
-      orderRequest.yes_price = priceCents;
+      orderRequest.yes_price = fillPrice;
     } else {
-      orderRequest.no_price = priceCents;
+      orderRequest.no_price = fillPrice;
     }
 
-    console.log('Placing order:', JSON.stringify(orderRequest));
+    console.log(`Placing order (ask: ${priceCents}¢, bid: ${fillPrice}¢):`, JSON.stringify(orderRequest));
 
     try {
       const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
@@ -2376,7 +2379,9 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       });
     }
 
-    // Real bet - use limit order at current ask price
+    // Real bet - use limit order slightly above ask to ensure fill
+    const fillPrice = Math.min(priceCents + 2, 99);
+
     const orderRequest = {
       ticker: best.ticker,
       action: 'buy',
@@ -2387,12 +2392,12 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
 
     // Add the appropriate price field based on side
     if (best.betSide.toLowerCase() === 'yes') {
-      orderRequest.yes_price = priceCents;
+      orderRequest.yes_price = fillPrice;
     } else {
-      orderRequest.no_price = priceCents;
+      orderRequest.no_price = fillPrice;
     }
 
-    console.log('Auto-bet placing order:', JSON.stringify(orderRequest));
+    console.log(`Auto-bet placing order (ask: ${priceCents}¢, bid: ${fillPrice}¢):`, JSON.stringify(orderRequest));
 
     try {
       const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
@@ -2594,7 +2599,9 @@ async function runAutoBet() {
       return;
     }
 
-    // Real bet - use limit order at current ask price
+    // Real bet - use limit order slightly above ask to ensure fill
+    const fillPrice = Math.min(priceCents + 2, 99);
+
     console.log(`\n💸 PLACING REAL BET...`);
     const orderRequest = {
       ticker: best.ticker,
@@ -2606,11 +2613,11 @@ async function runAutoBet() {
 
     // Add the appropriate price field based on side
     if (best.betSide.toLowerCase() === 'yes') {
-      orderRequest.yes_price = priceCents;
+      orderRequest.yes_price = fillPrice;
     } else {
-      orderRequest.no_price = priceCents;
+      orderRequest.no_price = fillPrice;
     }
-    console.log(`   Order: ${JSON.stringify(orderRequest)}`);
+    console.log(`   Order (ask: ${priceCents}¢, bid: ${fillPrice}¢): ${JSON.stringify(orderRequest)}`);
 
     const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
     console.log(`   Response: ${JSON.stringify(orderResponse)}`);
