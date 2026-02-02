@@ -361,21 +361,9 @@ async function handleUrgentNews(article) {
     acted: false
   };
 
-  console.log(`\n🚨 URGENT NEWS ALERT 🚨`);
-  console.log(`   ${article.title}`);
-  console.log(`   Direction: ${alert.direction.toUpperCase()} | Score: ${alert.score}`);
-  console.log(`   Keywords: ${alert.keywords.join(', ')}`);
-  console.log(`   Tokens: ${alert.tokens.join(', ') || 'General market'}`);
-
-  // Add to recent alerts
+  // Add to recent alerts (silently - no console spam)
   recentAlerts.unshift(alert);
-  recentAlerts = recentAlerts.slice(0, 20); // Keep last 20 alerts
-
-  // If auto-trade is enabled and news is actionable, boost next bet
-  if (NEWS_CONFIG.enableAutoTrade && alert.direction !== 'mixed' && alert.direction !== 'neutral') {
-    // The news boost will be applied in the analysis functions
-    console.log(`   ✅ News boost will be applied to matching markets`);
-  }
+  recentAlerts = recentAlerts.slice(0, 20);
 
   return alert;
 }
