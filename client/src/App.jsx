@@ -41,26 +41,6 @@ const formatPrice = (val, token) => {
   return `$${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
-// Price Ticker Item - shows price with change indicator
-const PriceTickerItem = memo(({ token, price, prevPrice }) => {
-  const config = TOKEN_CONFIG[token] || { color: '#888', name: token, icon: '?' }
-
-  // Determine price change direction
-  const priceChange = prevPrice ? price - prevPrice : 0
-  const changeClass = priceChange > 0 ? 'up' : priceChange < 0 ? 'down' : ''
-
-  return (
-    <div className={`ticker-item ${changeClass}`} style={{ '--token-color': config.color }}>
-      <div className="ticker-icon">{config.icon}</div>
-      <div className="ticker-info">
-        <span className="ticker-symbol">{token}</span>
-        <span className={`ticker-price ${changeClass}`}>{formatPrice(price, token)}</span>
-      </div>
-      {changeClass && <span className="ticker-change-indicator">{priceChange > 0 ? '▲' : '▼'}</span>}
-    </div>
-  )
-})
-
 // Asset config including S&P 500
 const ASSET_CONFIG = {
   ...TOKEN_CONFIG,
@@ -753,35 +733,31 @@ function App() {
           </div>
         </header>
 
-        {/* Price Ticker - Wall Street Style */}
-        <div className="price-ticker-container">
-          <div className="price-ticker">
-            {/* Triplicate items for seamless infinite loop */}
-            {[0, 1, 2].map((dupeIndex) => {
-              const tokenOrder = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK', 'MATIC', 'DOT', 'SHIB', 'LTC', 'UNI', 'ATOM', 'APT']
-              return tokenOrder.map((token) => {
-                const price = prices[token]
-                if (!price || price <= 0) return null
-                return (
-                  <PriceTickerItem
-                    key={`${token}-${dupeIndex}`}
-                    token={token}
-                    price={price}
-                    prevPrice={prevPrices[token]}
-                  />
-                )
-              })
-            })}
-          </div>
-          <div className="ticker-fade-left"></div>
-          <div className="ticker-fade-right"></div>
-          <div className="ticker-status">
-            <span className={`status-indicator ${priceLastUpdated ? 'live' : ''}`}></span>
-            <span className="status-text">
-              {Object.keys(prices).filter(k => prices[k] > 0).length > 0
-                ? `${Object.keys(prices).filter(k => prices[k] > 0).length} LIVE`
-                : 'Loading prices...'}
-            </span>
+        {/* Cyber Status Bar */}
+        <div className="cyber-status-bar">
+          <div className="cyber-scan-line"></div>
+          <div className="cyber-grid"></div>
+          <div className="cyber-status-content">
+            <div className="cyber-left">
+              <span className="cyber-bracket">[</span>
+              <span className="cyber-label">SYS</span>
+              <span className="cyber-value online">ONLINE</span>
+              <span className="cyber-bracket">]</span>
+            </div>
+            <div className="cyber-center">
+              <span className="cyber-divider">//</span>
+              <span className="cyber-title">SHIMI NEURAL TRADING</span>
+              <span className="cyber-divider">//</span>
+            </div>
+            <div className="cyber-right">
+              <span className="cyber-bracket">[</span>
+              <span className="cyber-label">FEED</span>
+              <span className={`cyber-value ${priceLastUpdated ? 'live' : ''}`}>
+                {Object.keys(prices).filter(k => prices[k] > 0).length > 0 ? 'LIVE' : 'SYNC'}
+              </span>
+              <span className="cyber-dot"></span>
+              <span className="cyber-bracket">]</span>
+            </div>
           </div>
         </div>
 
