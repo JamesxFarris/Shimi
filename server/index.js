@@ -2149,11 +2149,14 @@ function getMaxTotalRisk() {
   return config.riskLimits.maxTotal;
 }
 
-// Get current total exposure - ONLY counts actual Kalshi positions
+// Get current total exposure - counts Kalshi positions + pending bets
 function getCurrentExposure() {
+  // Clean up old pending exposure first
+  cleanupPendingExposure();
+
   let totalExposure = 0;
 
-  // Only count actual Kalshi positions (source of truth)
+  // Count actual Kalshi positions
   if (portfolio.positions && Array.isArray(portfolio.positions)) {
     for (const pos of portfolio.positions) {
       const contracts = Math.abs(pos.position || 0);
@@ -2162,6 +2165,11 @@ function getCurrentExposure() {
         totalExposure += contracts * avgPrice;
       }
     }
+  }
+
+  // Add pending exposure (bets placed recently that may not be in positions yet)
+  for (const [token, data] of pendingTokenExposure.entries()) {
+    totalExposure += data.amount;
   }
 
   return totalExposure;
