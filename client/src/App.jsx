@@ -293,6 +293,30 @@ const StatsCard = ({ title, value, icon, color }) => (
   </div>
 )
 
+// Dollar Stepper - simple +/- buttons for $1 increments
+const DollarStepper = ({ value, onChange, min = 1, max = 100, step = 1, label }) => (
+  <div className="dollar-stepper">
+    {label && <label className="stepper-label">{label}</label>}
+    <div className="stepper-controls">
+      <button
+        className="stepper-btn minus"
+        onClick={() => onChange(Math.max(min, value - step))}
+        disabled={value <= min}
+      >
+        −
+      </button>
+      <span className="stepper-value">${value}</span>
+      <button
+        className="stepper-btn plus"
+        onClick={() => onChange(Math.min(max, value + step))}
+        disabled={value >= max}
+      >
+        +
+      </button>
+    </div>
+  </div>
+)
+
 function App() {
   const [tab, setTab] = useState('dashboard')
   const [opportunities, setOpportunities] = useState([])
@@ -1007,53 +1031,37 @@ function App() {
                   <div className="risk-settings">
                     <div className="risk-pool-settings">
                       <h4>Hourly Markets</h4>
-                      <div className="settings-input-group">
-                        <label>Max per bet ($)</label>
-                        <input
-                          type="number"
-                          min="0.10"
-                          max="10.00"
-                          step="0.10"
-                          value={(riskSettings.hourly.maxPerBet / 100).toFixed(2)}
-                          onChange={(e) => updateRiskSettings('hourly', 'maxPerBet', Math.round(parseFloat(e.target.value || 0) * 100))}
-                        />
-                      </div>
-                      <div className="settings-input-group">
-                        <label>Max total ($)</label>
-                        <input
-                          type="number"
-                          min="1.00"
-                          max="100.00"
-                          step="1.00"
-                          value={(riskSettings.hourly.maxTotal / 100).toFixed(2)}
-                          onChange={(e) => updateRiskSettings('hourly', 'maxTotal', Math.round(parseFloat(e.target.value || 0) * 100))}
-                        />
-                      </div>
+                      <DollarStepper
+                        label="Max per bet"
+                        value={Math.round(riskSettings.hourly.maxPerBet / 100)}
+                        onChange={(v) => updateRiskSettings('hourly', 'maxPerBet', v * 100)}
+                        min={1}
+                        max={10}
+                      />
+                      <DollarStepper
+                        label="Max total"
+                        value={Math.round(riskSettings.hourly.maxTotal / 100)}
+                        onChange={(v) => updateRiskSettings('hourly', 'maxTotal', v * 100)}
+                        min={1}
+                        max={100}
+                      />
                     </div>
                     <div className="risk-pool-settings">
                       <h4>Other Markets (15min, daily)</h4>
-                      <div className="settings-input-group">
-                        <label>Max per bet ($)</label>
-                        <input
-                          type="number"
-                          min="0.10"
-                          max="10.00"
-                          step="0.10"
-                          value={(riskSettings.other.maxPerBet / 100).toFixed(2)}
-                          onChange={(e) => updateRiskSettings('other', 'maxPerBet', Math.round(parseFloat(e.target.value || 0) * 100))}
-                        />
-                      </div>
-                      <div className="settings-input-group">
-                        <label>Max total ($)</label>
-                        <input
-                          type="number"
-                          min="1.00"
-                          max="100.00"
-                          step="1.00"
-                          value={(riskSettings.other.maxTotal / 100).toFixed(2)}
-                          onChange={(e) => updateRiskSettings('other', 'maxTotal', Math.round(parseFloat(e.target.value || 0) * 100))}
-                        />
-                      </div>
+                      <DollarStepper
+                        label="Max per bet"
+                        value={Math.round(riskSettings.other.maxPerBet / 100)}
+                        onChange={(v) => updateRiskSettings('other', 'maxPerBet', v * 100)}
+                        min={1}
+                        max={10}
+                      />
+                      <DollarStepper
+                        label="Max total"
+                        value={Math.round(riskSettings.other.maxTotal / 100)}
+                        onChange={(v) => updateRiskSettings('other', 'maxTotal', v * 100)}
+                        min={1}
+                        max={100}
+                      />
                     </div>
                   </div>
                   <div className="risk-pool-settings" style={{ marginTop: '16px', paddingTop: '16px', borderTop: '1px solid var(--border-color)' }}>
@@ -1062,66 +1070,45 @@ function App() {
                       Maximum exposure per token across ALL markets combined
                     </p>
                     <div className="token-limits-grid">
-                      <div className="settings-input-group">
-                        <label>BTC ($)</label>
-                        <input
-                          type="number"
-                          min="1.00"
-                          max="50.00"
-                          step="1.00"
-                          value={((riskSettings.tokenLimits?.BTC || 500) / 100).toFixed(2)}
-                          onChange={(e) => {
-                            setSettingsSaved(false)
-                            setRiskSettings(prev => ({
-                              ...prev,
-                              tokenLimits: {
-                                ...prev.tokenLimits,
-                                BTC: Math.round(parseFloat(e.target.value || 0) * 100)
-                              }
-                            }))
-                          }}
-                        />
-                      </div>
-                      <div className="settings-input-group">
-                        <label>ETH ($)</label>
-                        <input
-                          type="number"
-                          min="1.00"
-                          max="50.00"
-                          step="1.00"
-                          value={((riskSettings.tokenLimits?.ETH || 500) / 100).toFixed(2)}
-                          onChange={(e) => {
-                            setSettingsSaved(false)
-                            setRiskSettings(prev => ({
-                              ...prev,
-                              tokenLimits: {
-                                ...prev.tokenLimits,
-                                ETH: Math.round(parseFloat(e.target.value || 0) * 100)
-                              }
-                            }))
-                          }}
-                        />
-                      </div>
-                      <div className="settings-input-group">
-                        <label>SOL ($)</label>
-                        <input
-                          type="number"
-                          min="1.00"
-                          max="50.00"
-                          step="1.00"
-                          value={((riskSettings.tokenLimits?.SOL || 500) / 100).toFixed(2)}
-                          onChange={(e) => {
-                            setSettingsSaved(false)
-                            setRiskSettings(prev => ({
-                              ...prev,
-                              tokenLimits: {
-                                ...prev.tokenLimits,
-                                SOL: Math.round(parseFloat(e.target.value || 0) * 100)
-                              }
-                            }))
-                          }}
-                        />
-                      </div>
+                      <DollarStepper
+                        label="BTC"
+                        value={Math.round((riskSettings.tokenLimits?.BTC || 500) / 100)}
+                        onChange={(v) => {
+                          setSettingsSaved(false)
+                          setRiskSettings(prev => ({
+                            ...prev,
+                            tokenLimits: { ...prev.tokenLimits, BTC: v * 100 }
+                          }))
+                        }}
+                        min={1}
+                        max={50}
+                      />
+                      <DollarStepper
+                        label="ETH"
+                        value={Math.round((riskSettings.tokenLimits?.ETH || 500) / 100)}
+                        onChange={(v) => {
+                          setSettingsSaved(false)
+                          setRiskSettings(prev => ({
+                            ...prev,
+                            tokenLimits: { ...prev.tokenLimits, ETH: v * 100 }
+                          }))
+                        }}
+                        min={1}
+                        max={50}
+                      />
+                      <DollarStepper
+                        label="SOL"
+                        value={Math.round((riskSettings.tokenLimits?.SOL || 500) / 100)}
+                        onChange={(v) => {
+                          setSettingsSaved(false)
+                          setRiskSettings(prev => ({
+                            ...prev,
+                            tokenLimits: { ...prev.tokenLimits, SOL: v * 100 }
+                          }))
+                        }}
+                        min={1}
+                        max={50}
+                      />
                     </div>
                   </div>
                   <button className={`save-settings-btn ${settingsSaved ? 'saved' : ''}`} onClick={saveRiskSettings}>

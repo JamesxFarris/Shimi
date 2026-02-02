@@ -796,6 +796,358 @@ function calculateMomentumMultiTimeframe(history) {
 }
 
 // ============================================
+// ADVANCED STATISTICAL ANALYSIS MODULE
+// Uses multiple methods for robust probability estimation
+// ============================================
+
+// Student-t CDF approximation (better for fat tails than normal)
+// Degrees of freedom (df) controls tail heaviness: lower df = fatter tails
+function studentTCDF(x, df = 5) {
+  // For crypto, use df=3-5 (very fat tails)
+  // For indices, use df=7-10 (moderately fat tails)
+  const t = x;
+  const a = df / 2;
+  const b = 0.5;
+
+  // Use incomplete beta function approximation
+  const x2 = df / (df + t * t);
+
+  if (t >= 0) {
+    return 1 - 0.5 * incompleteBeta(x2, a, b);
+  } else {
+    return 0.5 * incompleteBeta(x2, a, b);
+  }
+}
+
+// Incomplete beta function approximation
+function incompleteBeta(x, a, b) {
+  if (x === 0) return 0;
+  if (x === 1) return 1;
+
+  // Simple approximation using continued fraction
+  const maxIterations = 100;
+  const epsilon = 1e-8;
+
+  let result = Math.pow(x, a) * Math.pow(1 - x, b) / a;
+
+  let sum = 1;
+  let term = 1;
+
+  for (let n = 1; n < maxIterations; n++) {
+    term *= (a + n - 1) * x / n;
+    sum += term;
+    if (Math.abs(term) < epsilon) break;
+  }
+
+  // Normalize (approximate)
+  const beta = gamma(a) * gamma(b) / gamma(a + b);
+  return Math.min(1, Math.max(0, result * sum / beta));
+}
+
+// Gamma function approximation (Stirling)
+function gamma(n) {
+  if (n === 1) return 1;
+  if (n === 0.5) return Math.sqrt(Math.PI);
+  if (n < 0.5) return Math.PI / (Math.sin(Math.PI * n) * gamma(1 - n));
+
+  // Stirling approximation for n > 0.5
+  n -= 1;
+  const g = 7;
+  const c = [
+    0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+    771.32342877765313, -176.61502916214059, 12.507343278686905,
+    -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7
+  ];
+
+  let x = c[0];
+  for (let i = 1; i < g + 2; i++) {
+    x += c[i] / (n + i);
+  }
+
+  const t = n + g + 0.5;
+  return Math.sqrt(2 * Math.PI) * Math.pow(t, n + 0.5) * Math.exp(-t) * x;
+}
+
+// Bootstrap simulation: resample historical returns to estimate probability
+function bootstrapProbability(history, currentPrice, targetPrice, expiryMinutes, numSimulations = 500) {
+  if (history.length < 20) {
+    return { probability: 0.5, confidence: 'low', simulations: 0 };
+  }
+
+  // Calculate historical returns over similar time intervals
+  const targetIntervalMs = expiryMinutes * 60 * 1000;
+  const returns = [];
+
+  for (let i = 1; i < history.length; i++) {
+    const timeDiff = history[i].time - history[i-1].time;
+    // Only use returns from similar time intervals (within 2x)
+    if (timeDiff > 0 && timeDiff < targetIntervalMs * 2) {
+      const ret = (history[i].price - history[i-1].price) / history[i-1].price;
+      // Scale return to target interval
+      const scaledReturn = ret * Math.sqrt(targetIntervalMs / timeDiff);
+      returns.push(scaledReturn);
+    }
+  }
+
+  if (returns.length < 10) {
+    return { probability: 0.5, confidence: 'low', simulations: 0 };
+  }
+
+  // Run Monte Carlo simulation
+  let aboveCount = 0;
+  const isCurrentlyAbove = currentPrice >= targetPrice;
+
+  for (let sim = 0; sim < numSimulations; sim++) {
+    // Randomly sample returns with replacement
+    let simulatedPrice = currentPrice;
+
+    // Simulate price path (use ~3-5 steps for 15 min)
+    const numSteps = Math.max(1, Math.floor(expiryMinutes / 5));
+
+    for (let step = 0; step < numSteps; step++) {
+      const randomReturn = returns[Math.floor(Math.random() * returns.length)];
+      simulatedPrice *= (1 + randomReturn / Math.sqrt(numSteps));
+    }
+
+    if (simulatedPrice >= targetPrice) {
+      aboveCount++;
+    }
+  }
+
+  const probability = aboveCount / numSimulations;
+
+  // Confidence based on sample size and simulation count
+  const confidence = returns.length >= 50 ? 'high' : returns.length >= 20 ? 'medium' : 'low';
+
+  return {
+    probability,
+    probAbove: probability,
+    probBelow: 1 - probability,
+    confidence,
+    simulations: numSimulations,
+    sampleSize: returns.length
+  };
+}
+
+// Calculate realized volatility with multiple estimators
+function calculateRobustVolatility(history, windowMinutes = 60) {
+  if (history.length < 10) {
+    return { volatility: 0.03, method: 'default', confidence: 'low' };
+  }
+
+  const now = Date.now();
+  const windowMs = windowMinutes * 60 * 1000;
+  const recentHistory = history.filter(p => now - p.time < windowMs);
+
+  if (recentHistory.length < 5) {
+    return { volatility: 0.03, method: 'default', confidence: 'low' };
+  }
+
+  // Method 1: Simple return volatility
+  const returns = [];
+  for (let i = 1; i < recentHistory.length; i++) {
+    const ret = (recentHistory[i].price - recentHistory[i-1].price) / recentHistory[i-1].price;
+    returns.push(ret);
+  }
+
+  const meanReturn = returns.reduce((a, b) => a + b, 0) / returns.length;
+  const variance = returns.reduce((a, b) => a + Math.pow(b - meanReturn, 2), 0) / returns.length;
+  const simpleVol = Math.sqrt(variance);
+
+  // Method 2: Parkinson volatility (uses high-low range, more efficient)
+  // Approximate by using max-min of recent prices
+  const prices = recentHistory.map(p => p.price);
+  const high = Math.max(...prices);
+  const low = Math.min(...prices);
+  const parkinsonVol = Math.log(high / low) / (2 * Math.sqrt(Math.log(2)));
+
+  // Method 3: Exponentially weighted (more weight on recent)
+  let ewmaVar = variance;
+  const lambda = 0.94; // Decay factor
+  for (let i = returns.length - 1; i >= 0; i--) {
+    ewmaVar = lambda * ewmaVar + (1 - lambda) * Math.pow(returns[i] - meanReturn, 2);
+  }
+  const ewmaVol = Math.sqrt(ewmaVar);
+
+  // Combine methods (use maximum for conservative estimate)
+  // Fat tails mean we should err on side of higher volatility
+  const combinedVol = Math.max(simpleVol, parkinsonVol * 0.8, ewmaVol);
+
+  // Scale to 15-minute volatility
+  const avgIntervalMs = (recentHistory[recentHistory.length-1].time - recentHistory[0].time) / (recentHistory.length - 1);
+  const intervalsIn15Min = (15 * 60 * 1000) / Math.max(avgIntervalMs, 1000);
+  const vol15Min = combinedVol * Math.sqrt(intervalsIn15Min);
+
+  // Cap at reasonable bounds but allow for high volatility
+  const cappedVol = Math.max(0.005, Math.min(0.15, vol15Min));
+
+  return {
+    volatility: cappedVol,
+    simpleVol,
+    parkinsonVol,
+    ewmaVol,
+    method: 'ensemble',
+    confidence: recentHistory.length >= 30 ? 'high' : 'medium',
+    dataPoints: recentHistory.length
+  };
+}
+
+// Calculate tail risk (probability of extreme moves)
+function calculateTailRisk(history, threshold = 0.02) {
+  if (history.length < 30) {
+    return { leftTailProb: 0.05, rightTailProb: 0.05, kurtosis: 3 };
+  }
+
+  const returns = [];
+  for (let i = 1; i < history.length; i++) {
+    const ret = (history[i].price - history[i-1].price) / history[i-1].price;
+    returns.push(ret);
+  }
+
+  // Count tail events
+  const leftTailCount = returns.filter(r => r < -threshold).length;
+  const rightTailCount = returns.filter(r => r > threshold).length;
+
+  const leftTailProb = leftTailCount / returns.length;
+  const rightTailProb = rightTailCount / returns.length;
+
+  // Calculate kurtosis (measure of tail heaviness)
+  const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+  const variance = returns.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / returns.length;
+  const fourthMoment = returns.reduce((a, b) => a + Math.pow(b - mean, 4), 0) / returns.length;
+  const kurtosis = fourthMoment / Math.pow(variance, 2);
+
+  return {
+    leftTailProb,
+    rightTailProb,
+    kurtosis, // Normal = 3, crypto typically 5-20
+    hasFatTails: kurtosis > 4
+  };
+}
+
+// Main ensemble probability estimator
+// Combines multiple methods and returns conservative estimate
+function calculateEnsembleProbability(token, currentPrice, targetPrice, expiryMinutes = 15) {
+  const history = cryptoPrices[token]?.history || [];
+  const extHistory = priceHistoryExtended[token] || [];
+  const allHistory = [...extHistory, ...history].sort((a, b) => a.time - b.time);
+
+  const isAboveTarget = currentPrice >= targetPrice;
+  const pctFromTarget = ((currentPrice - targetPrice) / targetPrice) * 100;
+
+  // Get robust volatility estimate
+  const volData = calculateRobustVolatility(allHistory, 60);
+  const volatility = volData.volatility;
+
+  // Get tail risk assessment
+  const tailRisk = calculateTailRisk(allHistory);
+
+  // Method 1: Normal distribution (baseline)
+  const timeScaleFactor = Math.sqrt(expiryMinutes / 15);
+  const adjustedVol = volatility * timeScaleFactor;
+  const zScore = (currentPrice - targetPrice) / (targetPrice * adjustedVol);
+  const normalProbAbove = normalCDF(zScore);
+
+  // Method 2: Student-t distribution (accounts for fat tails)
+  // Use df based on kurtosis: higher kurtosis = lower df = fatter tails
+  const df = Math.max(3, Math.min(10, 30 / tailRisk.kurtosis));
+  const tProbAbove = studentTCDF(zScore * Math.sqrt(df / (df - 2)), df);
+
+  // Method 3: Bootstrap simulation (empirical)
+  const bootstrapResult = bootstrapProbability(allHistory, currentPrice, targetPrice, expiryMinutes);
+  const bootstrapProbAbove = bootstrapResult.probAbove;
+
+  // Method 4: Historical crossing analysis
+  const crossingAnalysis = analyzeHistoricalCrossings(allHistory, currentPrice, targetPrice, expiryMinutes);
+  const historicalProbStay = crossingAnalysis.reliable ? (1 - crossingAnalysis.crossingProb) : 0.5;
+
+  // Momentum adjustment (smaller than before)
+  const momentum = calculateMomentumMultiTimeframe(allHistory);
+  let momentumAdjust = 0;
+  if (momentum.aligned) {
+    momentumAdjust = momentum.direction === 'bullish' ? 0.05 : -0.05;
+  }
+
+  // Combine methods using weighted average
+  // Weight by confidence/reliability
+  let weights = {
+    normal: 0.15,
+    studentT: 0.25,  // Higher weight - better for fat tails
+    bootstrap: bootstrapResult.confidence === 'high' ? 0.35 : bootstrapResult.confidence === 'medium' ? 0.25 : 0.10,
+    historical: crossingAnalysis.reliable ? 0.25 : 0.10
+  };
+
+  // Normalize weights
+  const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0);
+  Object.keys(weights).forEach(k => weights[k] /= totalWeight);
+
+  // Calculate raw ensemble probability
+  let ensembleProbAbove =
+    weights.normal * normalProbAbove +
+    weights.studentT * tProbAbove +
+    weights.bootstrap * bootstrapProbAbove +
+    weights.historical * (isAboveTarget ? historicalProbStay : 1 - historicalProbStay);
+
+  // Apply momentum adjustment
+  ensembleProbAbove = Math.max(0.05, Math.min(0.95, ensembleProbAbove + momentumAdjust));
+
+  // CRITICAL: Apply uncertainty discount
+  // The further our probability is from 50%, the more we should be skeptical
+  // Pull extreme probabilities back toward 50%
+  const uncertaintyFactor = 0.85; // 15% shrinkage toward 50%
+  ensembleProbAbove = 0.5 + (ensembleProbAbove - 0.5) * uncertaintyFactor;
+
+  // Additional conservatism based on data quality
+  const dataQualityFactor = Math.min(1, allHistory.length / 100);
+  ensembleProbAbove = 0.5 + (ensembleProbAbove - 0.5) * (0.7 + 0.3 * dataQualityFactor);
+
+  // HARD CAPS: Never claim more than 80% probability either way
+  // Markets are unpredictable, especially crypto
+  const MAX_PROB = 0.80;
+  const MIN_PROB = 0.20;
+  ensembleProbAbove = Math.max(MIN_PROB, Math.min(MAX_PROB, ensembleProbAbove));
+
+  const ensembleProbBelow = 1 - ensembleProbAbove;
+
+  // Calculate confidence score (how much we trust our estimate)
+  const confidenceScore = Math.min(0.9,
+    0.3 + // Base
+    (allHistory.length / 150) * 0.2 + // Data quality
+    (volData.confidence === 'high' ? 0.15 : 0.05) + // Volatility confidence
+    (bootstrapResult.confidence === 'high' ? 0.15 : 0.05) + // Bootstrap confidence
+    (crossingAnalysis.reliable ? 0.1 : 0)
+  );
+
+  return {
+    probAbove: ensembleProbAbove,
+    probBelow: ensembleProbBelow,
+    confidence: confidenceScore,
+    zScore,
+    volatility,
+    adjustedVolatility: adjustedVol,
+    momentum,
+    tailRisk,
+    methods: {
+      normal: normalProbAbove,
+      studentT: tProbAbove,
+      bootstrap: bootstrapProbAbove,
+      historical: historicalProbStay,
+      weights
+    },
+    dataQuality: {
+      historyLength: allHistory.length,
+      volConfidence: volData.confidence,
+      bootstrapConfidence: bootstrapResult.confidence,
+      historicalReliable: crossingAnalysis.reliable
+    },
+    // Debug info
+    pctFromTarget,
+    timeRemaining: expiryMinutes,
+    dataPoints: allHistory.length
+  };
+}
+
+// ============================================
 // TIME-OF-DAY FACTORS (S&P 500)
 // ============================================
 
@@ -920,109 +1272,31 @@ function analyzeHistoricalCrossings(history, currentPrice, targetPrice, windowMi
 
 // Main statistical prediction function
 // Returns probability that price will be above/below target at expiry
+// NOW USES ENSEMBLE METHOD for more accurate, conservative estimates
 function predictOutcome(token, currentPrice, targetPrice, expiryMinutes = 15) {
-  const history = cryptoPrices[token]?.history || [];
-  const extHistory = priceHistoryExtended[token] || [];
+  // Use the new ensemble probability estimator
+  const ensemble = calculateEnsembleProbability(token, currentPrice, targetPrice, expiryMinutes);
 
-  // Combine histories for analysis
-  const allHistory = [...extHistory, ...history].sort((a, b) => a.time - b.time);
-
-  // 1. Calculate volatility-based probability (baseline)
-  const volatility = cryptoPrices[token]?.volatility || 0.025;
-
-  // KEY INSIGHT: Scale volatility by time remaining
-  // Less time = less chance for price to move = current position more likely to hold
-  // sqrt(time) scaling because volatility scales with sqrt of time
-  const timeScaleFactor = Math.sqrt(expiryMinutes / 15);  // 1.0 at 15min, 0.58 at 5min, 0.41 at 2.5min
-  const adjustedVolatility = volatility * timeScaleFactor;
-
-  const pctFromTarget = (currentPrice - targetPrice) / targetPrice;
-  // How many "adjusted standard deviations" away is the current price?
-  const zScore = pctFromTarget / adjustedVolatility;
-
-  // Base probability from normal distribution
-  // Higher z-score = more likely to stay on current side
-  let probAbove = normalCDF(zScore);
-  let probBelow = 1 - probAbove;
-
-  // 2. TIME DECAY BOOST
-  // If price has moved significantly AND little time remains, boost confidence
-  // E.g., price 2% above strike with only 3 minutes left = very likely to stay above
-  const timeRemainingRatio = expiryMinutes / 15;  // 1.0 at start, 0.2 at 3min left
-  const priceDistanceRatio = Math.abs(pctFromTarget) / adjustedVolatility;
-
-  if (priceDistanceRatio > 0.5 && timeRemainingRatio < 0.5) {
-    // Price has moved AND time is running out
-    // Boost the probability of staying on current side
-    const timeDecayBoost = (1 - timeRemainingRatio) * 0.15;  // Up to +15% at expiry
-
-    if (currentPrice > targetPrice) {
-      probAbove = Math.min(0.95, probAbove + timeDecayBoost);
-      probBelow = 1 - probAbove;
-    } else {
-      probBelow = Math.min(0.95, probBelow + timeDecayBoost);
-      probAbove = 1 - probBelow;
-    }
-  }
-
-  // 3. Adjust for momentum
-  const momentum = calculateMomentum(allHistory, 5);
-
-  // Momentum adjustment: if trending in a direction, boost that side
-  let momentumAdjustment = 0;
-  if (momentum.strength === 'strong') {
-    momentumAdjustment = momentum.trend > 0 ? 0.10 : -0.10;  // ±10%
-  } else if (momentum.strength === 'moderate') {
-    momentumAdjustment = momentum.trend > 0 ? 0.05 : -0.05;  // ±5%
-  }
-
-  probAbove = Math.max(0.05, Math.min(0.95, probAbove + momentumAdjustment));
-  probBelow = 1 - probAbove;
-
-  // 4. Check historical crossing data
-  const crossingAnalysis = analyzeHistoricalCrossings(allHistory, currentPrice, targetPrice, expiryMinutes);
-
-  if (crossingAnalysis.reliable) {
-    // Blend with historical data (weight: 30% historical, 70% model)
-    const historicalProbCross = crossingAnalysis.crossingProb;
-
-    if (currentPrice > targetPrice) {
-      const blendedProbBelow = 0.3 * historicalProbCross + 0.7 * probBelow;
-      probBelow = blendedProbBelow;
-      probAbove = 1 - probBelow;
-    } else {
-      const blendedProbAbove = 0.3 * historicalProbCross + 0.7 * probAbove;
-      probAbove = blendedProbAbove;
-      probBelow = 1 - probAbove;
-    }
-  }
-
-  // 5. Calculate confidence based on data quality AND time remaining
-  // More confident when: more data, strong momentum, less time remaining
-  const timeConfidenceBoost = (1 - timeRemainingRatio) * 0.2;  // Up to +20% confidence near expiry
-  const confidence = Math.min(0.95,
-    0.4 +  // Base confidence
-    (allHistory.length / 200) * 0.2 +  // Data quality
-    (momentum.strength === 'strong' ? 0.15 : momentum.strength === 'moderate' ? 0.08 : 0) +
-    timeConfidenceBoost
-  );
-
+  // For backwards compatibility, also return legacy fields
   return {
-    probAbove,
-    probBelow,
-    momentum,
-    volatility,
-    adjustedVolatility,
-    zScore,
-    confidence,
+    probAbove: ensemble.probAbove,
+    probBelow: ensemble.probBelow,
+    momentum: ensemble.momentum,
+    volatility: ensemble.volatility,
+    adjustedVolatility: ensemble.adjustedVolatility,
+    zScore: ensemble.zScore,
+    confidence: ensemble.confidence,
     timeRemaining: expiryMinutes,
-    dataPoints: allHistory.length,
+    dataPoints: ensemble.dataPoints,
     analysis: {
-      method: crossingAnalysis.reliable ? 'historical+model' : 'model',
-      momentumDirection: momentum.direction,
-      momentumStrength: momentum.strength,
-      timeDecayApplied: priceDistanceRatio > 0.5 && timeRemainingRatio < 0.5
-    }
+      method: 'ensemble',
+      momentumDirection: ensemble.momentum.direction,
+      momentumStrength: ensemble.momentum.strength,
+      methods: ensemble.methods,
+      tailRisk: ensemble.tailRisk
+    },
+    // New detailed data
+    ensemble
   };
 }
 

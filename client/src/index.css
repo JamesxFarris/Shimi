@@ -3150,3 +3150,104 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* ============================================
+   DOLLAR STEPPER COMPONENT
+   ============================================ */
+
+.dollar-stepper {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.stepper-label {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.stepper-controls {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.stepper-btn {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-elevated);
+  border: none;
+  color: var(--neon-cyan);
+  font-size: 20px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.stepper-btn:hover:not(:disabled) {
+  background: rgba(0, 240, 255, 0.15);
+  color: #fff;
+}
+
+.stepper-btn:active:not(:disabled) {
+  background: rgba(0, 240, 255, 0.25);
+}
+
+.stepper-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.stepper-btn.minus {
+  border-right: 1px solid var(--border-color);
+}
+
+.stepper-btn.plus {
+  border-left: 1px solid var(--border-color);
+}
+
+.stepper-value {
+  flex: 1;
+  text-align: center;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--neon-green);
+  padding: 8px 12px;
+  min-width: 60px;
+}
+
+/* Token limits grid with steppers */
+.token-limits-grid .dollar-stepper {
+  background: var(--bg-card);
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+}
+
+.token-limits-grid .stepper-label {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--neon-cyan);
+  text-align: center;
+}
+
+.token-limits-grid .stepper-controls {
+  margin-top: 6px;
+}
+
+.token-limits-grid .stepper-value {
+  font-size: 16px;
+}
