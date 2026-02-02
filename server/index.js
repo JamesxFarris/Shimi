@@ -2561,6 +2561,16 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       portfolio.balance = balanceData.balance || 0;
       config.bankroll = portfolio.balance;
 
+      // Refresh positions for accurate risk calculation
+      try {
+        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
+        portfolio.positions = posData.positions || [];
+      } catch (e) {
+        console.log('Could not refresh positions after auto-bet:', e.message);
+      }
+
+      const currentRisk = getCurrentRiskFromPortfolio();
+
       res.json({
         success: true,
         filled: filledCount,
@@ -2568,7 +2578,15 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
         avgPrice: betRecord.avgPrice,
         bet: betRecord,
         opportunity: best,
-        newBalance: portfolio.balance / 100
+        newBalance: portfolio.balance / 100,
+        risk: {
+          current: currentRisk,
+          max: MAX_TOTAL_RISK_CENTS,
+          remaining: getRemainingRiskBudget(),
+          currentDollars: (currentRisk / 100).toFixed(2),
+          maxDollars: (MAX_TOTAL_RISK_CENTS / 100).toFixed(2),
+          remainingDollars: (getRemainingRiskBudget() / 100).toFixed(2)
+        }
       });
     } catch (orderError) {
       console.error('Kalshi auto-bet order error:', orderError.message);

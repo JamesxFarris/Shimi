@@ -497,6 +497,10 @@ function App() {
 
       if (data.success && data.bet) {
         setBalance(data.newBalance)
+        // Update risk if returned
+        if (data.risk) {
+          setRisk(data.risk)
+        }
         setBetStatus({
           type: 'success',
           message: `Bet placed: ${data.bet.side.toUpperCase()} on ${data.bet.assetType || data.bet.cryptoType || 'market'}${data.simulated ? ' (simulated)' : ''}`
@@ -526,7 +530,7 @@ function App() {
       const res = await fetch(`${API_BASE}/api/crypto/auto-bet/toggle`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: !autoBetEnabled, intervalSeconds: 15 })
+        body: JSON.stringify({ enabled: !autoBetEnabled, intervalSeconds: 10 })
       })
       const data = await res.json()
       if (data.success) setAutoBetEnabled(data.enabled)
