@@ -35,7 +35,7 @@ let config = {
   isAuthenticated: false,
   bankroll: 1000, // cents ($10.00)
   maxBetPercent: 15,
-  minEdge: 5, // 5% minimum - model has uncertainty, need buffer
+  minEdge: 3, // 3% minimum - lowered for more action
   autoBetEnabled: false,
   // Risk management settings (in cents) - AGGRESSIVE MODE
   riskLimits: {
@@ -1203,30 +1203,51 @@ function getMomentumBetSignal(token) {
   const ret3 = ((latestPrice - price3min) / price3min) * 100;
   const ret5 = ((latestPrice - price5min) / price5min) * 100;
 
-  // Check for aligned momentum (all timeframes agree)
-  const allUp = ret1 > 0.03 && ret2 > 0.05 && ret3 > 0.08;
-  const allDown = ret1 < -0.03 && ret2 < -0.05 && ret3 < -0.08;
+  // Check for aligned momentum (all timeframes agree) - LOOSENED for more action
+  const allUp = ret1 > 0.01 && ret2 > 0.02 && ret3 > 0.03;
+  const allDown = ret1 < -0.01 && ret2 < -0.02 && ret3 < -0.03;
 
-  // Strong signal: aligned + meaningful move
-  if (allUp && ret3 >= 0.12) {
-    const confidence = ret3 >= 0.25 ? 'very_high' : ret3 >= 0.18 ? 'high' : 'medium';
+  // Strong signal: aligned + meaningful move (lowered thresholds)
+  if (allUp && ret3 >= 0.05) {
+    const confidence = ret3 >= 0.15 ? 'very_high' : ret3 >= 0.08 ? 'high' : 'medium';
     return {
       shouldBet: true,
       side: 'YES',
       confidence,
       momentum: { ret1, ret2, ret3, ret5 },
-      reason: `Strong UP momentum: ${ret3.toFixed(2)}% in 3min`
+      reason: `UP momentum: ${ret3.toFixed(2)}% in 3min`
     };
   }
 
-  if (allDown && ret3 <= -0.12) {
-    const confidence = ret3 <= -0.25 ? 'very_high' : ret3 <= -0.18 ? 'high' : 'medium';
+  if (allDown && ret3 <= -0.05) {
+    const confidence = ret3 <= -0.15 ? 'very_high' : ret3 <= -0.08 ? 'high' : 'medium';
     return {
       shouldBet: true,
       side: 'NO',
       confidence,
       momentum: { ret1, ret2, ret3, ret5 },
-      reason: `Strong DOWN momentum: ${ret3.toFixed(2)}% in 3min`
+      reason: `DOWN momentum: ${ret3.toFixed(2)}% in 3min`
+    };
+  }
+
+  // WEAKER signal: just 2-minute alignment (more trades, slightly lower quality)
+  if (ret1 > 0.02 && ret2 > 0.03) {
+    return {
+      shouldBet: true,
+      side: 'YES',
+      confidence: 'medium',
+      momentum: { ret1, ret2, ret3, ret5 },
+      reason: `Short UP trend: ${ret2.toFixed(2)}% in 2min`
+    };
+  }
+
+  if (ret1 < -0.02 && ret2 < -0.03) {
+    return {
+      shouldBet: true,
+      side: 'NO',
+      confidence: 'medium',
+      momentum: { ret1, ret2, ret3, ret5 },
+      reason: `Short DOWN trend: ${ret2.toFixed(2)}% in 2min`
     };
   }
 
@@ -1235,7 +1256,7 @@ function getMomentumBetSignal(token) {
     shouldBet: false,
     side: null,
     momentum: { ret1, ret2, ret3, ret5 },
-    reason: `No aligned momentum (1m:${ret1.toFixed(2)}% 3m:${ret3.toFixed(2)}%)`
+    reason: `No momentum (1m:${ret1.toFixed(2)}% 2m:${ret2.toFixed(2)}%)`
   };
 }
 
@@ -2748,12 +2769,69 @@ function analyzeCryptoMarket(parsed) {
   // Get MOMENTUM SIGNAL - this is our edge
   const signal = getMomentumBetSignal(parsed.cryptoType);
 
-  // If no momentum signal, check if we should still analyze based on price position
+  // If no momentum signal, try PRICE POSITION strategy
+  // If price is already far from strike, bet on continuation
   if (!signal.shouldBet) {
-    // Still return opportunity for display, but mark as low confidence
     const yesPrice = parsed.yesAsk || 0.5;
     const noPrice = parsed.noAsk || 0.5;
+    const strikePrice = parsed.strikePrice || currentPrice;
+    const pctFromStrike = ((currentPrice - strikePrice) / strikePrice) * 100;
 
+    // PRICE POSITION STRATEGY: If price is >0.1% from strike, bet on that side
+    // The further from strike + less time = higher confidence
+    if (Math.abs(pctFromStrike) >= 0.1 && timeMinutes <= 10) {
+      const positionSide = pctFromStrike > 0 ? 'YES' : 'NO';
+      const positionPrice = positionSide === 'YES' ? yesPrice : noPrice;
+      const positionPriceCents = Math.round(positionPrice * 100);
+
+      // Confidence based on distance from strike
+      let positionConfidence = 'medium';
+      let winProb = 55;
+      if (Math.abs(pctFromStrike) >= 0.25) {
+        positionConfidence = 'high';
+        winProb = 60;
+      }
+      if (Math.abs(pctFromStrike) >= 0.4) {
+        positionConfidence = 'very_high';
+        winProb = 65;
+      }
+      // Time bonus: less time = more confidence price stays
+      if (timeMinutes <= 5) winProb += 3;
+      if (timeMinutes <= 3) winProb += 2;
+
+      const positionEdge = winProb - positionPriceCents;
+
+      // Only bet if we have positive edge
+      if (positionEdge >= 3) {
+        return {
+          ticker: parsed.ticker,
+          title: parsed.title,
+          cryptoType: parsed.cryptoType,
+          assetType: parsed.cryptoType,
+          marketType: parsed.marketType,
+          currentPrice,
+          strikePrice,
+          pctFromStrike: pctFromStrike.toFixed(2),
+          timeRemaining: parsed.timeRemaining,
+          timeRemainingMinutes: timeMinutes,
+          timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining),
+          yesAsk: yesPrice,
+          noAsk: noPrice,
+          betPriceCents: positionPriceCents,
+          betSide: positionSide,
+          betPrice: positionPrice,
+          winProbability: winProb.toFixed(1),
+          edge: positionEdge.toFixed(1),
+          expectedValue: ((winProb / 100) * (100 - positionPriceCents) - ((100 - winProb) / 100) * positionPriceCents).toFixed(2),
+          isRecommended: true,
+          confidence: positionConfidence,
+          momentumSignal: { ...signal, positionBased: true },
+          reason: `Price ${pctFromStrike > 0 ? 'above' : 'below'} strike by ${Math.abs(pctFromStrike).toFixed(2)}%`
+        };
+      }
+    }
+
+    // No position-based bet either
     return {
       ticker: parsed.ticker,
       title: parsed.title,
@@ -2843,7 +2921,7 @@ function analyzeCryptoMarket(parsed) {
     winProbability: winProbability.toFixed(1),
     edge: edge,
     expectedValue: ev.toFixed(2),
-    isRecommended: edge >= 5,
+    isRecommended: edge >= 3,
     momentumSignal: signal,
     shortMomentum: signal.momentum,
     hasStrongMomentumSignal: true,
