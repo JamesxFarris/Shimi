@@ -4641,20 +4641,27 @@ app.get('/api/portfolio', async (req, res) => {
         // Transform fills into our bet history format
         realBetHistory = fills.map(fill => {
           const count = fill.count || 1;
-          // Kalshi API can return price in different formats:
-          // - As cents (0-100): e.g., 10 = 10 cents
-          // - As decimal probability (0-1): e.g., 0.10 = 10 cents
-          // We need to normalize to cents
-          let priceCents = fill.price || 0;
-          if (priceCents > 0 && priceCents <= 1) {
+          const side = fill.side?.toLowerCase();
+
+          // Kalshi API returns the YES price in fill.price
+          // If you bought NO, you actually paid (100 - yes_price)
+          let yesPriceCents = fill.price || 0;
+          if (yesPriceCents > 0 && yesPriceCents <= 1) {
             // Price is a decimal probability, convert to cents
-            priceCents = Math.round(priceCents * 100);
+            yesPriceCents = Math.round(yesPriceCents * 100);
           }
+
+          // Calculate actual price paid based on which side was bought
+          // NO costs (100 - YES price), YES costs the YES price
+          const priceCents = side === 'no' ? (100 - yesPriceCents) : yesPriceCents;
+
           // Total cost = number of contracts × price per contract (in cents)
           const totalCost = count * priceCents;
 
-          // Debug logging disabled for performance
-          // console.log(`Fill: ${fill.ticker} | count=${count} | price=${fill.price} | priceCents=${priceCents} | totalCost=${totalCost}`);
+          // Debug: log to verify correct pricing
+          if (side === 'no') {
+            console.log(`Fill NO: ${fill.ticker} | YES price=${yesPriceCents}¢ | NO price=${priceCents}¢ | count=${count} | totalCost=${totalCost}¢`);
+          }
 
           return {
             id: fill.trade_id || fill.fill_id || Date.now().toString(),
