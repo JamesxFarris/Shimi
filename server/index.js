@@ -1089,15 +1089,15 @@ function calculateEnsembleProbability(token, currentPrice, targetPrice, expiryMi
   // Apply momentum adjustment
   ensembleProbAbove = Math.max(0.05, Math.min(0.95, ensembleProbAbove + momentumAdjust));
 
-  // CRITICAL: Apply uncertainty discount
-  // The further our probability is from 50%, the more we should be skeptical
-  // Pull extreme probabilities back toward 50%
-  const uncertaintyFactor = 0.85; // 15% shrinkage toward 50%
+  // Apply uncertainty discount - pull extreme probabilities toward 50%
+  // Reduced from 15% to 10% shrinkage to allow more betting opportunities
+  const uncertaintyFactor = 0.90; // 10% shrinkage toward 50%
   ensembleProbAbove = 0.5 + (ensembleProbAbove - 0.5) * uncertaintyFactor;
 
-  // Additional conservatism based on data quality
+  // Data quality adjustment - less aggressive shrinkage
+  // With 50 data points: factor = 0.85, with 100+: factor = 0.95
   const dataQualityFactor = Math.min(1, allHistory.length / 100);
-  ensembleProbAbove = 0.5 + (ensembleProbAbove - 0.5) * (0.7 + 0.3 * dataQualityFactor);
+  ensembleProbAbove = 0.5 + (ensembleProbAbove - 0.5) * (0.80 + 0.15 * dataQualityFactor);
 
   // HARD CAPS: Never claim more than 80% probability either way
   // Markets are unpredictable, especially crypto
@@ -3261,6 +3261,19 @@ async function runAutoBet() {
 
     console.log(`   Analyzed: ${allOpps.length} valid | ${withEdge.length} with edge | ${above50.length} >50% | ${above60.length} >60%`);
 
+    // Show probability distribution for debugging
+    const probBuckets = { '50-55': 0, '55-60': 0, '60-65': 0, '65-70': 0, '70-75': 0, '75-80': 0 };
+    allOpps.forEach(m => {
+      const prob = parseFloat(m.winProbability) || 0;
+      if (prob >= 75) probBuckets['75-80']++;
+      else if (prob >= 70) probBuckets['70-75']++;
+      else if (prob >= 65) probBuckets['65-70']++;
+      else if (prob >= 60) probBuckets['60-65']++;
+      else if (prob >= 55) probBuckets['55-60']++;
+      else if (prob >= 50) probBuckets['50-55']++;
+    });
+    console.log(`   Probability distribution: ${JSON.stringify(probBuckets)}`);
+
     // Combine and filter
     const opportunities = [...cryptoOpps, ...indexOpps]
       .filter(m => {
@@ -3287,6 +3300,14 @@ async function runAutoBet() {
 
     const highConfCount = opportunities.filter(o => parseFloat(o.winProbability) >= 70).length;
     console.log(`   Final: ${opportunities.length} opportunities (${highConfCount} above 70%)`);
+
+    // Show top opportunities
+    if (opportunities.length > 0) {
+      console.log(`   🎯 Top opportunities:`);
+      opportunities.slice(0, 3).forEach(m => {
+        console.log(`      - ${m.title}: ${m.winProbability}% @ ${m.betPriceCents}¢ (${m.betSide}, edge +${m.edge.toFixed(1)}%)`);
+      });
+    }
 
     // Show markets approaching the threshold (55-59%)
     const approaching = allOpps.filter(m => {
