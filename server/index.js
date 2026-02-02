@@ -3368,7 +3368,7 @@ app.post('/api/bet', async (req, res) => {
         strikePrice: market.strikePrice,
         currentPrice: market.currentPrice,
         expiryTime: market.expiry || market.close_time,
-        marketType: isHourlyMarket(ticker) ? 'hourly' : ticker?.includes('15M') ? '15min' : 'daily'
+        marketType: ticker?.includes('15M') ? '15min' : 'daily'
       });
 
       return res.json({
@@ -3455,7 +3455,7 @@ app.post('/api/bet', async (req, res) => {
         strikePrice: market.strikePrice,
         currentPrice: market.currentPrice,
         expiryTime: market.expiry || market.close_time,
-        marketType: isHourlyMarket(ticker) ? 'hourly' : ticker?.includes('15M') ? '15min' : 'daily'
+        marketType: ticker?.includes('15M') ? '15min' : 'daily'
       });
 
       const balanceData = await kalshiRequest('GET', '/portfolio/balance');
@@ -3665,7 +3665,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
         token: best.assetType || best.cryptoType || getTokenFromTicker(best.ticker),
         predictedProb: parseFloat(best.winProbability),
         marketPrice: priceCents,
-        marketType: isHourlyMarket(best.ticker) ? 'hourly' : best.ticker?.includes('15M') ? '15min' : 'daily',
+        marketType: best.ticker?.includes('15M') ? '15min' : 'daily',
         expiryTime: best.expiry || best.close_time
       });
 
@@ -3752,7 +3752,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
         token: best.assetType || best.cryptoType || getTokenFromTicker(best.ticker),
         predictedProb: parseFloat(best.winProbability),
         marketPrice: betRecord.avgPrice,
-        marketType: isHourlyMarket(best.ticker) ? 'hourly' : best.ticker?.includes('15M') ? '15min' : 'daily',
+        marketType: best.ticker?.includes('15M') ? '15min' : 'daily',
         expiryTime: best.expiry || best.close_time
       });
 
@@ -4098,7 +4098,7 @@ async function runAutoBet() {
           marketPrice: priceCents,
           strikePrice: opp.strikePrice,
           currentPrice: opp.currentPrice,
-          marketType: isHourly ? 'hourly' : opp.ticker?.includes('15M') ? '15min' : 'daily',
+          marketType: opp.ticker?.includes('15M') ? '15min' : 'daily',
           expiryTime: opp.expiry || opp.close_time
         });
 
@@ -4108,30 +4108,61 @@ async function runAutoBet() {
         betResults.push({ ticker: opp.ticker, side: opp.betSide, count, price: priceCents, edge: opp.edge });
 
       } else {
-        // Real bet - check orderbook for liquidity first
+        // Real bet - check orderbook for liquidity, flip sides if needed
         try {
-          // Fetch orderbook to verify liquidity
-          let hasLiquidity = true;
+          let finalSide = opp.betSide.toLowerCase();
           let bestAsk = priceCents;
+          let hasLiquidity = false;
+          let flippedSide = false;
+
           try {
             const orderbook = await kalshiRequest('GET', `/markets/${opp.ticker}/orderbook`);
-            const side = opp.betSide.toLowerCase();
-            // For buying YES, check YES asks. For buying NO, check NO asks.
-            const asks = side === 'yes' ? orderbook.yes : orderbook.no;
-            if (!asks || asks.length === 0 || !asks[0] || asks[0][1] === 0) {
-              hasLiquidity = false;
-              console.log(`   ⚠️ ${tokenName}: No orderbook liquidity for ${side.toUpperCase()}`);
-            } else {
-              // asks[0] = [price, quantity] - best ask
-              bestAsk = asks[0][0];
-              const availableQty = asks[0][1];
+
+            // Check preferred side first
+            const preferredAsks = finalSide === 'yes' ? orderbook.yes : orderbook.no;
+            if (preferredAsks && preferredAsks.length > 0 && preferredAsks[0] && preferredAsks[0][1] > 0) {
+              hasLiquidity = true;
+              bestAsk = preferredAsks[0][0];
+              const availableQty = preferredAsks[0][1];
               if (availableQty < count) {
                 console.log(`   ⚠️ ${tokenName}: Partial liquidity (${availableQty} available, need ${count})`);
+              }
+            } else {
+              // No liquidity on preferred side - check opposite side
+              const oppositeSide = finalSide === 'yes' ? 'no' : 'yes';
+              const oppositeAsks = oppositeSide === 'yes' ? orderbook.yes : orderbook.no;
+
+              if (oppositeAsks && oppositeAsks.length > 0 && oppositeAsks[0] && oppositeAsks[0][1] > 0) {
+                const oppositePrice = oppositeAsks[0][0];
+                // Our probability for the opposite side
+                const oppositeProb = 100 - winProb;
+                // Edge on opposite side = our prob - market implied prob
+                const oppositeEdge = oppositeProb - oppositePrice;
+
+                if (oppositeEdge >= 5) {
+                  // Good edge on opposite side - flip!
+                  console.log(`   🔄 ${tokenName}: Flipping ${finalSide.toUpperCase()}→${oppositeSide.toUpperCase()} (edge: +${oppositeEdge.toFixed(1)}%)`);
+                  finalSide = oppositeSide;
+                  bestAsk = oppositePrice;
+                  hasLiquidity = true;
+                  flippedSide = true;
+                  // Update bet record with flipped info
+                  betRecord.side = finalSide;
+                  betRecord.flipped = true;
+                  betRecord.originalSide = opp.betSide.toLowerCase();
+                  betRecord.edge = oppositeEdge;
+                  betRecord.winProbability = oppositeProb.toFixed(1);
+                } else {
+                  console.log(`   ⚠️ ${tokenName}: No liquidity for ${finalSide.toUpperCase()}, opposite edge too low (${oppositeEdge.toFixed(1)}%)`);
+                }
+              } else {
+                console.log(`   ⚠️ ${tokenName}: No liquidity on either side`);
               }
             }
           } catch (obErr) {
             // Orderbook fetch failed, proceed with original price
             console.log(`   ℹ️ ${tokenName}: Orderbook unavailable, using market price`);
+            hasLiquidity = true; // Try anyway
           }
 
           if (!hasLiquidity) {
@@ -4145,12 +4176,12 @@ async function runAutoBet() {
           const orderRequest = {
             ticker: opp.ticker,
             action: 'buy',
-            side: opp.betSide.toLowerCase(),
+            side: finalSide,
             type: 'limit',
             count
           };
 
-          if (opp.betSide.toLowerCase() === 'yes') {
+          if (finalSide === 'yes') {
             orderRequest.yes_price = fillPrice;
           } else {
             orderRequest.no_price = fillPrice;
@@ -4172,18 +4203,19 @@ async function runAutoBet() {
               ...betRecord,
               count: filledCount,
               token: tokenName,
-              predictedProb: winProb,
+              predictedProb: betRecord.winProbability || winProb,
               marketPrice: betRecord.avgPrice,
               strikePrice: opp.strikePrice,
               currentPrice: opp.currentPrice,
-              marketType: isHourly ? 'hourly' : opp.ticker?.includes('15M') ? '15min' : 'daily',
+              marketType: opp.ticker?.includes('15M') ? '15min' : 'daily',
               expiryTime: opp.expiry || opp.close_time
             });
 
-            console.log(`   ✅ REAL: ${opp.betSide} ${tokenName} ${filledCount}x@${betRecord.avgPrice}¢ | Edge:+${opp.edge.toFixed(1)}%`);
+            const flipNote = betRecord.flipped ? ' (flipped)' : '';
+            console.log(`   ✅ REAL: ${betRecord.side.toUpperCase()} ${tokenName} ${filledCount}x@${betRecord.avgPrice}¢ | Edge:+${betRecord.edge.toFixed(1)}%${flipNote}`);
             betsPlaced++;
             totalBetAmount += betRecord.totalCost;
-            betResults.push({ ticker: opp.ticker, side: opp.betSide, count: filledCount, price: betRecord.avgPrice, edge: opp.edge });
+            betResults.push({ ticker: opp.ticker, side: betRecord.side, count: filledCount, price: betRecord.avgPrice, edge: betRecord.edge, flipped: betRecord.flipped });
           } else {
             console.log(`   ❌ ${tokenName}: No fill`);
             recentBets.delete(opp.ticker);
