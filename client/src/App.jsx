@@ -896,9 +896,9 @@ function App() {
                       <span>Qualifying: {scanStatus.lastScan.above60}</span>
                       <span className={`scan-result ${scanStatus.lastScan.betPlaced ? 'bet-placed' : scanStatus.lastScan.blockedReason || 'waiting'}`}>
                         {scanStatus.lastScan.betPlaced ? 'Bet Placed' :
-                         scanStatus.lastScan.blockedReason === 'no_opportunities' ? 'No 60%+ opps' :
-                         scanStatus.lastScan.blockedReason === 'risk_limit' ? 'Risk limit hit' :
-                         scanStatus.lastScan.blockedReason === 'token_limit' ? 'Token limit hit' :
+                         scanStatus.lastScan.blockedReason === 'no_opportunities' ? 'Waiting' :
+                         scanStatus.lastScan.blockedReason === 'risk_limit' ? 'Risk limit' :
+                         scanStatus.lastScan.blockedReason === 'token_limit' ? 'Token limit' :
                          scanStatus.lastScan.blockedReason === 'error' ? 'Error' :
                          'Scanning...'}
                       </span>
