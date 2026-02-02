@@ -1099,10 +1099,40 @@ function calculateEnsembleProbability(token, currentPrice, targetPrice, expiryMi
   const dataQualityFactor = Math.min(1, allHistory.length / 100);
   ensembleProbAbove = 0.5 + (ensembleProbAbove - 0.5) * (0.80 + 0.15 * dataQualityFactor);
 
-  // HARD CAPS: Never claim more than 80% probability either way
-  // Markets are unpredictable, especially crypto
-  const MAX_PROB = 0.80;
-  const MIN_PROB = 0.20;
+  // DYNAMIC CAPS: Allow higher confidence when conditions are very favorable
+  // Base cap is 80%, but can increase to 92% for "obvious" situations
+  let MAX_PROB = 0.80;
+  let MIN_PROB = 0.20;
+
+  // Check for "obvious bet" conditions that warrant higher confidence
+  const absDistanceFromStrike = Math.abs(pctFromTarget);
+  const methodsAgree = Math.abs(normalProbAbove - tProbAbove) < 0.10 &&
+                       Math.abs(normalProbAbove - bootstrapProbAbove) < 0.15;
+  const strongMomentum = Math.abs(momentum.score) > 0.02;
+  const momentumSupportsPosition = (isAboveTarget && momentum.direction === 'bullish') ||
+                                    (!isAboveTarget && momentum.direction === 'bearish');
+
+  // Increase cap for short time + large buffer + agreement
+  if (expiryMinutes <= 10 && absDistanceFromStrike >= 0.5 && methodsAgree) {
+    // Very short time, price well past strike, models agree
+    if (expiryMinutes <= 5 && absDistanceFromStrike >= 1.0) {
+      MAX_PROB = 0.92; // Allow up to 92% for obvious situations
+      MIN_PROB = 0.08;
+    } else if (expiryMinutes <= 7 && absDistanceFromStrike >= 0.75) {
+      MAX_PROB = 0.88;
+      MIN_PROB = 0.12;
+    } else {
+      MAX_PROB = 0.85;
+      MIN_PROB = 0.15;
+    }
+
+    // Bonus if momentum also supports the position
+    if (strongMomentum && momentumSupportsPosition) {
+      MAX_PROB = Math.min(0.94, MAX_PROB + 0.03);
+      MIN_PROB = Math.max(0.06, MIN_PROB - 0.03);
+    }
+  }
+
   ensembleProbAbove = Math.max(MIN_PROB, Math.min(MAX_PROB, ensembleProbAbove));
 
   const ensembleProbBelow = 1 - ensembleProbAbove;
@@ -1116,10 +1146,15 @@ function calculateEnsembleProbability(token, currentPrice, targetPrice, expiryMi
     (crossingAnalysis.reliable ? 0.1 : 0)
   );
 
+  // Track if this is an "obvious" high-confidence situation
+  const isObviousSituation = MAX_PROB > 0.80;
+
   return {
     probAbove: ensembleProbAbove,
     probBelow: ensembleProbBelow,
     confidence: confidenceScore,
+    isObviousBet: isObviousSituation,
+    maxProbAllowed: MAX_PROB,
     zScore,
     volatility,
     adjustedVolatility: adjustedVol,
@@ -2249,8 +2284,9 @@ function analyzeCryptoMarket(parsed) {
     expectedProfit: expectedProfit.toFixed(1),
     profitPotential,
     recommendedBet,
-    isObviousBet: isSafeBet,
+    isObviousBet: isSafeBet || (prediction.ensemble?.isObviousBet && bestBet.prob >= 0.75),
     isHighProb,
+    maxProbAllowed: prediction.ensemble?.maxProbAllowed || 0.80,
     // Statistical analysis info
     momentum: prediction.momentum.direction,
     momentumStrength: prediction.momentum.strength,
