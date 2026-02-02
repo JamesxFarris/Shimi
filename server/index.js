@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { parseStringPromise } from 'xml2js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -104,6 +105,427 @@ const recentBets = new Map();
 const AUTO_BET_MIN_EDGE = 3;      // 3% edge for auto (lower for safe bets)
 const MANUAL_BET_MIN_EDGE = 2;    // 2% edge for manual
 const OBVIOUS_BET_MIN_EDGE = 1;   // 1% edge OK if probability is >90% (free money)
+
+// ============================================
+// NEWS & SENTIMENT MONITORING CONFIGURATION
+// ============================================
+
+const NEWS_CONFIG = {
+  checkIntervalMs: 60000,   // Check RSS feeds every 60 seconds
+  urgencyThreshold: 10,     // Score needed to trigger alert
+  newsBoostMultiplier: 1.5, // How much to boost bets with aligned news
+  enableAutoTrade: true,    // Auto-trade on high-confidence news
+  maxNewsAge: 15 * 60 * 1000 // Only consider news from last 15 min
+};
+
+// RSS Feed URLs (all free, no API keys needed)
+const RSS_FEEDS = {
+  coindesk: 'https://www.coindesk.com/arc/outboundfeeds/rss/',
+  cointelegraph: 'https://cointelegraph.com/rss',
+  cnbc_markets: 'https://www.cnbc.com/id/10000664/device/rss/rss.html',
+  marketwatch: 'https://feeds.marketwatch.com/marketwatch/topstories/'
+};
+
+// Market-moving keywords for urgency detection
+const URGENT_KEYWORDS = {
+  crypto: {
+    bullish: [
+      'etf approved', 'sec approval', 'sec approves', 'institutional adoption',
+      'partnership announced', 'upgrade complete', 'halving', 'bullish',
+      'all-time high', 'ath', 'mass adoption', 'major investment',
+      'blackrock', 'fidelity', 'spot etf', 'regulatory clarity'
+    ],
+    bearish: [
+      'hack', 'hacked', 'exploit', 'exploited', 'sec lawsuit', 'sec sues',
+      'ban', 'banned', 'exchange collapse', 'rug pull', 'vulnerability',
+      'security breach', 'stolen', 'fraud', 'ponzi', 'investigation',
+      'regulatory crackdown', 'delisting', 'insolvency', 'bankruptcy'
+    ]
+  },
+  index: {
+    bullish: [
+      'rate cut', 'fed cuts', 'better than expected', 'beat estimates',
+      'beats expectations', 'strong jobs', 'employment surge', 'gdp growth',
+      'inflation falls', 'inflation drops', 'dovish', 'stimulus',
+      'economic recovery', 'consumer confidence'
+    ],
+    bearish: [
+      'rate hike', 'fed hikes', 'recession', 'missed estimates',
+      'misses expectations', 'layoffs', 'bank failure', 'banking crisis',
+      'inflation rises', 'inflation surges', 'hawkish', 'default',
+      'debt ceiling', 'unemployment rises', 'economic downturn'
+    ]
+  }
+};
+
+// News storage
+let newsCache = [];
+let seenArticles = new Set(); // Track seen articles by URL
+let recentAlerts = []; // Recent urgent news alerts
+let redditSentiment = { data: null, lastFetch: 0, ttl: 5 * 60 * 1000 }; // 5 min cache
+
+// ============================================
+// RSS FEED PARSING & NEWS FETCHING
+// ============================================
+
+async function fetchRssFeed(url, source) {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/rss+xml, application/xml, text/xml'
+      },
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      console.log(`RSS fetch failed for ${source}: ${res.status}`);
+      return [];
+    }
+
+    const xml = await res.text();
+    const result = await parseStringPromise(xml, { explicitArray: false });
+
+    // Handle different RSS formats
+    let items = [];
+    if (result.rss && result.rss.channel && result.rss.channel.item) {
+      items = Array.isArray(result.rss.channel.item)
+        ? result.rss.channel.item
+        : [result.rss.channel.item];
+    } else if (result.feed && result.feed.entry) {
+      // Atom format
+      items = Array.isArray(result.feed.entry)
+        ? result.feed.entry
+        : [result.feed.entry];
+    }
+
+    return items.map(item => ({
+      source,
+      title: item.title || item.title?._ || '',
+      link: item.link?.href || item.link || '',
+      pubDate: new Date(item.pubDate || item.published || item.updated || Date.now()),
+      description: item.description || item.summary || '',
+      raw: item
+    })).filter(item => item.title && item.link);
+
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      console.log(`RSS timeout for ${source}`);
+    } else {
+      console.log(`RSS error for ${source}: ${error.message}`);
+    }
+    return [];
+  }
+}
+
+async function fetchAllNews() {
+  const now = Date.now();
+  const allArticles = [];
+
+  // Fetch from all RSS feeds in parallel
+  const feedPromises = Object.entries(RSS_FEEDS).map(async ([source, url]) => {
+    const articles = await fetchRssFeed(url, source);
+    return articles;
+  });
+
+  const results = await Promise.all(feedPromises);
+  results.forEach(articles => allArticles.push(...articles));
+
+  // Process and dedupe articles
+  const newArticles = [];
+  for (const article of allArticles) {
+    // Skip if we've seen this article
+    if (seenArticles.has(article.link)) continue;
+
+    // Skip if article is too old
+    const articleAge = now - article.pubDate.getTime();
+    if (articleAge > 24 * 60 * 60 * 1000) continue; // Skip articles > 24h old
+
+    // Score the article for urgency
+    const urgency = scoreNewsUrgency(article.title, article.description);
+    article.urgency = urgency;
+
+    // Mark as seen
+    seenArticles.add(article.link);
+    newArticles.push(article);
+
+    // Check if this is urgent news
+    if (urgency.isUrgent) {
+      handleUrgentNews(article);
+    }
+  }
+
+  // Add new articles to cache (most recent first)
+  newsCache = [...newArticles, ...newsCache]
+    .sort((a, b) => b.pubDate.getTime() - a.pubDate.getTime())
+    .slice(0, 100); // Keep last 100 articles
+
+  // Clean up old seen articles (keep last 500)
+  if (seenArticles.size > 500) {
+    const articlesToKeep = [...seenArticles].slice(-500);
+    seenArticles = new Set(articlesToKeep);
+  }
+
+  console.log(`📰 News update: ${newArticles.length} new articles | Cache: ${newsCache.length}`);
+  return newArticles;
+}
+
+// Score news for urgency and direction
+function scoreNewsUrgency(headline, body = '') {
+  const text = (headline + ' ' + body).toLowerCase();
+  let score = 0;
+  let direction = 'neutral';
+  let matchedKeywords = [];
+  let assetType = null;
+
+  // Check crypto keywords
+  for (const keyword of URGENT_KEYWORDS.crypto.bullish) {
+    if (text.includes(keyword)) {
+      score += 10;
+      direction = 'bullish';
+      matchedKeywords.push(keyword);
+      assetType = 'crypto';
+    }
+  }
+  for (const keyword of URGENT_KEYWORDS.crypto.bearish) {
+    if (text.includes(keyword)) {
+      score += 10;
+      direction = direction === 'bullish' ? 'mixed' : 'bearish';
+      matchedKeywords.push(keyword);
+      assetType = 'crypto';
+    }
+  }
+
+  // Check index keywords
+  for (const keyword of URGENT_KEYWORDS.index.bullish) {
+    if (text.includes(keyword)) {
+      score += 8;
+      direction = direction === 'bearish' ? 'mixed' : 'bullish';
+      matchedKeywords.push(keyword);
+      assetType = assetType || 'index';
+    }
+  }
+  for (const keyword of URGENT_KEYWORDS.index.bearish) {
+    if (text.includes(keyword)) {
+      score += 8;
+      direction = direction === 'bullish' ? 'mixed' : 'bearish';
+      matchedKeywords.push(keyword);
+      assetType = assetType || 'index';
+    }
+  }
+
+  // Detect which tokens are mentioned
+  const mentionedTokens = [];
+  for (const token of Object.keys(TRACKED_TOKENS)) {
+    if (text.includes(token.toLowerCase()) ||
+        text.includes(TRACKED_TOKENS[token].name.toLowerCase())) {
+      mentionedTokens.push(token);
+    }
+  }
+
+  // S&P 500 mentions
+  if (text.includes('s&p') || text.includes('sp500') || text.includes('s&p 500') ||
+      text.includes('stock market') || text.includes('wall street')) {
+    assetType = 'index';
+    mentionedTokens.push('SPX');
+  }
+
+  return {
+    score,
+    direction,
+    isUrgent: score >= NEWS_CONFIG.urgencyThreshold,
+    matchedKeywords,
+    mentionedTokens,
+    assetType
+  };
+}
+
+// Handle urgent news - log alert and potentially trigger auto-bet
+async function handleUrgentNews(article) {
+  const alert = {
+    id: Date.now().toString(),
+    timestamp: new Date().toISOString(),
+    headline: article.title,
+    source: article.source,
+    link: article.link,
+    direction: article.urgency.direction,
+    score: article.urgency.score,
+    keywords: article.urgency.matchedKeywords,
+    tokens: article.urgency.mentionedTokens,
+    assetType: article.urgency.assetType,
+    acted: false
+  };
+
+  console.log(`\n🚨 URGENT NEWS ALERT 🚨`);
+  console.log(`   ${article.title}`);
+  console.log(`   Direction: ${alert.direction.toUpperCase()} | Score: ${alert.score}`);
+  console.log(`   Keywords: ${alert.keywords.join(', ')}`);
+  console.log(`   Tokens: ${alert.tokens.join(', ') || 'General market'}`);
+
+  // Add to recent alerts
+  recentAlerts.unshift(alert);
+  recentAlerts = recentAlerts.slice(0, 20); // Keep last 20 alerts
+
+  // If auto-trade is enabled and news is actionable, boost next bet
+  if (NEWS_CONFIG.enableAutoTrade && alert.direction !== 'mixed' && alert.direction !== 'neutral') {
+    // The news boost will be applied in the analysis functions
+    console.log(`   ✅ News boost will be applied to matching markets`);
+  }
+
+  return alert;
+}
+
+// Get recent news for API
+function getRecentNews(limit = 20, maxAgeMs = NEWS_CONFIG.maxNewsAge) {
+  const now = Date.now();
+  return newsCache
+    .filter(article => now - article.pubDate.getTime() < maxAgeMs)
+    .slice(0, limit);
+}
+
+// ============================================
+// REDDIT SENTIMENT (ApeWisdom API)
+// ============================================
+
+async function getRedditSentiment() {
+  const now = Date.now();
+
+  // Return cached data if still valid
+  if (redditSentiment.data && (now - redditSentiment.lastFetch) < redditSentiment.ttl) {
+    return redditSentiment.data;
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    const res = await fetch('https://apewisdom.io/api/v1.0/filter/all-crypto/', {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      console.log(`ApeWisdom API error: ${res.status}`);
+      return redditSentiment.data || [];
+    }
+
+    const data = await res.json();
+
+    // Transform results
+    const results = (data.results || []).slice(0, 30).map(item => ({
+      ticker: item.ticker?.toUpperCase() || '',
+      name: item.name || item.ticker || '',
+      mentions: item.mentions || 0,
+      upvotes: item.upvotes || 0,
+      rank: item.rank || 0,
+      mentionsChange24h: item.mentions_24h_ago ? item.mentions - item.mentions_24h_ago : 0
+    }));
+
+    redditSentiment.data = results;
+    redditSentiment.lastFetch = now;
+
+    console.log(`📊 Reddit sentiment updated: ${results.length} trending tickers`);
+    return results;
+
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      console.log('ApeWisdom timeout');
+    } else {
+      console.log(`ApeWisdom error: ${error.message}`);
+    }
+    return redditSentiment.data || [];
+  }
+}
+
+// Calculate overall market sentiment from news and reddit
+function calculateOverallSentiment(news, reddit) {
+  let bullishSignals = 0;
+  let bearishSignals = 0;
+
+  // Count news sentiment
+  for (const article of news) {
+    if (article.urgency?.direction === 'bullish') bullishSignals++;
+    if (article.urgency?.direction === 'bearish') bearishSignals++;
+  }
+
+  // Reddit momentum (high mentions + positive change = bullish)
+  const topReddit = reddit.slice(0, 10);
+  const avgMentionChange = topReddit.reduce((sum, t) => sum + (t.mentionsChange24h || 0), 0) / topReddit.length;
+  if (avgMentionChange > 50) bullishSignals += 2;
+  if (avgMentionChange < -50) bearishSignals += 2;
+
+  // Calculate overall sentiment (-100 to +100)
+  const total = bullishSignals + bearishSignals;
+  if (total === 0) return { score: 0, label: 'Neutral', description: 'No strong signals' };
+
+  const score = Math.round(((bullishSignals - bearishSignals) / total) * 100);
+
+  let label, description;
+  if (score > 50) {
+    label = 'Very Bullish';
+    description = 'Strong positive sentiment across news and social';
+  } else if (score > 20) {
+    label = 'Bullish';
+    description = 'Moderately positive market sentiment';
+  } else if (score > -20) {
+    label = 'Neutral';
+    description = 'Mixed or no strong signals';
+  } else if (score > -50) {
+    label = 'Bearish';
+    description = 'Moderately negative market sentiment';
+  } else {
+    label = 'Very Bearish';
+    description = 'Strong negative sentiment - caution advised';
+  }
+
+  return { score, label, description, bullishSignals, bearishSignals };
+}
+
+// Get news boost for a specific token/asset
+function getNewsBoost(assetType, token) {
+  const now = Date.now();
+  const recentNews = newsCache.filter(a =>
+    now - a.pubDate.getTime() < NEWS_CONFIG.maxNewsAge &&
+    a.urgency?.isUrgent
+  );
+
+  let boost = 0;
+  let direction = null;
+
+  for (const article of recentNews) {
+    // Check if this news is relevant to the asset
+    const isRelevant = article.urgency.mentionedTokens.includes(token) ||
+      (assetType === 'crypto' && article.urgency.assetType === 'crypto') ||
+      (assetType === 'index' && article.urgency.assetType === 'index');
+
+    if (isRelevant && article.urgency.direction !== 'mixed' && article.urgency.direction !== 'neutral') {
+      const newsAge = now - article.pubDate.getTime();
+      const ageFactor = 1 - (newsAge / NEWS_CONFIG.maxNewsAge); // Newer = stronger
+      const newsBoost = (article.urgency.score / 10) * ageFactor * NEWS_CONFIG.newsBoostMultiplier;
+
+      if (direction === null || direction === article.urgency.direction) {
+        direction = article.urgency.direction;
+        boost += newsBoost;
+      } else {
+        // Conflicting news - reduce boost
+        boost *= 0.5;
+      }
+    }
+  }
+
+  return { boost: Math.min(boost, 15), direction }; // Cap at 15% boost
+}
+
+// Start news monitoring (every 60 seconds)
+let newsInterval = setInterval(fetchAllNews, NEWS_CONFIG.checkIntervalMs);
+fetchAllNews(); // Initial fetch
 
 // ============================================
 // CRYPTO PRICE TRACKING - EXPANDED TOKENS
@@ -271,6 +693,138 @@ function calculateMomentum(history, lookbackMinutes = 5) {
     strength,
     direction: trendPctPerMin > 0.05 ? 'up' : trendPctPerMin < -0.05 ? 'down' : 'neutral'
   };
+}
+
+// Multi-timeframe momentum scoring
+// Track price momentum over 5min, 15min, and 60min
+function calculateMomentumMultiTimeframe(history) {
+  if (history.length < 10) {
+    return {
+      m5: 0, m15: 0, m60: 0,
+      aligned: false,
+      strength: 0,
+      direction: 'neutral'
+    };
+  }
+
+  const now = Date.now();
+  const latest = history[history.length - 1]?.price || 0;
+
+  // Find prices at different lookback periods
+  const findPriceAt = (minutesAgo) => {
+    const targetTime = now - (minutesAgo * 60 * 1000);
+    const closest = history.reduce((prev, curr) => {
+      return Math.abs(curr.time - targetTime) < Math.abs(prev.time - targetTime) ? curr : prev;
+    });
+    return closest.price;
+  };
+
+  const price5minAgo = findPriceAt(5);
+  const price15minAgo = findPriceAt(15);
+  const price60minAgo = findPriceAt(60);
+
+  // Calculate returns
+  const m5 = price5minAgo ? ((latest - price5minAgo) / price5minAgo) * 100 : 0;
+  const m15 = price15minAgo ? ((latest - price15minAgo) / price15minAgo) * 100 : 0;
+  const m60 = price60minAgo ? ((latest - price60minAgo) / price60minAgo) * 100 : 0;
+
+  // Check if all timeframes are aligned
+  const signs = [Math.sign(m5), Math.sign(m15), Math.sign(m60)];
+  const aligned = signs[0] !== 0 && signs[0] === signs[1] && signs[1] === signs[2];
+
+  // Calculate average strength
+  const strength = (Math.abs(m5) + Math.abs(m15) + Math.abs(m60)) / 3;
+
+  // Determine overall direction
+  let direction = 'neutral';
+  if (aligned) {
+    direction = m5 > 0 ? 'bullish' : 'bearish';
+  } else if (m5 > 0.3 && m15 > 0.1) {
+    direction = 'bullish';
+  } else if (m5 < -0.3 && m15 < -0.1) {
+    direction = 'bearish';
+  }
+
+  return {
+    m5: m5.toFixed(2),
+    m15: m15.toFixed(2),
+    m60: m60.toFixed(2),
+    aligned,
+    strength: strength.toFixed(2),
+    direction
+  };
+}
+
+// ============================================
+// TIME-OF-DAY FACTORS (S&P 500)
+// ============================================
+
+// S&P 500 has documented intraday patterns
+function getTimeOfDayFactor() {
+  const now = new Date();
+  const hour = now.getUTCHours();
+  const minute = now.getUTCMinutes();
+
+  // Market hours: 9:30 AM - 4:00 PM ET (14:30 - 21:00 UTC)
+  const marketOpen = 14.5; // 14:30 UTC
+  const marketClose = 21;  // 21:00 UTC
+  const currentTime = hour + minute / 60;
+
+  // Check if market is open
+  const isMarketOpen = currentTime >= marketOpen && currentTime < marketClose;
+  if (!isMarketOpen) {
+    return { factor: 1.0, period: 'closed', description: 'Market closed' };
+  }
+
+  const hoursUntilClose = marketClose - currentTime;
+  const hoursFromOpen = currentTime - marketOpen;
+
+  // Opening 30 minutes: High volatility, mean-reverting
+  if (hoursFromOpen < 0.5) {
+    return {
+      factor: 1.3,
+      period: 'opening',
+      description: 'Opening volatility - mean reversion common'
+    };
+  }
+
+  // Last 15 minutes: End-of-day positioning, volatile
+  if (hoursUntilClose < 0.25) {
+    return {
+      factor: 1.5,
+      period: 'closing',
+      description: 'Final 15min - increased volatility'
+    };
+  }
+
+  // Power hour (3pm-4pm ET = last hour)
+  if (hoursUntilClose < 1) {
+    return {
+      factor: 1.2,
+      period: 'power_hour',
+      description: 'Power hour - higher volume/volatility'
+    };
+  }
+
+  // First hour after open (9:30-10:30 ET)
+  if (hoursFromOpen < 1) {
+    return {
+      factor: 1.15,
+      period: 'early',
+      description: 'Early trading - settling volatility'
+    };
+  }
+
+  // Midday stability (10am-2pm ET)
+  if (hoursUntilClose > 2.5 && hoursFromOpen > 1) {
+    return {
+      factor: 1.0,
+      period: 'midday',
+      description: 'Midday stability - lower volatility'
+    };
+  }
+
+  return { factor: 1.0, period: 'normal', description: 'Normal trading' };
 }
 
 // Analyze historical price crossings
@@ -917,15 +1471,25 @@ function analyzeIndexMarket(parsed) {
   // Calculate how far price is from strike
   const pctFromStrike = ((currentPrice - parsed.strikePrice) / parsed.strikePrice) * 100;
 
+  // Get time-of-day factor for S&P 500
+  const timeOfDay = getTimeOfDayFactor();
+
+  // Adjust volatility based on time of day
+  const adjustedVolatility = volatility * timeOfDay.factor;
+
   // Simple probability model for S&P 500
   // Use z-score based on volatility
   const timeHours = timeMinutes / 60;
-  const expectedMove = currentPrice * volatility * Math.sqrt(timeHours / 4); // 4-hour normalized vol
+  const expectedMove = currentPrice * adjustedVolatility * Math.sqrt(timeHours / 4); // 4-hour normalized vol
   const zScore = (parsed.strikePrice - currentPrice) / expectedMove;
 
   // Convert z-score to probability using normal CDF
   const probBelow = normalCDF(zScore);
   const probAbove = 1 - probBelow;
+
+  // Calculate multi-timeframe momentum
+  const allHistory = [...(indexHistoryExtended.SPX || []), ...(priceData.history || [])];
+  const momentum = calculateMomentumMultiTimeframe(allHistory);
 
   // Determine win probabilities based on market type
   let probYesWins, probNoWins;
@@ -937,13 +1501,37 @@ function analyzeIndexMarket(parsed) {
     probNoWins = probAbove;
   }
 
+  // Adjust for momentum
+  if (momentum.aligned) {
+    const momentumBoost = parseFloat(momentum.strength) / 100 * 0.5; // Up to 5% boost
+    if (momentum.direction === 'bullish') {
+      probYesWins = Math.min(0.95, probYesWins + momentumBoost);
+      probNoWins = Math.max(0.05, probNoWins - momentumBoost);
+    } else if (momentum.direction === 'bearish') {
+      probNoWins = Math.min(0.95, probNoWins + momentumBoost);
+      probYesWins = Math.max(0.05, probYesWins - momentumBoost);
+    }
+  }
+
+  // Get news boost
+  const newsBoost = getNewsBoost('index', 'SPX');
+
   // Market implied probabilities
   const marketProbYes = parsed.yesAsk;
   const marketProbNo = parsed.noAsk;
 
   // Calculate edge
-  const yesEdge = (probYesWins - marketProbYes) * 100;
-  const noEdge = (probNoWins - marketProbNo) * 100;
+  let yesEdge = (probYesWins - marketProbYes) * 100;
+  let noEdge = (probNoWins - marketProbNo) * 100;
+
+  // Apply news boost to edge
+  if (newsBoost.boost > 0) {
+    if (newsBoost.direction === 'bullish') {
+      yesEdge += newsBoost.boost;
+    } else if (newsBoost.direction === 'bearish') {
+      noEdge += newsBoost.boost;
+    }
+  }
 
   // Find best bet (highest win probability with positive edge)
   let bestBet = null;
@@ -972,6 +1560,10 @@ function analyzeIndexMarket(parsed) {
   const totalCostCents = contractsFor1Dollar * priceCents;
   const profitIfWinCents = contractsFor1Dollar * 100 - totalCostCents;
 
+  // Build reason string
+  const momentumDesc = momentum.direction === 'bullish' ? '📈' : momentum.direction === 'bearish' ? '📉' : '➡️';
+  const newsDesc = newsBoost.boost > 0 ? ` | 📰 +${newsBoost.boost.toFixed(1)}%` : '';
+
   return {
     ...parsed,
     marketCategory: 'index',
@@ -979,6 +1571,7 @@ function analyzeIndexMarket(parsed) {
     assetName: 'S&P 500',
     currentPrice,
     volatility: (volatility * 100).toFixed(2) + '%',
+    adjustedVolatility: (adjustedVolatility * 100).toFixed(2) + '%',
     pctFromStrike: pctFromStrike.toFixed(2),
     zScore: zScore.toFixed(2),
     winProbability: (bestBet.prob * 100).toFixed(1),
@@ -988,10 +1581,18 @@ function analyzeIndexMarket(parsed) {
     betPriceCents: priceCents,
     contractsFor1Dollar,
     profitIfWin: profitIfWinCents,
-    betReason: `S&P ${pctFromStrike > 0 ? 'above' : 'below'} strike by ${Math.abs(pctFromStrike).toFixed(1)}%`,
+    betReason: `${momentumDesc} S&P ${pctFromStrike > 0 ? 'above' : 'below'} by ${Math.abs(pctFromStrike).toFixed(1)}%${newsDesc}`,
     isObviousBet: isSafeBet,
     isHighProb,
-    timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining)
+    timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining),
+    // Enhanced data
+    momentum: momentum.direction,
+    momentumStrength: momentum.aligned ? 'strong' : 'weak',
+    momentumData: momentum,
+    timeOfDay: timeOfDay,
+    newsBoost: newsBoost,
+    confidence: (isSafeBet ? 85 : isHighProb ? 70 : 55) + '%',
+    dataPoints: allHistory.length
   };
 }
 
@@ -1120,6 +1721,18 @@ function analyzeCryptoMarket(parsed) {
                        prediction.momentum.direction === 'down' ? '📉 DOWN' : '➡️ flat';
   const timeDesc = prediction.analysis.timeDecayApplied ? '⏰ time decay' : '';
 
+  // Get news boost for this crypto
+  const newsBoost = getNewsBoost('crypto', parsed.cryptoType);
+
+  // Apply news boost to edge
+  if (newsBoost.boost > 0) {
+    if (newsBoost.direction === 'bullish') {
+      yesEdge += newsBoost.boost;
+    } else if (newsBoost.direction === 'bearish') {
+      noEdge += newsBoost.boost;
+    }
+  }
+
   // ============================================
   // SAFETY-FIRST BET SELECTION
   // ============================================
@@ -1159,7 +1772,8 @@ function analyzeCryptoMarket(parsed) {
 
   // Build reason string
   const probPct = (bestBet.prob * 100).toFixed(0);
-  const betReason = `${momentumDesc} ${timeDesc} | ${probPct}% win prob`;
+  const newsDesc = newsBoost.boost > 0 ? ` | 📰 +${newsBoost.boost.toFixed(1)}%` : '';
+  const betReason = `${momentumDesc} ${timeDesc} | ${probPct}% win prob${newsDesc}`;
 
   // Calculate profit for $1 worth of contracts
   // E.g., if price is 50¢, we buy 2 contracts. If we win, each pays $1, so profit = 2×$1 - $1 = $1 (100¢)
@@ -1207,7 +1821,9 @@ function analyzeCryptoMarket(parsed) {
     confidence: (prediction.confidence * 100).toFixed(0) + '%',
     dataPoints: prediction.dataPoints,
     analysisMethod: prediction.analysis.method,
-    timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining)
+    timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining),
+    // News data
+    newsBoost: newsBoost
   };
 }
 
@@ -1382,6 +1998,108 @@ app.get('/api/risk', async (req, res) => {
   }
 });
 
+// ============================================
+// SENTIMENT & NEWS API ENDPOINTS
+// ============================================
+
+// Get overall market sentiment
+app.get('/api/sentiment', async (req, res) => {
+  try {
+    const [news, reddit] = await Promise.all([
+      Promise.resolve(getRecentNews(20)),
+      getRedditSentiment()
+    ]);
+
+    const overall = calculateOverallSentiment(news, reddit);
+
+    res.json({
+      success: true,
+      timestamp: Date.now(),
+      overall,
+      news: news.map(a => ({
+        title: a.title,
+        source: a.source,
+        link: a.link,
+        pubDate: a.pubDate,
+        urgency: a.urgency
+      })),
+      reddit: reddit.slice(0, 20),
+      alerts: recentAlerts.slice(0, 10),
+      config: {
+        newsInterval: NEWS_CONFIG.checkIntervalMs,
+        urgencyThreshold: NEWS_CONFIG.urgencyThreshold,
+        maxNewsAge: NEWS_CONFIG.maxNewsAge
+      }
+    });
+  } catch (error) {
+    console.error('Sentiment API error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get recent news articles
+app.get('/api/news/latest', (req, res) => {
+  const limit = parseInt(req.query.limit) || 20;
+  const maxAgeMinutes = parseInt(req.query.maxAge) || 60;
+
+  const news = getRecentNews(limit, maxAgeMinutes * 60 * 1000);
+
+  res.json({
+    success: true,
+    count: news.length,
+    news: news.map(a => ({
+      title: a.title,
+      source: a.source,
+      link: a.link,
+      pubDate: a.pubDate,
+      urgency: a.urgency,
+      age: Math.round((Date.now() - a.pubDate.getTime()) / 60000) + ' min ago'
+    }))
+  });
+});
+
+// Get recent alerts
+app.get('/api/news/alerts', (req, res) => {
+  const limit = parseInt(req.query.limit) || 20;
+
+  res.json({
+    success: true,
+    count: recentAlerts.length,
+    alerts: recentAlerts.slice(0, limit)
+  });
+});
+
+// Manually trigger news check
+app.post('/api/news/check', async (req, res) => {
+  try {
+    const newArticles = await fetchAllNews();
+
+    res.json({
+      success: true,
+      newArticles: newArticles.length,
+      totalCached: newsCache.length,
+      alerts: recentAlerts.slice(0, 5)
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get Reddit sentiment data
+app.get('/api/reddit/sentiment', async (req, res) => {
+  try {
+    const reddit = await getRedditSentiment();
+
+    res.json({
+      success: true,
+      count: reddit.length,
+      tickers: reddit
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Place a bet
 app.post('/api/bet', async (req, res) => {
   try {
@@ -1390,6 +2108,10 @@ app.post('/api/bet', async (req, res) => {
     if (!ticker || !side) {
       return res.status(400).json({ success: false, error: 'ticker and side required' });
     }
+
+    // Force fresh market data by clearing cache
+    marketCache.lastFetch = 0;
+    indexMarketCache.lastFetch = 0;
 
     // Search both crypto and index markets
     const [cryptoMarkets, indexMarkets] = await Promise.all([
@@ -1406,7 +2128,13 @@ app.post('/api/bet', async (req, res) => {
     }
 
     if (!market) {
-      return res.status(404).json({ success: false, error: 'Market not found' });
+      return res.status(404).json({ success: false, error: `Market ${ticker} not found or has expired` });
+    }
+
+    // Check if market is still open
+    const closeTime = market.close_time ? new Date(market.close_time).getTime() : null;
+    if (closeTime && closeTime < Date.now()) {
+      return res.status(400).json({ success: false, error: 'Market has closed' });
     }
 
     // Kalshi API returns prices in cents already (e.g., yes_ask: 4 means 4 cents)
@@ -1414,8 +2142,14 @@ app.post('/api/bet', async (req, res) => {
       ? parseFloat(market.yes_ask) || 0
       : parseFloat(market.no_ask) || 0;
 
+    console.log(`Bet attempt: ${ticker} | side=${side} | yes_ask=${market.yes_ask} | no_ask=${market.no_ask} | priceCents=${priceCents}`);
+
     if (!priceCents || priceCents <= 0) {
-      return res.status(400).json({ success: false, error: 'Invalid market price' });
+      return res.status(400).json({
+        success: false,
+        error: `No liquidity for ${side.toUpperCase()} side. Try the other side or wait for market makers.`,
+        debug: { yes_ask: market.yes_ask, no_ask: market.no_ask }
+      });
     }
 
     // Calculate bet size (up to $1, but respect risk limit)

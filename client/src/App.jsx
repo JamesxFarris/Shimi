@@ -271,7 +271,8 @@ function App() {
   const [prices, setPrices] = useState({})
   const [prevPrices, setPrevPrices] = useState({})
   const [priceLastUpdated, setPriceLastUpdated] = useState(null)
-  const [balance, setBalance] = useState(10)
+  const [balance, setBalance] = useState(null) // null = loading
+  const [balanceLoading, setBalanceLoading] = useState(true)
   const [betHistory, setBetHistory] = useState([])
   const [betStats, setBetStats] = useState({ totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 })
   const [loading, setLoading] = useState(true)
@@ -288,6 +289,10 @@ function App() {
   // New: Risk tracking and market filtering
   const [risk, setRisk] = useState({ current: 0, max: 300, remaining: 300 })
   const [marketFilter, setMarketFilter] = useState('all') // 'all', 'crypto', 'index'
+  // News & Sentiment
+  const [sentiment, setSentiment] = useState(null)
+  const [newsAlerts, setNewsAlerts] = useState([])
+  const [showAlertBanner, setShowAlertBanner] = useState(false)
 
   // Fetch prices directly (faster updates)
   const fetchPrices = useCallback(async () => {
@@ -351,13 +356,15 @@ function App() {
       const data = await res.json()
 
       if (data.success) {
-        setBalance(data.balance || 10)
+        setBalance(data.balance || 0)
         setBetHistory(data.betHistory || [])
         setBetStats(data.stats || { totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 })
         setIsAuthenticated(!data.simulated)
       }
     } catch (err) {
       console.error('Portfolio fetch error:', err)
+    } finally {
+      setBalanceLoading(false)
     }
   }, [])
 
@@ -370,18 +377,47 @@ function App() {
     } catch (err) {}
   }, [])
 
+  // Fetch sentiment data
+  const fetchSentiment = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/sentiment`)
+      const data = await res.json()
+
+      if (data.success) {
+        setSentiment(data)
+        // Check for new alerts
+        if (data.alerts && data.alerts.length > 0) {
+          const latestAlert = data.alerts[0]
+          // Show banner for alerts less than 2 minutes old
+          const alertAge = Date.now() - new Date(latestAlert.timestamp).getTime()
+          if (alertAge < 2 * 60 * 1000 && !newsAlerts.some(a => a.id === latestAlert.id)) {
+            setShowAlertBanner(true)
+            setTimeout(() => setShowAlertBanner(false), 10000) // Hide after 10s
+          }
+          setNewsAlerts(data.alerts)
+        }
+      }
+    } catch (err) {
+      console.error('Sentiment fetch error:', err)
+    }
+  }, [newsAlerts])
+
   // Initial load - runs once
   useEffect(() => {
     // Fetch everything on initial load
     fetchOpportunities()
     fetchPortfolio()
     checkAuth()
+    fetchSentiment()
 
     // Refresh opportunities every 10 seconds (includes prices)
     const oppInterval = setInterval(fetchOpportunities, 10000)
 
     // Refresh portfolio every 30 seconds
     const portfolioInterval = setInterval(fetchPortfolio, 30000)
+
+    // Refresh sentiment every 30 seconds
+    const sentimentInterval = setInterval(fetchSentiment, 30000)
 
     // Update ticker time display every second
     const tickerTimeInterval = setInterval(() => {
@@ -391,6 +427,7 @@ function App() {
     return () => {
       clearInterval(oppInterval)
       clearInterval(portfolioInterval)
+      clearInterval(sentimentInterval)
       clearInterval(tickerTimeInterval)
     }
   }, []) // Empty dependency - only runs on mount
@@ -423,10 +460,12 @@ function App() {
         setBalance(data.newBalance)
         setBetStatus({
           type: 'success',
-          message: `Bet placed: ${opp.betSide} on ${opp.cryptoType}${data.simulated ? ' (simulated)' : ''}`
+          message: `Bet placed: ${opp.betSide} on ${opp.cryptoType || opp.assetType}${data.simulated ? ' (simulated)' : ''}`
         })
+        // Refresh opportunities after placing a bet
+        fetchOpportunities()
       } else {
-        setBetStatus({ type: 'error', message: data.error || 'Bet failed' })
+        setBetStatus({ type: 'error', message: data.error || 'Bet failed - try refreshing' })
       }
     } catch (err) {
       if (err.name === 'AbortError') {
@@ -464,8 +503,10 @@ function App() {
         setBalance(data.newBalance)
         setBetStatus({
           type: 'success',
-          message: `Bet placed: ${data.bet.side.toUpperCase()} on ${data.bet.cryptoType}${data.simulated ? ' (simulated)' : ''}`
+          message: `Bet placed: ${data.bet.side.toUpperCase()} on ${data.bet.assetType || data.bet.cryptoType || 'market'}${data.simulated ? ' (simulated)' : ''}`
         })
+        // Refresh opportunities after placing a bet
+        fetchOpportunities()
       } else if (data.error) {
         setBetStatus({ type: 'error', message: data.error })
       } else if (data.message) {
@@ -540,7 +581,7 @@ function App() {
       {/* Sidebar */}
       <aside className="sidebar">
         <div className="sidebar-header">
-          <h1 className="logo">SHIMI</h1>
+          <h1 className={`logo ${balanceLoading ? 'loading' : ''}`}>SHIMI</h1>
           <span className="logo-subtitle">neural_trading_v2.0</span>
         </div>
 
@@ -558,6 +599,11 @@ function App() {
             <span className="nav-icon">◰</span>
             <span className="nav-text">History</span>
           </button>
+          <button className={`nav-item ${tab === 'sentiment' ? 'active' : ''}`} onClick={() => setTab('sentiment')}>
+            <span className="nav-icon">📰</span>
+            <span className="nav-text">Sentiment</span>
+            {newsAlerts.length > 0 && <span className="nav-badge alert">{newsAlerts.length}</span>}
+          </button>
           <button className={`nav-item ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>
             <span className="nav-icon">⚙</span>
             <span className="nav-text">Config</span>
@@ -567,9 +613,11 @@ function App() {
         <div className="sidebar-footer">
           <div className="balance-display">
             <span className="balance-label">
-              {isAuthenticated ? 'Live Balance' : 'Simulated'}
+              {balanceLoading ? 'Loading...' : isAuthenticated ? 'Live Balance' : 'Simulated'}
             </span>
-            <span className="balance-value">{formatCurrency(balance)}</span>
+            <span className={`balance-value ${balanceLoading ? 'loading' : ''}`}>
+              {balanceLoading ? '---' : formatCurrency(balance)}
+            </span>
           </div>
           <div className={`connection-status ${isAuthenticated ? 'connected' : 'simulated'}`}>
             <span className="status-dot"></span>
@@ -587,6 +635,7 @@ function App() {
               {tab === 'dashboard' && 'Dashboard'}
               {tab === 'opportunities' && 'Betting Opportunities'}
               {tab === 'history' && 'Bet History'}
+              {tab === 'sentiment' && 'News & Sentiment'}
               {tab === 'settings' && 'Settings'}
             </h2>
           </div>
@@ -627,6 +676,20 @@ function App() {
           </div>
         </div>
 
+        {/* News Alert Banner */}
+        {showAlertBanner && newsAlerts[0] && (
+          <div className={`news-alert-banner ${newsAlerts[0].direction}`} onClick={() => setShowAlertBanner(false)}>
+            <span className="alert-icon">🚨</span>
+            <div className="alert-content">
+              <span className="alert-headline">{newsAlerts[0].headline}</span>
+              <span className="alert-meta">
+                {newsAlerts[0].direction.toUpperCase()} | Score: {newsAlerts[0].score} | {newsAlerts[0].source}
+              </span>
+            </div>
+            <button className="alert-close">×</button>
+          </div>
+        )}
+
         {/* Status Banner */}
         {betStatus && (
           <div className={`status-banner ${betStatus.type}`} onClick={() => setBetStatus(null)}>
@@ -647,8 +710,8 @@ function App() {
               <div className="stats-row">
                 <StatsCard
                   title="Balance"
-                  value={formatCurrency(balance)}
-                  subtitle={isAuthenticated ? 'Live' : 'Simulated'}
+                  value={balanceLoading ? '---' : formatCurrency(balance)}
+                  subtitle={balanceLoading ? 'Loading...' : isAuthenticated ? 'Live' : 'Simulated'}
                   icon="💰"
                   color="#00ff88"
                 />
@@ -891,6 +954,163 @@ function App() {
             </div>
           )}
 
+          {/* Sentiment Tab */}
+          {tab === 'sentiment' && (
+            <div className="sentiment-page">
+              {/* Overall Sentiment Card */}
+              {sentiment?.overall && (
+                <div className={`sentiment-overview ${sentiment.overall.score > 20 ? 'bullish' : sentiment.overall.score < -20 ? 'bearish' : 'neutral'}`}>
+                  <div className="sentiment-header">
+                    <h3 className="sentiment-label">Market Sentiment</h3>
+                    <span className={`sentiment-badge ${sentiment.overall.label.toLowerCase().replace(' ', '-')}`}>
+                      {sentiment.overall.label}
+                    </span>
+                  </div>
+                  <div className="sentiment-score-display">
+                    <div className="sentiment-meter">
+                      <div className="meter-bar">
+                        <div
+                          className="meter-fill"
+                          style={{
+                            width: `${Math.abs(sentiment.overall.score)}%`,
+                            marginLeft: sentiment.overall.score > 0 ? '50%' : `${50 - Math.abs(sentiment.overall.score)}%`
+                          }}
+                        ></div>
+                        <div className="meter-center"></div>
+                      </div>
+                      <div className="meter-labels">
+                        <span>Bearish</span>
+                        <span>Neutral</span>
+                        <span>Bullish</span>
+                      </div>
+                    </div>
+                    <div className="sentiment-signals">
+                      <div className="signal bullish">
+                        <span className="signal-icon">📈</span>
+                        <span className="signal-count">{sentiment.overall.bullishSignals || 0}</span>
+                        <span className="signal-label">Bullish</span>
+                      </div>
+                      <div className="signal bearish">
+                        <span className="signal-icon">📉</span>
+                        <span className="signal-count">{sentiment.overall.bearishSignals || 0}</span>
+                        <span className="signal-label">Bearish</span>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="sentiment-description">{sentiment.overall.description}</p>
+                </div>
+              )}
+
+              <div className="sentiment-grid">
+                {/* Recent Alerts */}
+                <div className="sentiment-card alerts-card">
+                  <h3 className="card-title">
+                    <span className="title-icon">🚨</span>
+                    Recent Alerts
+                  </h3>
+                  {newsAlerts.length === 0 ? (
+                    <div className="empty-alerts">
+                      <span>No urgent news detected</span>
+                    </div>
+                  ) : (
+                    <div className="alerts-list">
+                      {newsAlerts.slice(0, 5).map(alert => (
+                        <div key={alert.id} className={`alert-item ${alert.direction}`}>
+                          <div className="alert-direction">
+                            {alert.direction === 'bullish' ? '📈' : alert.direction === 'bearish' ? '📉' : '➡️'}
+                          </div>
+                          <div className="alert-info">
+                            <span className="alert-title">{alert.headline}</span>
+                            <div className="alert-tags">
+                              {alert.keywords?.slice(0, 3).map((kw, i) => (
+                                <span key={i} className="alert-tag">{kw}</span>
+                              ))}
+                            </div>
+                            <span className="alert-time">
+                              {new Date(alert.timestamp).toLocaleTimeString()} - {alert.source}
+                            </span>
+                          </div>
+                          <div className="alert-score">+{alert.score}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Reddit Trending */}
+                <div className="sentiment-card reddit-card">
+                  <h3 className="card-title">
+                    <span className="title-icon">🔥</span>
+                    Reddit Trending
+                  </h3>
+                  {sentiment?.reddit?.length > 0 ? (
+                    <div className="reddit-list">
+                      {sentiment.reddit.slice(0, 10).map((item, idx) => (
+                        <div key={item.ticker} className="reddit-item">
+                          <span className="reddit-rank">#{idx + 1}</span>
+                          <span className="reddit-ticker">{item.ticker}</span>
+                          <span className="reddit-mentions">{item.mentions.toLocaleString()} mentions</span>
+                          <span className={`reddit-change ${item.mentionsChange24h > 0 ? 'up' : item.mentionsChange24h < 0 ? 'down' : ''}`}>
+                            {item.mentionsChange24h > 0 ? '+' : ''}{item.mentionsChange24h || 0}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="empty-reddit">
+                      <span>Loading Reddit data...</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* News Feed */}
+              <div className="sentiment-card news-card">
+                <h3 className="card-title">
+                  <span className="title-icon">📰</span>
+                  Latest News
+                </h3>
+                {sentiment?.news?.length > 0 ? (
+                  <div className="news-list">
+                    {sentiment.news.map((article, idx) => (
+                      <a
+                        key={idx}
+                        href={article.link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={`news-item ${article.urgency?.direction || 'neutral'} ${article.urgency?.isUrgent ? 'urgent' : ''}`}
+                      >
+                        <div className="news-urgency">
+                          {article.urgency?.isUrgent && <span className="urgent-badge">URGENT</span>}
+                          {article.urgency?.direction === 'bullish' && <span className="direction-icon bullish">📈</span>}
+                          {article.urgency?.direction === 'bearish' && <span className="direction-icon bearish">📉</span>}
+                        </div>
+                        <div className="news-content">
+                          <span className="news-title">{article.title}</span>
+                          <div className="news-meta">
+                            <span className="news-source">{article.source}</span>
+                            <span className="news-time">
+                              {Math.round((Date.now() - new Date(article.pubDate).getTime()) / 60000)} min ago
+                            </span>
+                            {article.urgency?.score > 0 && (
+                              <span className={`news-score ${article.urgency.direction}`}>
+                                Score: {article.urgency.score}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </a>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="empty-news">
+                    <span>Loading news feed...</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Settings Tab */}
           {tab === 'settings' && (
             <div className="settings-page">
@@ -1002,19 +1222,19 @@ function App() {
       <nav className="mobile-nav">
         <button className={`mobile-nav-item ${tab === 'dashboard' ? 'active' : ''}`} onClick={() => setTab('dashboard')}>
           <span>📊</span>
-          <span>Dashboard</span>
+          <span>Home</span>
         </button>
         <button className={`mobile-nav-item ${tab === 'opportunities' ? 'active' : ''}`} onClick={() => setTab('opportunities')}>
           <span>🎯</span>
           <span>Bets</span>
         </button>
+        <button className={`mobile-nav-item ${tab === 'sentiment' ? 'active' : ''}`} onClick={() => setTab('sentiment')}>
+          <span>📰</span>
+          <span>News</span>
+        </button>
         <button className={`mobile-nav-item ${tab === 'history' ? 'active' : ''}`} onClick={() => setTab('history')}>
           <span>📜</span>
           <span>History</span>
-        </button>
-        <button className={`mobile-nav-item ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>
-          <span>⚙️</span>
-          <span>Settings</span>
         </button>
       </nav>
 
