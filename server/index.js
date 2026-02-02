@@ -2161,17 +2161,29 @@ function getCurrentExposure() {
     for (const pos of portfolio.positions) {
       const contracts = Math.abs(pos.position || 0);
       if (contracts > 0) {
-        const avgPrice = pos.average_price || 50;
-        totalExposure += contracts * avgPrice;
+        let avgPrice = pos.average_price || 50;
+        // Kalshi returns average_price as decimal (0.85) not cents (85)
+        if (avgPrice > 0 && avgPrice <= 1) {
+          avgPrice = Math.round(avgPrice * 100);
+        }
+        const posExposure = contracts * avgPrice;
+        console.log(`   📊 Position: ${pos.ticker} | ${contracts} contracts @ ${avgPrice}¢ = $${(posExposure/100).toFixed(2)}`);
+        totalExposure += posExposure;
       }
     }
   }
 
   // Add pending exposure (bets placed recently that may not be in positions yet)
+  let pendingTotal = 0;
   for (const [token, data] of pendingTokenExposure.entries()) {
-    totalExposure += data.amount;
+    pendingTotal += data.amount;
+  }
+  if (pendingTotal > 0) {
+    console.log(`   📊 Pending exposure: $${(pendingTotal/100).toFixed(2)}`);
+    totalExposure += pendingTotal;
   }
 
+  console.log(`   📊 TOTAL EXPOSURE: $${(totalExposure/100).toFixed(2)}`);
   return totalExposure;
 }
 
@@ -2221,7 +2233,11 @@ function getExposureByToken() {
     for (const pos of portfolio.positions) {
       const contracts = Math.abs(pos.position || 0);
       if (contracts > 0) {
-        const avgPrice = pos.average_price || 50;
+        let avgPrice = pos.average_price || 50;
+        // Kalshi returns average_price as decimal (0.85) not cents (85)
+        if (avgPrice > 0 && avgPrice <= 1) {
+          avgPrice = Math.round(avgPrice * 100);
+        }
         const posRisk = contracts * avgPrice;
         const token = getTokenFromTicker(pos.ticker);
 
@@ -3240,7 +3256,11 @@ app.get('/api/risk', async (req, res) => {
       for (const pos of portfolio.positions) {
         const contracts = Math.abs(pos.position || 0);
         if (contracts > 0) {
-          const avgPrice = pos.average_price || 50;
+          let avgPrice = pos.average_price || 50;
+          // Kalshi returns average_price as decimal (0.85) not cents (85)
+          if (avgPrice > 0 && avgPrice <= 1) {
+            avgPrice = Math.round(avgPrice * 100);
+          }
           kalshiRisk += contracts * avgPrice;
           kalshiTickers.add(pos.ticker);
         }
