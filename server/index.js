@@ -1774,14 +1774,43 @@ function getRiskByType() {
   let otherRisk = 0;
   const kalshiTickers = new Set();
 
+  // First, build a map of our actual costs from betHistory for each ticker
+  const ourCostsByTicker = {};
+  const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
+  for (const bet of betHistory) {
+    if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') continue;
+    const betTime = new Date(bet.timestamp).getTime();
+    if (betTime < twoHoursAgo) continue;
+
+    const ticker = bet.ticker;
+    if (!ourCostsByTicker[ticker]) {
+      ourCostsByTicker[ticker] = { totalCost: 0, contracts: 0 };
+    }
+    ourCostsByTicker[ticker].totalCost += bet.totalCost || (bet.count * bet.price) || 0;
+    ourCostsByTicker[ticker].contracts += bet.count || bet.filledCount || 0;
+  }
+
   // Count Kalshi positions
   if (portfolio.positions && Array.isArray(portfolio.positions)) {
     for (const pos of portfolio.positions) {
       const contracts = Math.abs(pos.position || 0);
       if (contracts > 0) {
-        const avgPrice = pos.average_price || 50;
-        const posRisk = contracts * avgPrice;
         kalshiTickers.add(pos.ticker);
+
+        // Try to get the actual cost - check multiple sources in order of reliability
+        let posRisk;
+        if (pos.market_exposure && pos.market_exposure > 0) {
+          // Kalshi's market_exposure is in cents, this is the most accurate
+          posRisk = pos.market_exposure;
+        } else if (pos.average_price && pos.average_price > 0) {
+          posRisk = contracts * pos.average_price;
+        } else if (ourCostsByTicker[pos.ticker]) {
+          // Use our tracked costs - this is what we actually paid
+          posRisk = ourCostsByTicker[pos.ticker].totalCost;
+        } else {
+          // Last resort: use a conservative estimate (high price to prevent over-betting)
+          posRisk = contracts * 75; // Assume 75¢ avg if we have no data
+        }
 
         if (isHourlyMarket(pos.ticker)) {
           hourlyRisk += posRisk;
@@ -1792,8 +1821,7 @@ function getRiskByType() {
     }
   }
 
-  // Add unsettled local bets not in Kalshi
-  const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
+  // Add unsettled local bets not already counted via Kalshi positions
   for (const bet of betHistory) {
     if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') continue;
     const betTime = new Date(bet.timestamp).getTime();
@@ -1852,15 +1880,46 @@ function getExposureByToken() {
   const tokenExposure = {};
   const kalshiTickers = new Set();
 
+  // First, build a map of our actual costs from betHistory for each ticker
+  const ourCostsByTicker = {};
+  const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
+  for (const bet of betHistory) {
+    if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') continue;
+    const betTime = new Date(bet.timestamp).getTime();
+    if (betTime < twoHoursAgo) continue;
+
+    const ticker = bet.ticker;
+    if (!ourCostsByTicker[ticker]) {
+      ourCostsByTicker[ticker] = { totalCost: 0, contracts: 0 };
+    }
+    ourCostsByTicker[ticker].totalCost += bet.totalCost || (bet.count * bet.price) || 0;
+    ourCostsByTicker[ticker].contracts += bet.count || bet.filledCount || 0;
+  }
+
   // Count Kalshi positions by token
   if (portfolio.positions && Array.isArray(portfolio.positions)) {
     for (const pos of portfolio.positions) {
       const contracts = Math.abs(pos.position || 0);
       if (contracts > 0) {
-        const avgPrice = pos.average_price || 50;
-        const posRisk = contracts * avgPrice;
         const token = getTokenFromTicker(pos.ticker);
         kalshiTickers.add(pos.ticker);
+
+        // Try to get the actual cost - check multiple sources in order of reliability
+        let posRisk;
+        if (pos.market_exposure && pos.market_exposure > 0) {
+          // Kalshi's market_exposure is in cents, this is the most accurate
+          posRisk = pos.market_exposure;
+        } else if (pos.average_price && pos.average_price > 0) {
+          posRisk = contracts * pos.average_price;
+        } else if (ourCostsByTicker[pos.ticker]) {
+          // Use our tracked costs - this is what we actually paid
+          posRisk = ourCostsByTicker[pos.ticker].totalCost;
+          console.log(`📊 Using tracked cost for ${pos.ticker}: ${posRisk}¢ (Kalshi avg_price was ${pos.average_price})`);
+        } else {
+          // Last resort: use a conservative estimate (high price to prevent over-betting)
+          posRisk = contracts * 75; // Assume 75¢ avg if we have no data
+          console.log(`⚠️ No price data for ${pos.ticker}, using 75¢ estimate: ${posRisk}¢`);
+        }
 
         if (token) {
           tokenExposure[token] = (tokenExposure[token] || 0) + posRisk;
@@ -1869,8 +1928,7 @@ function getExposureByToken() {
     }
   }
 
-  // Add unsettled local bets not in Kalshi
-  const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
+  // Add unsettled local bets not already counted via Kalshi positions
   for (const bet of betHistory) {
     if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') continue;
     const betTime = new Date(bet.timestamp).getTime();
@@ -3596,8 +3654,15 @@ async function runAutoBet() {
         console.log(`📊 Refreshed positions: ${portfolio.positions.length} open positions from Kalshi`);
         if (portfolio.positions.length > 0) {
           portfolio.positions.forEach(p => {
-            console.log(`   Position: ${p.ticker} | position=${p.position} | avg_price=${p.average_price}`);
+            const token = getTokenFromTicker(p.ticker);
+            console.log(`   Position: ${p.ticker} (${token}) | contracts=${p.position} | avg_price=${p.average_price} | market_exposure=${p.market_exposure}`);
           });
+          // Log calculated exposure by token
+          const tokenExposure = getExposureByToken();
+          console.log(`📊 Calculated token exposure:`);
+          for (const [token, exposure] of Object.entries(tokenExposure)) {
+            console.log(`   💵 ${token}: $${(exposure/100).toFixed(2)} exposure (max $${(getMaxPerToken()/100).toFixed(2)})`);
+          }
         }
       } catch (e) {
         console.log('⚠️ Could not refresh positions:', e.message);
