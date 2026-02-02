@@ -1152,8 +1152,10 @@ const MAX_TOTAL_RISK_CENTS = 500; // $5.00 max TOTAL at risk across ALL position
 
 function getCurrentRiskFromPortfolio() {
   // Sum up the cost of all active (unsettled) positions from Kalshi
-  let totalRisk = 0;
+  let kalshiRisk = 0;
   const kalshiTickers = new Set();
+
+  console.log(`📊 Risk calc: ${portfolio.positions?.length || 0} Kalshi positions, ${betHistory.length} local bets`);
 
   if (portfolio.positions && Array.isArray(portfolio.positions)) {
     for (const pos of portfolio.positions) {
@@ -1161,8 +1163,10 @@ function getCurrentRiskFromPortfolio() {
       const contracts = Math.abs(pos.position || 0);
       if (contracts > 0) {
         const avgPrice = pos.average_price || 50; // cents
-        totalRisk += contracts * avgPrice;
+        const posRisk = contracts * avgPrice;
+        kalshiRisk += posRisk;
         kalshiTickers.add(pos.ticker);
+        console.log(`   Kalshi: ${pos.ticker} | ${contracts} contracts @ ${avgPrice}¢ = $${(posRisk/100).toFixed(2)}`);
       }
     }
   }
@@ -1170,6 +1174,7 @@ function getCurrentRiskFromPortfolio() {
   // Also add unsettled bets from local history that aren't in Kalshi positions
   // Only count bets from the last 2 hours - older ones should be in Kalshi or settled
   const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
+  let localRisk = 0;
   const unsettledBets = betHistory.filter(bet => {
     // Must be unsettled status
     if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') {
@@ -1188,8 +1193,13 @@ function getCurrentRiskFromPortfolio() {
   });
 
   for (const bet of unsettledBets) {
-    totalRisk += bet.totalCost || (bet.count * bet.price) || 0;
+    const betRisk = bet.totalCost || (bet.count * bet.price) || 0;
+    localRisk += betRisk;
+    console.log(`   Local: ${bet.ticker} | status=${bet.status} | $${(betRisk/100).toFixed(2)}`);
   }
+
+  const totalRisk = kalshiRisk + localRisk;
+  console.log(`   TOTAL: Kalshi=$${(kalshiRisk/100).toFixed(2)} + Local=$${(localRisk/100).toFixed(2)} = $${(totalRisk/100).toFixed(2)}`);
 
   return totalRisk;
 }
