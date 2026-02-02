@@ -3446,9 +3446,26 @@ app.post('/api/bet', async (req, res) => {
       });
     }
 
-    // Real bet - use limit order slightly above ask to ensure fill
-    // Add 2 cent buffer to improve fill rate
-    const fillPrice = Math.min(priceCents + 2, 99);
+    // Real bet - check orderbook for liquidity first
+    let bestAsk = priceCents;
+    try {
+      const orderbook = await kalshiRequest('GET', `/markets/${ticker}/orderbook`);
+      const sideKey = side.toLowerCase();
+      const asks = sideKey === 'yes' ? orderbook.yes : orderbook.no;
+      if (!asks || asks.length === 0 || !asks[0] || asks[0][1] === 0) {
+        return res.status(400).json({
+          success: false,
+          error: `No liquidity available for ${side.toUpperCase()} side. The orderbook is empty.`
+        });
+      }
+      bestAsk = asks[0][0];
+      console.log(`Orderbook check: Best ${side} ask = ${bestAsk}¢, qty = ${asks[0][1]}`);
+    } catch (obErr) {
+      console.log(`Orderbook fetch failed: ${obErr.message}, using market price`);
+    }
+
+    // Use best ask + buffer to ensure fill
+    const fillPrice = Math.min(bestAsk + 3, 99);
 
     const orderRequest = {
       ticker,
@@ -3465,7 +3482,7 @@ app.post('/api/bet', async (req, res) => {
       orderRequest.no_price = fillPrice;
     }
 
-    console.log(`Placing order (ask: ${priceCents}¢, bid: ${fillPrice}¢):`, JSON.stringify(orderRequest));
+    console.log(`Placing order (ask: ${priceCents}¢, bid: ${fillPrice}¢, using: ${fillPrice}¢):`, JSON.stringify(orderRequest));
 
     try {
       const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
@@ -3743,8 +3760,25 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       });
     }
 
-    // Real bet - use limit order slightly above ask to ensure fill
-    const fillPrice = Math.min(priceCents + 2, 99);
+    // Real bet - check orderbook for liquidity first
+    let bestAsk = priceCents;
+    try {
+      const orderbook = await kalshiRequest('GET', `/markets/${best.ticker}/orderbook`);
+      const sideKey = best.betSide.toLowerCase();
+      const asks = sideKey === 'yes' ? orderbook.yes : orderbook.no;
+      if (!asks || asks.length === 0 || !asks[0] || asks[0][1] === 0) {
+        return res.status(400).json({
+          success: false,
+          error: `No liquidity for ${best.betSide.toUpperCase()}. Orderbook empty.`
+        });
+      }
+      bestAsk = asks[0][0];
+      console.log(`Auto-bet orderbook: Best ${best.betSide} ask = ${bestAsk}¢`);
+    } catch (obErr) {
+      console.log(`Auto-bet orderbook fetch failed: ${obErr.message}`);
+    }
+
+    const fillPrice = Math.min(bestAsk + 3, 99);
 
     const orderRequest = {
       ticker: best.ticker,
@@ -4170,9 +4204,40 @@ async function runAutoBet() {
         betResults.push({ ticker: opp.ticker, side: opp.betSide, count, price: priceCents, edge: opp.edge });
 
       } else {
-        // Real bet
+        // Real bet - check orderbook for liquidity first
         try {
-          const fillPrice = Math.min(priceCents + 2, 99);
+          // Fetch orderbook to verify liquidity
+          let hasLiquidity = true;
+          let bestAsk = priceCents;
+          try {
+            const orderbook = await kalshiRequest('GET', `/markets/${opp.ticker}/orderbook`);
+            const side = opp.betSide.toLowerCase();
+            // For buying YES, check YES asks. For buying NO, check NO asks.
+            const asks = side === 'yes' ? orderbook.yes : orderbook.no;
+            if (!asks || asks.length === 0 || !asks[0] || asks[0][1] === 0) {
+              hasLiquidity = false;
+              console.log(`   ⚠️ ${tokenName}: No orderbook liquidity for ${side.toUpperCase()}`);
+            } else {
+              // asks[0] = [price, quantity] - best ask
+              bestAsk = asks[0][0];
+              const availableQty = asks[0][1];
+              if (availableQty < count) {
+                console.log(`   ⚠️ ${tokenName}: Partial liquidity (${availableQty} available, need ${count})`);
+              }
+            }
+          } catch (obErr) {
+            // Orderbook fetch failed, proceed with original price
+            console.log(`   ℹ️ ${tokenName}: Orderbook unavailable, using market price`);
+          }
+
+          if (!hasLiquidity) {
+            console.log(`   ❌ ${tokenName}: Skipped - no liquidity`);
+            recentBets.delete(opp.ticker);
+            continue;
+          }
+
+          // Use best ask + buffer to ensure fill
+          const fillPrice = Math.min(bestAsk + 3, 99);
           const orderRequest = {
             ticker: opp.ticker,
             action: 'buy',
