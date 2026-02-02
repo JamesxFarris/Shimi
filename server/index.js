@@ -2095,9 +2095,9 @@ function calculateIndexVolatility(history) {
   return Math.max(0.001, Math.min(0.03, vol15min));
 }
 
-// Start S&P 500 price tracking (every 15 seconds - don't spam Yahoo)
-let indexPriceInterval = setInterval(fetchIndexPrice, 15000);
-fetchIndexPrice();
+// DISABLED: S&P 500 price tracking (focusing on crypto only)
+// let indexPriceInterval = setInterval(fetchIndexPrice, 15000);
+// fetchIndexPrice();
 
 // ============================================
 // RISK MANAGEMENT
@@ -3176,10 +3176,9 @@ app.get('/api/opportunities/all', async (req, res) => {
     // Get current risk info by type
     const riskByType = getRiskByType();
 
-    // Price display
+    // Price display (crypto only - index disabled)
     const priceDisplay = {
-      crypto: {},
-      index: { SPX: indexPrices.SPX.price }
+      crypto: {}
     };
     for (const token of Object.keys(cryptoPrices)) {
       if (cryptoPrices[token].price > 0) {
@@ -5128,7 +5127,7 @@ app.use((err, req, res, next) => {
 
 const server = app.listen(PORT, '0.0.0.0', async () => {
   console.log(`🎰 Shimi Crypto Bot running on port ${PORT}`);
-  console.log(`📊 Markets: BTC/ETH/SOL 15min + hourly, S&P 500 hourly`);
+  console.log(`📊 Markets: Crypto 15min + hourly (BTC, ETH, SOL, DOGE, etc.)`);
   console.log(`💰 Min edge: ${config.minEdge}% | Max bet: ${config.maxBetPercent}%`);
   console.log(`📈 Performance tracking: ${performanceData.bets.length} historical bets loaded`);
 
