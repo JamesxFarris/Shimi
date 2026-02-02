@@ -2686,3 +2686,29 @@ body {
     flex-direction: column;
   }
 }
+
+.save-settings-btn {
+  margin-top: 16px;
+  width: 100%;
+  padding: 12px 24px;
+  background: linear-gradient(135deg, var(--neon-cyan), var(--neon-blue));
+  border: none;
+  border-radius: var(--radius-md);
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--bg-dark);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.save-settings-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--glow-cyan);
+}
+
+.save-settings-btn.saved {
+  background: linear-gradient(135deg, var(--neon-green), var(--accent-green-dim));
+}

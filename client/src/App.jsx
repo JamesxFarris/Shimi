@@ -294,6 +294,11 @@ function App() {
     hourly: { current: 0, max: 500, currentDollars: '0.00', maxDollars: '5.00' },
     other: { current: 0, max: 500, currentDollars: '0.00', maxDollars: '5.00' }
   })
+  const [riskSettings, setRiskSettings] = useState({
+    hourly: { maxPerBet: 200, maxTotal: 500 },
+    other: { maxPerBet: 200, maxTotal: 1000 }
+  })
+  const [settingsSaved, setSettingsSaved] = useState(false)
   const [marketFilter, setMarketFilter] = useState('all') // 'all', 'crypto', 'index'
   // News & Sentiment
   const [sentiment, setSentiment] = useState(null)
@@ -545,16 +550,25 @@ function App() {
     }
   }
 
-  // Update risk settings (debounced)
-  const updateRiskSettings = async (poolType, field, value) => {
-    try {
-      const body = {}
-      body[poolType] = { [field]: value }
+  // Update local risk settings state (doesn't save until Save clicked)
+  const updateRiskSettings = (poolType, field, value) => {
+    setSettingsSaved(false)
+    setRiskSettings(prev => ({
+      ...prev,
+      [poolType]: {
+        ...prev[poolType],
+        [field]: value
+      }
+    }))
+  }
 
+  // Save risk settings to server
+  const saveRiskSettings = async () => {
+    try {
       const res = await fetch(`${API_BASE}/api/settings/risk`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(riskSettings)
       })
       const data = await res.json()
       if (data.success) {
@@ -574,9 +588,11 @@ function App() {
           max: data.riskLimits.hourly.maxTotal + data.riskLimits.other.maxTotal,
           maxDollars: ((data.riskLimits.hourly.maxTotal + data.riskLimits.other.maxTotal) / 100).toFixed(2)
         }))
+        setSettingsSaved(true)
+        setTimeout(() => setSettingsSaved(false), 3000)
       }
     } catch (err) {
-      console.error('Error updating risk settings:', err)
+      console.error('Error saving risk settings:', err)
     }
   }
 
@@ -1235,8 +1251,8 @@ function App() {
                           min="0.10"
                           max="10.00"
                           step="0.10"
-                          defaultValue="2.00"
-                          onChange={(e) => updateRiskSettings('hourly', 'maxPerBet', Math.round(parseFloat(e.target.value) * 100))}
+                          value={(riskSettings.hourly.maxPerBet / 100).toFixed(2)}
+                          onChange={(e) => updateRiskSettings('hourly', 'maxPerBet', Math.round(parseFloat(e.target.value || 0) * 100))}
                         />
                       </div>
                       <div className="settings-input-group">
@@ -1246,8 +1262,8 @@ function App() {
                           min="1.00"
                           max="100.00"
                           step="1.00"
-                          defaultValue="5.00"
-                          onChange={(e) => updateRiskSettings('hourly', 'maxTotal', Math.round(parseFloat(e.target.value) * 100))}
+                          value={(riskSettings.hourly.maxTotal / 100).toFixed(2)}
+                          onChange={(e) => updateRiskSettings('hourly', 'maxTotal', Math.round(parseFloat(e.target.value || 0) * 100))}
                         />
                       </div>
                     </div>
@@ -1260,8 +1276,8 @@ function App() {
                           min="0.10"
                           max="10.00"
                           step="0.10"
-                          defaultValue="2.00"
-                          onChange={(e) => updateRiskSettings('other', 'maxPerBet', Math.round(parseFloat(e.target.value) * 100))}
+                          value={(riskSettings.other.maxPerBet / 100).toFixed(2)}
+                          onChange={(e) => updateRiskSettings('other', 'maxPerBet', Math.round(parseFloat(e.target.value || 0) * 100))}
                         />
                       </div>
                       <div className="settings-input-group">
@@ -1271,12 +1287,15 @@ function App() {
                           min="1.00"
                           max="100.00"
                           step="1.00"
-                          defaultValue="10.00"
-                          onChange={(e) => updateRiskSettings('other', 'maxTotal', Math.round(parseFloat(e.target.value) * 100))}
+                          value={(riskSettings.other.maxTotal / 100).toFixed(2)}
+                          onChange={(e) => updateRiskSettings('other', 'maxTotal', Math.round(parseFloat(e.target.value || 0) * 100))}
                         />
                       </div>
                     </div>
                   </div>
+                  <button className={`save-settings-btn ${settingsSaved ? 'saved' : ''}`} onClick={saveRiskSettings}>
+                    {settingsSaved ? '✓ Saved' : 'Save Settings'}
+                  </button>
                 </div>
 
                 {/* How It Works */}
