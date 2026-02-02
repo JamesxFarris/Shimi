@@ -1476,12 +1476,18 @@ function calculateEnsembleProbability(token, currentPrice, targetPrice, expiryMi
   const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0);
   Object.keys(weights).forEach(k => weights[k] /= totalWeight);
 
+  // SAFETY: Replace any NaN values with 0.5 (no information)
+  const safeNormalProb = isNaN(normalProbAbove) ? 0.5 : normalProbAbove;
+  const safeTProb = isNaN(tProbAbove) ? 0.5 : tProbAbove;
+  const safeBootstrapProb = isNaN(bootstrapProbAbove) ? 0.5 : bootstrapProbAbove;
+  const safeHistoricalProb = isNaN(historicalProbStay) ? 0.5 : historicalProbStay;
+
   // Calculate raw ensemble probability
   let ensembleProbAbove =
-    weights.normal * normalProbAbove +
-    weights.studentT * tProbAbove +
-    weights.bootstrap * bootstrapProbAbove +
-    weights.historical * (isAboveTarget ? historicalProbStay : 1 - historicalProbStay);
+    weights.normal * safeNormalProb +
+    weights.studentT * safeTProb +
+    weights.bootstrap * safeBootstrapProb +
+    weights.historical * (isAboveTarget ? safeHistoricalProb : 1 - safeHistoricalProb);
 
   // Apply momentum adjustment
   ensembleProbAbove = Math.max(0.05, Math.min(0.95, ensembleProbAbove + momentumAdjust));
@@ -2425,6 +2431,14 @@ function analyzeIndexMarket(parsed) {
     }
   }
 
+  // SAFETY CHECK: Ensure probabilities are valid
+  if (isNaN(probYesWins) || isNaN(probNoWins)) {
+    // Fallback based on distance from strike
+    const rawProb = 0.5 + (pctFromStrike / 100 * 5); // 1% distance = 5% prob adjustment
+    probYesWins = Math.max(0.2, Math.min(0.8, parsed.marketType === 'above' ? rawProb : 1 - rawProb));
+    probNoWins = 1 - probYesWins;
+  }
+
   // APPLY CALIBRATION: Adjust probabilities based on historical accuracy
   const marketType = parsed.ticker?.includes('1H') ? 'hourly' :
                      parsed.ticker?.includes('15M') ? '15min' : 'daily';
@@ -2432,9 +2446,9 @@ function analyzeIndexMarket(parsed) {
   const calibratedYes = getCalibratedProbability(probYesWins * 100, 'SPX', marketType);
   const calibratedNo = getCalibratedProbability(probNoWins * 100, 'SPX', marketType);
 
-  // Use calibrated probabilities
-  probYesWins = calibratedYes.probability / 100;
-  probNoWins = calibratedNo.probability / 100;
+  // Use calibrated probabilities (with NaN safety)
+  probYesWins = isNaN(calibratedYes.probability) ? probYesWins : calibratedYes.probability / 100;
+  probNoWins = isNaN(calibratedNo.probability) ? probNoWins : calibratedNo.probability / 100;
 
   // Market implied probabilities
   const marketProbYes = parsed.yesAsk;
@@ -2615,15 +2629,30 @@ function analyzeCryptoMarket(parsed) {
     timeMinutes
   );
 
+  // SAFETY CHECK: If prediction failed, use simple distance-based estimate
+  let probAbove = prediction.probAbove;
+  let probBelow = prediction.probBelow;
+
+  if (isNaN(probAbove) || isNaN(probBelow) || probAbove === undefined) {
+    // Fallback: simple estimate based on distance from strike
+    const pctDist = (currentPrice - parsed.strikePrice) / parsed.strikePrice;
+    // If price is above strike, higher prob of staying above
+    // Use sigmoid-like function capped between 0.2 and 0.8
+    const rawProb = 0.5 + (pctDist * 10); // 1% distance = 10% prob adjustment
+    probAbove = Math.max(0.2, Math.min(0.8, rawProb));
+    probBelow = 1 - probAbove;
+    console.log(`   ⚠️ Used fallback probability for ${parsed.cryptoType}: ${(probAbove*100).toFixed(0)}%`);
+  }
+
   // For "above/up" markets: YES wins if price >= strike at expiry
   // For "below/down" markets: YES wins if price < strike at expiry
   let probYesWins, probNoWins;
   if (parsed.marketType === 'above') {
-    probYesWins = prediction.probAbove;
-    probNoWins = prediction.probBelow;
+    probYesWins = probAbove;
+    probNoWins = probBelow;
   } else {
-    probYesWins = prediction.probBelow;
-    probNoWins = prediction.probAbove;
+    probYesWins = probBelow;
+    probNoWins = probAbove;
   }
 
   // APPLY CALIBRATION: Adjust probabilities based on historical accuracy
@@ -2633,9 +2662,9 @@ function analyzeCryptoMarket(parsed) {
   const calibratedYes = getCalibratedProbability(probYesWins * 100, parsed.cryptoType, marketType);
   const calibratedNo = getCalibratedProbability(probNoWins * 100, parsed.cryptoType, marketType);
 
-  // Use calibrated probabilities
-  probYesWins = calibratedYes.probability / 100;
-  probNoWins = calibratedNo.probability / 100;
+  // Use calibrated probabilities (with NaN safety)
+  probYesWins = isNaN(calibratedYes.probability) ? probYesWins : calibratedYes.probability / 100;
+  probNoWins = isNaN(calibratedNo.probability) ? probNoWins : calibratedNo.probability / 100;
 
   // Market implied probabilities from ask prices
   const marketProbYes = parsed.yesAsk;
