@@ -62,6 +62,258 @@ let betHistory = [];
 let portfolio = { balance: 0, positions: [] };
 
 // ============================================
+// PERFORMANCE TRACKING
+// ============================================
+// Track all bets and their outcomes to measure model accuracy
+
+const PERFORMANCE_FILE = path.join(__dirname, 'performance_data.json');
+
+let performanceData = {
+  bets: [],           // All tracked bets with outcomes
+  summary: {
+    totalBets: 0,
+    wins: 0,
+    losses: 0,
+    pending: 0,
+    totalWagered: 0,   // cents
+    totalProfit: 0,    // cents (can be negative)
+    winRate: 0,
+    avgPredictedProb: 0,
+    avgActualWinRate: 0,
+    calibration: {}    // predicted bucket -> actual win rate
+  },
+  byToken: {},        // token -> { bets, wins, losses, profit }
+  byProbBucket: {},   // "60-65" -> { bets, wins, actualRate }
+  byMarketType: {},   // "hourly" | "15min" | "daily" -> stats
+  lastUpdated: null
+};
+
+// Load performance data from file
+function loadPerformanceData() {
+  try {
+    if (fs.existsSync(PERFORMANCE_FILE)) {
+      const data = fs.readFileSync(PERFORMANCE_FILE, 'utf8');
+      performanceData = JSON.parse(data);
+      console.log(`📊 Loaded ${performanceData.bets.length} historical bets`);
+    }
+  } catch (err) {
+    console.log('Could not load performance data:', err.message);
+  }
+}
+
+// Save performance data to file
+function savePerformanceData() {
+  try {
+    performanceData.lastUpdated = new Date().toISOString();
+    fs.writeFileSync(PERFORMANCE_FILE, JSON.stringify(performanceData, null, 2));
+  } catch (err) {
+    console.log('Could not save performance data:', err.message);
+  }
+}
+
+// Track a new bet
+function trackBet(betInfo) {
+  const bet = {
+    id: betInfo.id || Date.now().toString(),
+    timestamp: new Date().toISOString(),
+    ticker: betInfo.ticker,
+    title: betInfo.title,
+    token: betInfo.token || betInfo.assetType || getTokenFromTicker(betInfo.ticker),
+    side: betInfo.side,
+    contracts: betInfo.count || 1,
+    price: betInfo.price,           // cents
+    totalCost: betInfo.totalCost,   // cents
+    predictedProb: betInfo.predictedProb || parseFloat(betInfo.winProbability) || 0,
+    marketPrice: betInfo.marketPrice || betInfo.price,
+    edge: betInfo.edge || 0,
+    strikePrice: betInfo.strikePrice,
+    currentPriceAtBet: betInfo.currentPrice,
+    expiryTime: betInfo.expiryTime,
+    marketType: betInfo.marketType || (betInfo.ticker?.includes('1H') ? 'hourly' :
+                                        betInfo.ticker?.includes('15M') ? '15min' : 'daily'),
+    // Outcome tracking (filled in later)
+    outcome: 'pending',  // 'won' | 'lost' | 'pending'
+    settlementPrice: null,
+    actualProfit: null,  // cents
+    settledAt: null
+  };
+
+  performanceData.bets.push(bet);
+  performanceData.summary.totalBets++;
+  performanceData.summary.pending++;
+  performanceData.summary.totalWagered += bet.totalCost;
+
+  savePerformanceData();
+  console.log(`📊 Tracked bet: ${bet.side} on ${bet.token} @ ${bet.price}¢ (${bet.predictedProb.toFixed(1)}% predicted)`);
+
+  return bet;
+}
+
+// Update bet with settlement outcome
+function settleBet(betId, outcome, settlementPrice, actualProfit) {
+  const bet = performanceData.bets.find(b => b.id === betId);
+  if (!bet || bet.outcome !== 'pending') return null;
+
+  bet.outcome = outcome;  // 'won' or 'lost'
+  bet.settlementPrice = settlementPrice;
+  bet.actualProfit = actualProfit;
+  bet.settledAt = new Date().toISOString();
+
+  // Update summary
+  performanceData.summary.pending--;
+  if (outcome === 'won') {
+    performanceData.summary.wins++;
+    performanceData.summary.totalProfit += actualProfit;
+  } else {
+    performanceData.summary.losses++;
+    performanceData.summary.totalProfit -= bet.totalCost;
+  }
+
+  // Update by token
+  const token = bet.token || 'UNKNOWN';
+  if (!performanceData.byToken[token]) {
+    performanceData.byToken[token] = { bets: 0, wins: 0, losses: 0, profit: 0 };
+  }
+  performanceData.byToken[token].bets++;
+  if (outcome === 'won') {
+    performanceData.byToken[token].wins++;
+    performanceData.byToken[token].profit += actualProfit;
+  } else {
+    performanceData.byToken[token].losses++;
+    performanceData.byToken[token].profit -= bet.totalCost;
+  }
+
+  // Update by probability bucket
+  const probBucket = getProbBucket(bet.predictedProb);
+  if (!performanceData.byProbBucket[probBucket]) {
+    performanceData.byProbBucket[probBucket] = { bets: 0, wins: 0 };
+  }
+  performanceData.byProbBucket[probBucket].bets++;
+  if (outcome === 'won') {
+    performanceData.byProbBucket[probBucket].wins++;
+  }
+
+  // Update by market type
+  const mktType = bet.marketType || 'other';
+  if (!performanceData.byMarketType[mktType]) {
+    performanceData.byMarketType[mktType] = { bets: 0, wins: 0, losses: 0, profit: 0 };
+  }
+  performanceData.byMarketType[mktType].bets++;
+  if (outcome === 'won') {
+    performanceData.byMarketType[mktType].wins++;
+    performanceData.byMarketType[mktType].profit += actualProfit;
+  } else {
+    performanceData.byMarketType[mktType].losses++;
+    performanceData.byMarketType[mktType].profit -= bet.totalCost;
+  }
+
+  // Recalculate summary stats
+  recalculateSummary();
+  savePerformanceData();
+
+  console.log(`📊 Settled bet: ${bet.side} on ${bet.token} → ${outcome.toUpperCase()} (${actualProfit > 0 ? '+' : ''}${actualProfit}¢)`);
+  return bet;
+}
+
+// Get probability bucket string (e.g., "60-65", "65-70")
+function getProbBucket(prob) {
+  if (prob < 55) return '50-55';
+  if (prob < 60) return '55-60';
+  if (prob < 65) return '60-65';
+  if (prob < 70) return '65-70';
+  if (prob < 75) return '70-75';
+  if (prob < 80) return '75-80';
+  if (prob < 85) return '80-85';
+  return '85+';
+}
+
+// Recalculate summary statistics
+function recalculateSummary() {
+  const settled = performanceData.bets.filter(b => b.outcome !== 'pending');
+  if (settled.length === 0) return;
+
+  // Win rate
+  performanceData.summary.winRate = (performanceData.summary.wins / settled.length) * 100;
+
+  // Average predicted probability
+  performanceData.summary.avgPredictedProb =
+    settled.reduce((sum, b) => sum + b.predictedProb, 0) / settled.length;
+
+  // Calculate calibration (predicted vs actual win rates by bucket)
+  const calibration = {};
+  for (const [bucket, data] of Object.entries(performanceData.byProbBucket)) {
+    if (data.bets > 0) {
+      calibration[bucket] = {
+        predicted: getBucketMidpoint(bucket),
+        actual: (data.wins / data.bets) * 100,
+        bets: data.bets,
+        difference: ((data.wins / data.bets) * 100) - getBucketMidpoint(bucket)
+      };
+    }
+  }
+  performanceData.summary.calibration = calibration;
+}
+
+// Get midpoint of a bucket for calibration
+function getBucketMidpoint(bucket) {
+  const map = {
+    '50-55': 52.5, '55-60': 57.5, '60-65': 62.5, '65-70': 67.5,
+    '70-75': 72.5, '75-80': 77.5, '80-85': 82.5, '85+': 87.5
+  };
+  return map[bucket] || 60;
+}
+
+// Check and settle pending bets (call periodically)
+async function checkPendingSettlements() {
+  const pending = performanceData.bets.filter(b => b.outcome === 'pending');
+  if (pending.length === 0) return;
+
+  console.log(`📊 Checking ${pending.length} pending bets for settlement...`);
+
+  for (const bet of pending) {
+    try {
+      // Check if market has settled
+      if (bet.expiryTime && new Date(bet.expiryTime) > new Date()) {
+        continue; // Not expired yet
+      }
+
+      // Try to get settlement from Kalshi
+      if (config.isAuthenticated && bet.ticker) {
+        try {
+          const market = await kalshiRequest('GET', `/markets/${bet.ticker}`);
+          if (market.market?.result) {
+            const result = market.market.result;  // 'yes' or 'no'
+            const won = (bet.side.toLowerCase() === result);
+            const profit = won ? (bet.contracts * 100 - bet.totalCost) : 0;
+            settleBet(bet.id, won ? 'won' : 'lost', market.market.settlement_value, profit);
+          }
+        } catch (e) {
+          // Market might not exist or API error - skip
+        }
+      }
+
+      // For simulated bets or if we can't get Kalshi data, check price
+      if (bet.outcome === 'pending' && bet.strikePrice && bet.token) {
+        const currentPrice = cryptoPrices[bet.token]?.price || indexPrices[bet.token]?.price;
+        if (currentPrice && bet.expiryTime && new Date(bet.expiryTime) <= new Date()) {
+          // Market should have settled - determine outcome from price
+          const isAbove = currentPrice >= bet.strikePrice;
+          const won = (bet.side.toLowerCase() === 'yes' && isAbove) ||
+                      (bet.side.toLowerCase() === 'no' && !isAbove);
+          const profit = won ? (bet.contracts * 100 - bet.totalCost) : 0;
+          settleBet(bet.id, won ? 'won' : 'lost', currentPrice, profit);
+        }
+      }
+    } catch (err) {
+      console.log(`Error checking settlement for ${bet.ticker}:`, err.message);
+    }
+  }
+}
+
+// Load performance data on startup
+loadPerformanceData();
+
+// ============================================
 // AUTO-LOAD CREDENTIALS FROM ENVIRONMENT
 // ============================================
 // Set these in Render dashboard under Environment Variables:
@@ -2895,6 +3147,18 @@ app.post('/api/bet', async (req, res) => {
       betHistory.unshift(betRecord);
       config.bankroll -= betRecord.totalCost;
 
+      // Track for performance analysis
+      trackBet({
+        ...betRecord,
+        token: market.assetType || getTokenFromTicker(ticker),
+        predictedProb: parseFloat(req.body.winProbability) || 60,
+        edge: parseFloat(req.body.edge) || 5,
+        strikePrice: market.strikePrice,
+        currentPrice: market.currentPrice,
+        expiryTime: market.expiry || market.close_time,
+        marketType: isHourlyMarket(ticker) ? 'hourly' : ticker?.includes('15M') ? '15min' : 'daily'
+      });
+
       return res.json({
         success: true,
         simulated: true,
@@ -2951,6 +3215,19 @@ app.post('/api/bet', async (req, res) => {
       betRecord.avgPrice = order.average_fill_price || priceCents;
       betRecord.totalCost = filledCount * (order.average_fill_price || priceCents);
       betHistory.unshift(betRecord);
+
+      // Track for performance analysis
+      trackBet({
+        ...betRecord,
+        count: filledCount,
+        token: market.assetType || getTokenFromTicker(ticker),
+        predictedProb: parseFloat(req.body.winProbability) || 60,
+        edge: parseFloat(req.body.edge) || 5,
+        strikePrice: market.strikePrice,
+        currentPrice: market.currentPrice,
+        expiryTime: market.expiry || market.close_time,
+        marketType: isHourlyMarket(ticker) ? 'hourly' : ticker?.includes('15M') ? '15min' : 'daily'
+      });
 
       const balanceData = await kalshiRequest('GET', '/portfolio/balance');
       portfolio.balance = balanceData.balance || 0;
@@ -3168,6 +3445,16 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       betHistory.unshift(betRecord);
       config.bankroll -= betRecord.totalCost;
 
+      // Track for performance analysis
+      trackBet({
+        ...betRecord,
+        token: best.assetType || best.cryptoType || getTokenFromTicker(best.ticker),
+        predictedProb: parseFloat(best.winProbability),
+        marketPrice: priceCents,
+        marketType: isHourlyMarket(best.ticker) ? 'hourly' : best.ticker?.includes('15M') ? '15min' : 'daily',
+        expiryTime: best.expiry || best.close_time
+      });
+
       return res.json({
         success: true,
         simulated: true,
@@ -3226,6 +3513,17 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       betRecord.avgPrice = order.average_fill_price || priceCents;
       betRecord.totalCost = filledCount * (order.average_fill_price || priceCents);
       betHistory.unshift(betRecord);
+
+      // Track for performance analysis
+      trackBet({
+        ...betRecord,
+        count: filledCount,
+        token: best.assetType || best.cryptoType || getTokenFromTicker(best.ticker),
+        predictedProb: parseFloat(best.winProbability),
+        marketPrice: betRecord.avgPrice,
+        marketType: isHourlyMarket(best.ticker) ? 'hourly' : best.ticker?.includes('15M') ? '15min' : 'daily',
+        expiryTime: best.expiry || best.close_time
+      });
 
       const balanceData = await kalshiRequest('GET', '/portfolio/balance');
       portfolio.balance = balanceData.balance || 0;
@@ -3512,6 +3810,19 @@ async function runAutoBet() {
       betRecord.orderId = 'SIM-' + Date.now();
       betHistory.unshift(betRecord);
       config.bankroll -= betRecord.totalCost;
+
+      // Track for performance analysis
+      trackBet({
+        ...betRecord,
+        token: best.assetType || best.cryptoType || getTokenFromTicker(best.ticker),
+        predictedProb: parseFloat(best.winProbability),
+        marketPrice: priceCents,
+        strikePrice: best.strikePrice,
+        currentPrice: best.currentPrice,
+        marketType: isHourlyMarket(best.ticker) ? 'hourly' : best.ticker?.includes('15M') ? '15min' : 'daily',
+        expiryTime: best.expiry || best.close_time
+      });
+
       console.log(`\n🎰 SIMULATED BET PLACED:`);
       console.log(`   ${betRecord.side.toUpperCase()} on ${assetName}`);
       console.log(`   ${count} contracts @ ${priceCents}¢ = $${(betRecord.totalCost/100).toFixed(2)}`);
@@ -3570,6 +3881,19 @@ async function runAutoBet() {
     betRecord.avgPrice = order.average_fill_price || priceCents;
     betRecord.totalCost = filledCount * (order.average_fill_price || priceCents);
     betHistory.unshift(betRecord);
+
+    // Track for performance analysis
+    trackBet({
+      ...betRecord,
+      count: filledCount,
+      token: best.assetType || best.cryptoType || getTokenFromTicker(best.ticker),
+      predictedProb: parseFloat(best.winProbability),
+      marketPrice: betRecord.avgPrice,
+      strikePrice: best.strikePrice,
+      currentPrice: best.currentPrice,
+      marketType: isHourlyMarket(best.ticker) ? 'hourly' : best.ticker?.includes('15M') ? '15min' : 'daily',
+      expiryTime: best.expiry || best.close_time
+    });
 
     const balanceData = await kalshiRequest('GET', '/portfolio/balance');
     config.bankroll = balanceData.balance || 0;
@@ -3877,6 +4201,144 @@ app.post('/api/settings', (req, res) => {
   });
 });
 
+// ============================================
+// PERFORMANCE TRACKING ENDPOINTS
+// ============================================
+
+// Get performance summary
+app.get('/api/performance', (req, res) => {
+  // Check for pending settlements first
+  checkPendingSettlements();
+
+  const settled = performanceData.bets.filter(b => b.outcome !== 'pending');
+  const pending = performanceData.bets.filter(b => b.outcome === 'pending');
+
+  res.json({
+    success: true,
+    summary: {
+      ...performanceData.summary,
+      totalBets: performanceData.bets.length,
+      settledBets: settled.length,
+      pendingBets: pending.length,
+      winRate: settled.length > 0 ? ((performanceData.summary.wins / settled.length) * 100).toFixed(1) : '0.0',
+      totalWageredDollars: (performanceData.summary.totalWagered / 100).toFixed(2),
+      totalProfitDollars: (performanceData.summary.totalProfit / 100).toFixed(2),
+      roi: performanceData.summary.totalWagered > 0
+        ? ((performanceData.summary.totalProfit / performanceData.summary.totalWagered) * 100).toFixed(1)
+        : '0.0'
+    },
+    byToken: performanceData.byToken,
+    byProbBucket: performanceData.byProbBucket,
+    byMarketType: performanceData.byMarketType,
+    calibration: performanceData.summary.calibration,
+    recentBets: performanceData.bets.slice(-20).reverse()  // Last 20 bets, newest first
+  });
+});
+
+// Get detailed bet history
+app.get('/api/performance/bets', (req, res) => {
+  const limit = parseInt(req.query.limit) || 50;
+  const offset = parseInt(req.query.offset) || 0;
+  const status = req.query.status; // 'pending', 'won', 'lost', or undefined for all
+
+  let bets = performanceData.bets;
+  if (status) {
+    bets = bets.filter(b => b.outcome === status);
+  }
+
+  const total = bets.length;
+  const paginated = bets.slice(-limit - offset).slice(0, limit).reverse();
+
+  res.json({
+    success: true,
+    total,
+    offset,
+    limit,
+    bets: paginated
+  });
+});
+
+// Get calibration data (predicted vs actual)
+app.get('/api/performance/calibration', (req, res) => {
+  const calibration = [];
+
+  for (const [bucket, data] of Object.entries(performanceData.byProbBucket)) {
+    if (data.bets >= 1) {  // Only include buckets with at least 1 bet
+      calibration.push({
+        bucket,
+        predictedProb: getBucketMidpoint(bucket),
+        actualWinRate: (data.wins / data.bets) * 100,
+        bets: data.bets,
+        wins: data.wins,
+        difference: ((data.wins / data.bets) * 100) - getBucketMidpoint(bucket)
+      });
+    }
+  }
+
+  // Sort by bucket
+  calibration.sort((a, b) => a.predictedProb - b.predictedProb);
+
+  // Calculate overall calibration score (lower is better)
+  const calibrationScore = calibration.length > 0
+    ? calibration.reduce((sum, c) => sum + Math.abs(c.difference) * c.bets, 0) /
+      calibration.reduce((sum, c) => sum + c.bets, 0)
+    : 0;
+
+  res.json({
+    success: true,
+    calibration,
+    calibrationScore: calibrationScore.toFixed(1),
+    interpretation: calibrationScore < 5 ? 'Excellent' :
+                    calibrationScore < 10 ? 'Good' :
+                    calibrationScore < 15 ? 'Fair' : 'Needs improvement'
+  });
+});
+
+// Manually settle a bet (for testing/correction)
+app.post('/api/performance/settle', (req, res) => {
+  const { betId, outcome, settlementPrice } = req.body;
+
+  if (!betId || !outcome || !['won', 'lost'].includes(outcome)) {
+    return res.status(400).json({ success: false, error: 'Invalid betId or outcome' });
+  }
+
+  const bet = performanceData.bets.find(b => b.id === betId);
+  if (!bet) {
+    return res.status(404).json({ success: false, error: 'Bet not found' });
+  }
+
+  const profit = outcome === 'won' ? (bet.contracts * 100 - bet.totalCost) : 0;
+  const settled = settleBet(betId, outcome, settlementPrice || null, profit);
+
+  res.json({
+    success: true,
+    bet: settled
+  });
+});
+
+// Force check all pending settlements
+app.post('/api/performance/check-settlements', async (req, res) => {
+  await checkPendingSettlements();
+  res.json({
+    success: true,
+    pending: performanceData.bets.filter(b => b.outcome === 'pending').length
+  });
+});
+
+// Clear all performance data (for testing)
+app.delete('/api/performance', (req, res) => {
+  performanceData = {
+    bets: [],
+    summary: { totalBets: 0, wins: 0, losses: 0, pending: 0, totalWagered: 0, totalProfit: 0, winRate: 0, avgPredictedProb: 0, avgActualWinRate: 0, calibration: {} },
+    byToken: {},
+    byProbBucket: {},
+    byMarketType: {},
+    lastUpdated: null
+  };
+  savePerformanceData();
+  res.json({ success: true, message: 'Performance data cleared' });
+});
+
 app.get('/api/health', (req, res) => {
   const activePrices = Object.entries(cryptoPrices)
     .filter(([_, d]) => d.price > 0)
@@ -3887,7 +4349,11 @@ app.get('/api/health', (req, res) => {
     trackedTokens: Object.keys(TRACKED_TOKENS).length,
     activePrices: activePrices.length,
     autoBetEnabled: config.autoBetEnabled,
-    authenticated: config.isAuthenticated
+    authenticated: config.isAuthenticated,
+    performanceTracking: {
+      totalBets: performanceData.bets.length,
+      pendingBets: performanceData.bets.filter(b => b.outcome === 'pending').length
+    }
   });
 });
 
@@ -3921,9 +4387,19 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
   console.log(`🎰 Shimi Crypto Bot running on port ${PORT}`);
   console.log(`📊 Tracking ${Object.keys(TRACKED_TOKENS).length} tokens: ${Object.keys(TRACKED_TOKENS).join(', ')}`);
   console.log(`💰 Min edge: ${config.minEdge}% | Max bet: ${config.maxBetPercent}%`);
+  console.log(`📈 Performance tracking: ${performanceData.bets.length} historical bets loaded`);
 
   // Auto-load Kalshi credentials from environment
   await loadCredentialsFromEnv();
+
+  // Check pending settlements every 2 minutes
+  setInterval(async () => {
+    try {
+      await checkPendingSettlements();
+    } catch (err) {
+      console.log('Settlement check error:', err.message);
+    }
+  }, 2 * 60 * 1000);
 });
 
 server.on('error', (err) => {

@@ -2131,6 +2131,309 @@ body {
 }
 
 /* ============================================
+   Performance Page
+   ============================================ */
+
+.performance-page {
+  max-width: 900px;
+}
+
+.performance-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.perf-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 14px;
+}
+
+.perf-card.wide {
+  grid-column: span 2;
+}
+
+.perf-card-title {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+  letter-spacing: 0.5px;
+}
+
+.perf-card-title::before {
+  content: '> ';
+  color: var(--neon-cyan);
+}
+
+.perf-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.perf-stat-row {
+  display: flex;
+  gap: 12px;
+}
+
+.perf-stat-row.secondary {
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color);
+}
+
+.perf-stat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.perf-stat.small {
+  flex: 0.8;
+}
+
+.perf-stat-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.perf-stat-value {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.perf-stat-value.positive {
+  color: var(--neon-green);
+  text-shadow: 0 0 8px rgba(0, 255, 136, 0.4);
+}
+
+.perf-stat-value.negative {
+  color: var(--accent-red);
+  text-shadow: 0 0 8px rgba(255, 51, 102, 0.4);
+}
+
+.perf-stat.small .perf-stat-value {
+  font-size: 16px;
+}
+
+/* Calibration Table */
+.calibration-table {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.calibration-header,
+.calibration-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 0.6fr;
+  gap: 8px;
+  padding: 6px 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.calibration-header {
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.calibration-row {
+  color: var(--text-secondary);
+}
+
+.calibration-row .positive {
+  color: var(--neon-green);
+}
+
+.calibration-row .negative {
+  color: var(--accent-red);
+}
+
+/* Token Performance List */
+.token-perf-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.token-perf-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
+}
+
+.token-perf-row .token-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--neon-cyan);
+  min-width: 50px;
+}
+
+.token-perf-row .token-stats {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: 1;
+}
+
+.token-perf-row .token-profit {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.token-perf-row .token-profit.positive {
+  color: var(--neon-green);
+}
+
+.token-perf-row .token-profit.negative {
+  color: var(--accent-red);
+}
+
+/* Recent Bets List */
+.recent-bets-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.recent-bet-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--border-color);
+}
+
+.recent-bet-row.won {
+  border-left-color: var(--neon-green);
+}
+
+.recent-bet-row.lost {
+  border-left-color: var(--accent-red);
+}
+
+.recent-bet-row.pending {
+  border-left-color: var(--neon-cyan);
+}
+
+.recent-bet-row .bet-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.recent-bet-row .bet-side {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.recent-bet-row .bet-side.yes {
+  background: rgba(0, 255, 136, 0.2);
+  color: var(--neon-green);
+}
+
+.recent-bet-row .bet-side.no {
+  background: rgba(255, 51, 102, 0.2);
+  color: var(--accent-red);
+}
+
+.recent-bet-row .bet-token {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--neon-cyan);
+}
+
+.recent-bet-row .bet-title {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-bet-row .bet-details {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 0;
+  border: none;
+}
+
+.recent-bet-row .bet-outcome {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.recent-bet-row .bet-outcome .positive {
+  color: var(--neon-green);
+}
+
+.recent-bet-row .bet-outcome .negative {
+  color: var(--accent-red);
+}
+
+.no-data {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 20px;
+}
+
+.loading-text {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+@media (max-width: 768px) {
+  .performance-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .perf-card.wide {
+    grid-column: span 1;
+  }
+
+  .perf-stat-row {
+    flex-wrap: wrap;
+  }
+
+  .perf-stat {
+    min-width: 45%;
+  }
+}
+
+/* ============================================
    Mobile Bottom Nav
    ============================================ */
 
