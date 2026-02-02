@@ -4181,8 +4181,8 @@ async function runAutoBet() {
       // SORT BY EXPECTED VALUE (best risk-adjusted bets first)
       .sort((a, b) => b.evScore - a.evScore);
 
-    const highEdgeCount = opportunities.filter(o => o.edge >= 5).length;
-    console.log(`   Final: ${opportunities.length} opportunities (${highEdgeCount} with 5%+ edge)`);
+    const highEdgeCount = opportunities.filter(o => parseFloat(o.edge) >= MIN_EDGE).length;
+    console.log(`   Final: ${opportunities.length} opportunities (${highEdgeCount} with ${MIN_EDGE}%+ edge)`);
 
     // Show top opportunities
     if (opportunities.length > 0) {
