@@ -2940,9 +2940,12 @@ function analyzeCryptoMarket(parsed) {
   const ev = (winProbability / 100) * potentialWin - ((100 - winProbability) / 100) * betPriceCents;
 
   // DEGEN vs SAFE classification
-  // DEGEN = low confidence OR thin edge (1-3%) OR low price (against market)
-  const isDegen = signal.confidence === 'low' || edge < 3 || betPriceCents < 40;
-  const isSafe = !isDegen && edge >= 3 && (signal.confidence === 'high' || signal.confidence === 'very_high');
+  // SAFE = medium/high/very_high confidence + any positive edge
+  // Small gains ($0.20 on $5) are fine if the bet is safe
+  // DEGEN = low confidence OR betting against strong market (price < 30¢)
+  const hasGoodConfidence = signal.confidence === 'medium' || signal.confidence === 'high' || signal.confidence === 'very_high';
+  const isSafe = hasGoodConfidence && edge > 0 && betPriceCents >= 30;
+  const isDegen = signal.confidence === 'low' || betPriceCents < 30;
 
   return {
     ticker: parsed.ticker,
