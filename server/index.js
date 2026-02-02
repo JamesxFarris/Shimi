@@ -1151,16 +1151,46 @@ fetchIndexPrice();
 const MAX_TOTAL_RISK_CENTS = 500; // $5.00 max TOTAL at risk across ALL positions
 
 function getCurrentRiskFromPortfolio() {
-  // Sum up the cost of all active (unsettled) positions
+  // Sum up the cost of all active (unsettled) positions from Kalshi
   let totalRisk = 0;
+  const kalshiTickers = new Set();
+
   if (portfolio.positions && Array.isArray(portfolio.positions)) {
     for (const pos of portfolio.positions) {
       // Each position's risk is contracts * price paid
       const contracts = Math.abs(pos.position || 0);
-      const avgPrice = pos.average_price || 50; // cents
-      totalRisk += contracts * avgPrice;
+      if (contracts > 0) {
+        const avgPrice = pos.average_price || 50; // cents
+        totalRisk += contracts * avgPrice;
+        kalshiTickers.add(pos.ticker);
+      }
     }
   }
+
+  // Also add unsettled bets from local history that aren't in Kalshi positions
+  // Only count bets from the last 2 hours - older ones should be in Kalshi or settled
+  const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
+  const unsettledBets = betHistory.filter(bet => {
+    // Must be unsettled status
+    if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') {
+      return false;
+    }
+    // Must be recent
+    const betTime = new Date(bet.timestamp).getTime();
+    if (betTime < twoHoursAgo) {
+      return false;
+    }
+    // Must not already be counted in Kalshi positions
+    if (kalshiTickers.has(bet.ticker)) {
+      return false;
+    }
+    return true;
+  });
+
+  for (const bet of unsettledBets) {
+    totalRisk += bet.totalCost || (bet.count * bet.price) || 0;
+  }
+
   return totalRisk;
 }
 
@@ -1959,8 +1989,46 @@ app.get('/api/risk', async (req, res) => {
       }
     }
 
-    const currentRisk = getCurrentRiskFromPortfolio();
-    const remainingBudget = getRemainingRiskBudget();
+    // Calculate risk from Kalshi positions
+    let kalshiRisk = 0;
+    const kalshiTickers = new Set();
+    if (portfolio.positions && Array.isArray(portfolio.positions)) {
+      for (const pos of portfolio.positions) {
+        const contracts = Math.abs(pos.position || 0);
+        if (contracts > 0) {
+          const avgPrice = pos.average_price || 50;
+          kalshiRisk += contracts * avgPrice;
+          kalshiTickers.add(pos.ticker);
+        }
+      }
+    }
+
+    // Calculate risk from unsettled local bets not yet in Kalshi positions
+    // Only count bets from the last 2 hours
+    let localRisk = 0;
+    const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
+    const unsettledBets = betHistory.filter(bet => {
+      if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') {
+        return false;
+      }
+      const betTime = new Date(bet.timestamp).getTime();
+      if (betTime < twoHoursAgo) {
+        return false;
+      }
+      if (kalshiTickers.has(bet.ticker)) {
+        return false;
+      }
+      return true;
+    });
+
+    for (const bet of unsettledBets) {
+      localRisk += bet.totalCost || (bet.count * bet.price) || 0;
+    }
+
+    const currentRisk = kalshiRisk + localRisk;
+    const remainingBudget = Math.max(0, MAX_TOTAL_RISK_CENTS - currentRisk);
+
+    console.log(`📊 Risk: Kalshi=$${(kalshiRisk/100).toFixed(2)} (${kalshiTickers.size} positions), Local=$${(localRisk/100).toFixed(2)} (${unsettledBets.length} bets), Total=$${(currentRisk/100).toFixed(2)} / $${(MAX_TOTAL_RISK_CENTS/100).toFixed(2)}`);
 
     res.json({
       success: true,
@@ -1971,7 +2039,10 @@ app.get('/api/risk', async (req, res) => {
         currentDollars: (currentRisk / 100).toFixed(2),
         maxDollars: (MAX_TOTAL_RISK_CENTS / 100).toFixed(2),
         remainingDollars: (remainingBudget / 100).toFixed(2),
-        positionCount: portfolio.positions?.length || 0
+        positionCount: kalshiTickers.size,
+        unsettledBetCount: unsettledBets.length,
+        kalshiRiskDollars: (kalshiRisk / 100).toFixed(2),
+        localRiskDollars: (localRisk / 100).toFixed(2)
       }
     });
   } catch (error) {
