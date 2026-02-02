@@ -2103,7 +2103,7 @@ app.get('/api/reddit/sentiment', async (req, res) => {
 // Place a bet
 app.post('/api/bet', async (req, res) => {
   try {
-    const { ticker, side } = req.body;
+    const { ticker, side, expectedPrice } = req.body;
 
     if (!ticker || !side) {
       return res.status(400).json({ success: false, error: 'ticker and side required' });
@@ -2138,17 +2138,28 @@ app.post('/api/bet', async (req, res) => {
     }
 
     // Kalshi API returns prices in cents already (e.g., yes_ask: 4 means 4 cents)
-    const priceCents = side.toLowerCase() === 'yes'
+    let priceCents = side.toLowerCase() === 'yes'
       ? parseFloat(market.yes_ask) || 0
       : parseFloat(market.no_ask) || 0;
 
-    console.log(`Bet attempt: ${ticker} | side=${side} | yes_ask=${market.yes_ask} | no_ask=${market.no_ask} | priceCents=${priceCents}`);
+    console.log(`Bet attempt: ${ticker} | side=${side} | yes_ask=${market.yes_ask} | no_ask=${market.no_ask} | priceCents=${priceCents} | expectedPrice=${expectedPrice}`);
+
+    // If we have an expected price from the UI and the fetched price is 0 or very different, use expected
+    if (expectedPrice && expectedPrice > 0) {
+      if (priceCents <= 0) {
+        console.log(`Using expected price ${expectedPrice} since market price is 0`);
+        priceCents = expectedPrice;
+      } else if (Math.abs(priceCents - expectedPrice) > 10) {
+        // Price changed by more than 10 cents - warn but proceed with current price
+        console.log(`Price changed: expected ${expectedPrice}, got ${priceCents}`);
+      }
+    }
 
     if (!priceCents || priceCents <= 0) {
       return res.status(400).json({
         success: false,
-        error: `No liquidity for ${side.toUpperCase()} side. Try the other side or wait for market makers.`,
-        debug: { yes_ask: market.yes_ask, no_ask: market.no_ask }
+        error: `No liquidity for ${side.toUpperCase()} side (price=0). Try the other side or wait.`,
+        debug: { yes_ask: market.yes_ask, no_ask: market.no_ask, ticker }
       });
     }
 
@@ -2459,7 +2470,11 @@ let autoBetInterval = null;
 
 async function runAutoBet() {
   try {
-    console.log('🤖 Scanning ALL markets for opportunities...');
+    console.log('\n🤖 ========== AUTO-BET SCAN ==========');
+
+    // Force fresh data
+    marketCache.lastFetch = 0;
+    indexMarketCache.lastFetch = 0;
 
     // Fetch both crypto and index markets
     const [cryptoMarkets, indexMarkets] = await Promise.all([
@@ -2475,6 +2490,9 @@ async function runAutoBet() {
       }
     }
 
+    console.log(`📊 Fetched: ${cryptoMarkets.length} crypto, ${indexMarkets.length} index markets`);
+    console.log(`   Recent bets tracking: ${recentBets.size} markets`);
+
     // Analyze crypto opportunities
     const cryptoOpps = cryptoMarkets
       .map(m => {
@@ -2487,27 +2505,38 @@ async function runAutoBet() {
     const indexOpps = indexMarkets
       .map(m => analyzeIndexMarket(parseIndexMarket(m)));
 
+    // Count before filtering
+    const allOpps = [...cryptoOpps, ...indexOpps].filter(m => m !== null);
+    const withEdge = allOpps.filter(m => m.edge > 0);
+    const above50 = allOpps.filter(m => parseFloat(m.winProbability) >= 50);
+    const above60 = allOpps.filter(m => parseFloat(m.winProbability) >= 60);
+
+    console.log(`   Analyzed: ${allOpps.length} valid | ${withEdge.length} with edge | ${above50.length} >50% | ${above60.length} >60%`);
+
     // Combine and filter
     const opportunities = [...cryptoOpps, ...indexOpps]
       .filter(m => {
         if (m === null) return false;
         // Skip if we already bet on this exact market
-        if (recentBets.has(m.ticker)) return false;
+        if (recentBets.has(m.ticker)) {
+          return false;
+        }
         // REQUIRE 60%+ WIN PROBABILITY for auto-betting
         const winProb = parseFloat(m.winProbability) || 0;
         if (winProb < 60) return false;
+        // Also require positive edge
+        if (m.edge < 0.5) return false;
         return true;
       })
       // SORT BY WIN PROBABILITY (safest bets first)
       .sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
 
-    const totalMarkets = cryptoMarkets.length + indexMarkets.length;
     const highConfCount = opportunities.filter(o => parseFloat(o.winProbability) >= 70).length;
-    console.log(`📊 Scanned ${totalMarkets} markets (${cryptoMarkets.length} crypto, ${indexMarkets.length} index)`);
-    console.log(`   ${opportunities.length} with 60%+ win prob (${highConfCount} above 70%)`);
+    console.log(`   Final: ${opportunities.length} opportunities (${highConfCount} above 70%)`);
 
     if (opportunities.length === 0) {
-      console.log('⏳ No opportunities - waiting for next scan...');
+      console.log('⏳ No valid opportunities - waiting for next scan...');
+      console.log('========================================\n');
       return;
     }
 
@@ -2571,11 +2600,17 @@ async function runAutoBet() {
       betRecord.orderId = 'SIM-' + Date.now();
       betHistory.unshift(betRecord);
       config.bankroll -= betRecord.totalCost;
-      console.log(`🎰 Simulated: ${betRecord.side.toUpperCase()} on ${assetName} | $${(betRecord.totalCost/100).toFixed(2)} | Edge: ${best.edge.toFixed(1)}%`);
+      console.log(`\n🎰 SIMULATED BET PLACED:`);
+      console.log(`   ${betRecord.side.toUpperCase()} on ${assetName}`);
+      console.log(`   ${count} contracts @ ${priceCents}¢ = $${(betRecord.totalCost/100).toFixed(2)}`);
+      console.log(`   Edge: +${best.edge.toFixed(1)}% | Win prob: ${best.winProbability}%`);
+      console.log(`   New balance: $${(config.bankroll/100).toFixed(2)}`);
+      console.log('========================================\n');
       return;
     }
 
     // Real bet - use market order for immediate fill
+    console.log(`\n💸 PLACING REAL BET...`);
     const orderRequest = {
       ticker: best.ticker,
       action: 'buy',
@@ -2583,13 +2618,16 @@ async function runAutoBet() {
       type: 'market',
       count
     };
+    console.log(`   Order: ${JSON.stringify(orderRequest)}`);
 
     const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
+    console.log(`   Response: ${JSON.stringify(orderResponse)}`);
 
     const order = orderResponse.order;
     if (!order) {
       console.error('❌ No order in response');
       recentBets.delete(best.ticker);
+      console.log('========================================\n');
       return;
     }
 
@@ -2600,6 +2638,7 @@ async function runAutoBet() {
     if (status === 'canceled' || filledCount === 0) {
       console.error(`❌ Order not filled. Status: ${status}. No liquidity.`);
       recentBets.delete(best.ticker);
+      console.log('========================================\n');
       return;
     }
 
@@ -2614,10 +2653,16 @@ async function runAutoBet() {
     const balanceData = await kalshiRequest('GET', '/portfolio/balance');
     config.bankroll = balanceData.balance || 0;
 
-    console.log(`🎰 FILLED: ${betRecord.side.toUpperCase()} on ${best.cryptoType} | ${filledCount} @ ${betRecord.avgPrice}¢ | Edge: ${best.edge.toFixed(1)}%`);
+    console.log(`\n✅ REAL BET FILLED:`);
+    console.log(`   ${betRecord.side.toUpperCase()} on ${best.cryptoType || best.assetType}`);
+    console.log(`   ${filledCount} contracts @ ${betRecord.avgPrice}¢`);
+    console.log(`   Edge: +${best.edge.toFixed(1)}% | New balance: $${(config.bankroll/100).toFixed(2)}`);
+    console.log('========================================\n');
 
   } catch (error) {
-    console.error('Auto-bet error:', error.message);
+    console.error('❌ Auto-bet error:', error.message);
+    console.error('   Stack:', error.stack);
+    console.log('========================================\n');
   }
 }
 

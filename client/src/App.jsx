@@ -448,7 +448,8 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ticker: opp.ticker,
-          side: opp.betSide
+          side: opp.betSide,
+          expectedPrice: opp.betPriceCents || Math.round(opp.betPrice * 100)
         }),
         signal: controller.signal
       })
