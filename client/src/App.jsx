@@ -990,8 +990,12 @@ function App() {
                       <span className="settings-value">{formatCurrency(balance)}</span>
                     </div>
                     <div className="settings-item">
-                      <span className="settings-label">Bet Amount</span>
-                      <span className="settings-value">$1.00 fixed</span>
+                      <span className="settings-label">Max per Bet (Hourly)</span>
+                      <span className="settings-value">${(riskSettings.hourly.maxPerBet / 100).toFixed(2)}</span>
+                    </div>
+                    <div className="settings-item">
+                      <span className="settings-label">Max per Bet (Other)</span>
+                      <span className="settings-value">${(riskSettings.other.maxPerBet / 100).toFixed(2)}</span>
                     </div>
                     <div className="settings-item">
                       <span className="settings-label">Min Edge (High Conf)</span>

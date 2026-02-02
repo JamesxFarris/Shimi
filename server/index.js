@@ -35,11 +35,9 @@ let config = {
   isAuthenticated: false,
   bankroll: 1000, // cents ($10.00)
   maxBetPercent: 15,
-  minBetAmount: 100, // $1 fixed bets
-  fixedBetAmount: 100, // Always bet $1
   minEdge: 5, // 5% minimum - model has uncertainty, need buffer
   autoBetEnabled: false,
-  // Risk management settings (in cents)
+  // Risk management settings (in cents) - bet sizing uses maxPerBet
   riskLimits: {
     hourly: {
       maxPerBet: 200,    // $2.00 max per bet

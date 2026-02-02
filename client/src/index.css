@@ -264,7 +264,32 @@ body {
 
 .nav-text {
   flex: 1;
+  animation: neonFlicker 8s infinite;
 }
+
+/* Neon sign flicker effect - random grey-out like old movie signs */
+@keyframes neonFlicker {
+  0%, 19%, 21%, 23%, 25%, 54%, 56%, 100% {
+    opacity: 1;
+    text-shadow: none;
+  }
+  20%, 24%, 55% {
+    opacity: 0.4;
+    color: #555;
+    text-shadow: none;
+  }
+  22% {
+    opacity: 0.6;
+    color: #666;
+  }
+}
+
+/* Stagger the flicker for different nav items */
+.nav-item:nth-child(1) .nav-text { animation-delay: 0s; }
+.nav-item:nth-child(2) .nav-text { animation-delay: 2.3s; }
+.nav-item:nth-child(3) .nav-text { animation-delay: 4.7s; }
+.nav-item:nth-child(4) .nav-text { animation-delay: 1.1s; }
+.nav-item:nth-child(5) .nav-text { animation-delay: 3.5s; }
 
 .nav-badge {
   background: var(--neon-magenta);
@@ -1577,29 +1602,70 @@ body {
 }
 
 .connected-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   text-align: center;
+  padding: 20px;
 }
 
 .connected-badge {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 14px;
-  background: rgba(0, 255, 136, 0.1);
-  border: 1px solid var(--neon-green);
-  border-radius: var(--radius-sm);
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 24px;
+  background: rgba(0, 255, 136, 0.08);
+  border: 2px solid var(--neon-green);
+  border-radius: var(--radius-md);
   color: var(--neon-green);
   font-family: var(--font-mono);
-  font-size: 13px;
-  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  margin-bottom: 12px;
+  animation: pulseGreenBorder 2s ease-in-out infinite;
+  box-shadow:
+    0 0 10px rgba(0, 255, 136, 0.3),
+    inset 0 0 20px rgba(0, 255, 136, 0.05);
+}
+
+@keyframes pulseGreenBorder {
+  0%, 100% {
+    border-color: var(--neon-green);
+    box-shadow:
+      0 0 10px rgba(0, 255, 136, 0.3),
+      0 0 20px rgba(0, 255, 136, 0.2),
+      inset 0 0 20px rgba(0, 255, 136, 0.05);
+  }
+  50% {
+    border-color: rgba(0, 255, 136, 0.6);
+    box-shadow:
+      0 0 25px rgba(0, 255, 136, 0.5),
+      0 0 40px rgba(0, 255, 136, 0.3),
+      inset 0 0 30px rgba(0, 255, 136, 0.1);
+  }
 }
 
 .connected-dot {
-  width: 5px;
-  height: 5px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--neon-green);
   box-shadow: var(--glow-green);
+  animation: dotPulse 2s ease-in-out infinite;
+}
+
+@keyframes dotPulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 8px rgba(0, 255, 136, 0.6);
+  }
+  50% {
+    transform: scale(1.2);
+    box-shadow: 0 0 15px rgba(0, 255, 136, 0.8);
+  }
 }
 
 .connected-info p {
