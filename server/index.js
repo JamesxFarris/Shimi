@@ -4807,6 +4807,22 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// ============================================
+// HEALTH CHECK - Keep Render alive
+// ============================================
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    autoBetEnabled: config.autoBetEnabled,
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get('/api/ping', (req, res) => {
+  res.send('pong');
+});
+
 // Serve static frontend
 const clientDistPath = path.join(__dirname, '../client/dist');
 try {
@@ -4831,23 +4847,6 @@ app.get('*', (req, res) => {
 app.use((err, req, res, next) => {
   console.error('Express error:', err.message);
   res.status(500).json({ success: false, error: 'Internal server error' });
-});
-
-// ============================================
-// HEALTH CHECK - Keep Render alive
-// ============================================
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    autoBetEnabled: config.autoBetEnabled,
-    uptime: Math.floor(process.uptime()),
-    timestamp: new Date().toISOString()
-  });
-});
-
-// Also respond to /ping for simpler monitoring
-app.get('/ping', (req, res) => {
-  res.send('pong');
 });
 
 const server = app.listen(PORT, '0.0.0.0', async () => {
