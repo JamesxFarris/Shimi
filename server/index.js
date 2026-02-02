@@ -39,9 +39,9 @@ let config = {
   autoBetEnabled: false,
   // Risk management settings (in cents)
   riskLimits: {
-    maxPerBet: 1000,     // $10.00 max per bet
-    maxTotal: 5000,      // $50.00 max total exposure
-    maxPerToken: 2000    // $20.00 max per token
+    maxPerBet: 500,      // $5.00 max per bet
+    maxTotal: 1500,      // $15.00 max total exposure
+    maxPerToken: 500     // $5.00 max per token
   },
   // Scale-in settings: add to position when probability improves
   scaleIn: {
@@ -2074,31 +2074,19 @@ function getMaxTotalRisk() {
   return config.riskLimits.maxTotal;
 }
 
-// Get current total exposure
+// Get current total exposure - ONLY counts actual Kalshi positions
 function getCurrentExposure() {
   let totalExposure = 0;
-  const kalshiTickers = new Set();
 
-  // Count Kalshi positions
+  // Only count actual Kalshi positions (source of truth)
   if (portfolio.positions && Array.isArray(portfolio.positions)) {
     for (const pos of portfolio.positions) {
       const contracts = Math.abs(pos.position || 0);
       if (contracts > 0) {
         const avgPrice = pos.average_price || 50;
         totalExposure += contracts * avgPrice;
-        kalshiTickers.add(pos.ticker);
       }
     }
-  }
-
-  // Add unsettled local bets not in Kalshi
-  const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
-  for (const bet of betHistory) {
-    if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') continue;
-    const betTime = new Date(bet.timestamp).getTime();
-    if (betTime < twoHoursAgo) continue;
-    if (kalshiTickers.has(bet.ticker)) continue;
-    totalExposure += bet.totalCost || (bet.count * bet.price) || 0;
   }
 
   return totalExposure;
@@ -2138,12 +2126,11 @@ function getTokenFromTicker(ticker) {
   return null;
 }
 
-// Get total exposure per token across all positions
+// Get total exposure per token - ONLY counts actual Kalshi positions
 function getExposureByToken() {
   const tokenExposure = {};
-  const kalshiTickers = new Set();
 
-  // Count Kalshi positions by token
+  // Only count actual Kalshi positions (source of truth)
   if (portfolio.positions && Array.isArray(portfolio.positions)) {
     for (const pos of portfolio.positions) {
       const contracts = Math.abs(pos.position || 0);
@@ -2151,28 +2138,11 @@ function getExposureByToken() {
         const avgPrice = pos.average_price || 50;
         const posRisk = contracts * avgPrice;
         const token = getTokenFromTicker(pos.ticker);
-        kalshiTickers.add(pos.ticker);
 
         if (token) {
           tokenExposure[token] = (tokenExposure[token] || 0) + posRisk;
         }
       }
-    }
-  }
-
-  // Add unsettled local bets not in Kalshi
-  const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
-  for (const bet of betHistory) {
-    if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') continue;
-    const betTime = new Date(bet.timestamp).getTime();
-    if (betTime < twoHoursAgo) continue;
-    if (kalshiTickers.has(bet.ticker)) continue;
-
-    const betRisk = bet.totalCost || (bet.count * bet.price) || 0;
-    const token = getTokenFromTicker(bet.ticker) || bet.assetType;
-
-    if (token) {
-      tokenExposure[token] = (tokenExposure[token] || 0) + betRisk;
     }
   }
 
