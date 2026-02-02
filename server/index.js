@@ -2874,10 +2874,10 @@ function analyzeCryptoMarket(parsed) {
   const ev = (ourProbability / 100) * potentialWin - ((100 - ourProbability) / 100) * betPriceCents;
 
   // === SAFE vs DEGEN ===
-  // SAFE: any positive edge with non-extreme price (auto-bet will place these)
-  // DEGEN: very low price (<20¢) = long shot, or no edge
-  const isSafe = edge > 0 && betPriceCents >= 20;
-  const isDegen = edge > 0 && betPriceCents < 20; // Long shots only
+  // SAFE: positive edge with reasonable price (auto-bet will place these)
+  // DEGEN: low price (<40¢) = risky long shot, manual only
+  const isSafe = edge > 0 && betPriceCents >= 40;
+  const isDegen = edge > 0 && betPriceCents < 40; // Long shots - manual only
 
   // Build reason string
   const dirStr = isAboveStrike ? 'above' : 'below';
@@ -4284,7 +4284,7 @@ async function runAutoBet() {
       return;
     }
 
-    console.log(`   ✅ ${safeOpportunities.length} bets to place (edge > 0, price >= 20¢)`);
+    console.log(`   ✅ ${safeOpportunities.length} bets to place (edge > 0, price >= 40¢)`);
 
     for (const opp of safeOpportunities) {
       const tokenName = getTokenFromTicker(opp.ticker) || opp.assetType || opp.cryptoType || 'token';
