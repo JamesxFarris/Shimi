@@ -1952,7 +1952,8 @@ app.get('/api/opportunities/all', async (req, res) => {
     if (config.isAuthenticated) {
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
-        portfolio.positions = posData.positions || [];
+        console.log(`📊 Raw positions response:`, JSON.stringify(posData, null, 2));
+        portfolio.positions = posData.positions || posData.market_positions || [];
         console.log(`📊 Fetched ${portfolio.positions.length} positions from Kalshi`);
         portfolio.positions.forEach(p => {
           console.log(`   - ${p.ticker}: ${p.position} contracts @ ${p.average_price}¢`);
