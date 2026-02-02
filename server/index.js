@@ -3851,16 +3851,17 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     }
     const category = best.marketCategory || 'crypto';
     const maxPerBet = getMaxPerBet();
+    const priceCents = Math.round(best.betPrice * 100);
     const remainingTokenBudget = getRemainingTokenBudget(best.ticker, best.assetType || best.cryptoType);
-    console.log(`Auto-bet found [${category}]: ${best.title} | Win prob: ${best.winProbability}% | Side: ${best.betSide}`);
+    console.log(`Auto-bet found [${category}]: ${best.title} | Win prob: ${best.winProbability}% | Side: ${best.betSide} | Price: ${priceCents}¢`);
 
-    // Check per-token limit first
-    if (remainingTokenBudget < 10) {
+    // Check per-token limit first - must be able to afford at least 1 contract
+    if (remainingTokenBudget < priceCents) {
       const token = getTokenFromTicker(best.ticker) || best.assetType || best.cryptoType || 'token';
-      console.log(`⚠️ Token limit reached for ${token} - $${(getMaxPerToken()/100).toFixed(2)} max per token`);
+      console.log(`⚠️ Token limit reached for ${token} - $${(remainingTokenBudget/100).toFixed(2)} remaining < ${priceCents}¢ per contract`);
       return res.json({
         success: true,
-        message: `Token limit reached for ${token}. Max $${(getMaxPerToken()/100).toFixed(2)} per token.`,
+        message: `Token limit reached for ${token}. Only $${(remainingTokenBudget/100).toFixed(2)} remaining of $${(getMaxPerToken()/100).toFixed(2)} max.`,
         bet: null,
         risk: getRiskByType()
       });
@@ -3868,8 +3869,6 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
 
     // Cap bet at remaining risk budget, max per bet, OR token budget - whichever is lowest
     const MAX_BET_CENTS = Math.min(maxPerBet, remainingBudget, remainingTokenBudget);
-
-    const priceCents = Math.round(best.betPrice * 100);
 
     // Calculate contracts but cap total cost
     let count = Math.floor(MAX_BET_CENTS / priceCents);
@@ -4362,36 +4361,34 @@ async function runAutoBet() {
         break;
       }
 
+      const priceCents = Math.round(opp.betPrice * 100);
+      const winProb = parseFloat(opp.winProbability);
       const remainingBudget = getRemainingRiskBudget();
       const remainingTokenBudget = getRemainingTokenBudget(opp.ticker, opp.assetType || opp.cryptoType);
 
-      console.log(`      Budget: $${(remainingBudget/100).toFixed(2)} remaining, $${(remainingTokenBudget/100).toFixed(2)} for ${tokenName}`);
+      console.log(`      Budget: $${(remainingBudget/100).toFixed(2)} remaining, $${(remainingTokenBudget/100).toFixed(2)} for ${tokenName}, price=${priceCents}¢`);
 
       // Skip if budget exhausted
-      if (remainingBudget < 10) {
+      if (remainingBudget < priceCents) {
         console.log(`   ⏭️ ${tokenName}: Exposure limit reached`);
         continue;
       }
 
-      // Skip if token limit exhausted
-      if (remainingTokenBudget < 10) {
-        console.log(`   ⏭️ ${tokenName}: Token limit reached`);
+      // Skip if token limit exhausted - must be able to afford at least 1 contract
+      if (remainingTokenBudget < priceCents) {
+        console.log(`   ⏭️ ${tokenName}: Token limit reached ($${(remainingTokenBudget/100).toFixed(2)} remaining < ${priceCents}¢ per contract)`);
         continue;
       }
 
-      const priceCents = Math.round(opp.betPrice * 100);
-      const winProb = parseFloat(opp.winProbability);
-
-      // Kelly Criterion bet sizing - use actual balance
+      // Kelly Criterion bet sizing - use actual balance, capped by token budget
       const actualBankroll = Math.max(config.bankroll, portfolio.balance || 0);
       const maxBetCents = Math.min(getMaxPerBet(), remainingBudget, remainingTokenBudget);
       const kellyBetSize = calculateKellyBet(winProb, priceCents, actualBankroll, maxBetCents);
 
-      console.log(`      Kelly: prob=${winProb.toFixed(1)}%, price=${priceCents}¢, bankroll=$${(actualBankroll/100).toFixed(2)}, kelly=${kellyBetSize}¢`);
+      console.log(`      Kelly: prob=${winProb.toFixed(1)}%, price=${priceCents}¢, bankroll=$${(actualBankroll/100).toFixed(2)}, max=$${(maxBetCents/100).toFixed(2)}, kelly=${kellyBetSize}¢`);
 
-      // SIMPLIFIED: Just bet if edge > 0, use Kelly for sizing but always bet at least 1 contract
-      const minBet = priceCents; // At least 1 contract
-      const betSize = Math.max(kellyBetSize, minBet);
+      // Use Kelly sizing but cap at remaining token budget, minimum 1 contract if budget allows
+      const betSize = Math.min(Math.max(kellyBetSize, priceCents), remainingTokenBudget);
 
       const count = Math.floor(betSize / priceCents);
       if (count < 1) {
