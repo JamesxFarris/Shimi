@@ -3,6 +3,93 @@ import './index.css'
 
 const API_BASE = import.meta.env.PROD ? '' : 'http://localhost:3001'
 
+// ============================================
+// AUTHENTICATION
+// ============================================
+
+// Get stored password from localStorage
+const getStoredPassword = () => localStorage.getItem('shimi_password') || ''
+
+// Make authenticated API calls
+const authFetch = async (url, options = {}) => {
+  const password = getStoredPassword()
+  const headers = {
+    ...options.headers,
+    'Content-Type': 'application/json',
+  }
+  if (password) {
+    headers['x-shimi-password'] = password
+  }
+  const response = await fetch(url, { ...options, headers })
+
+  // If unauthorized, clear stored password
+  if (response.status === 401) {
+    const data = await response.json()
+    if (data.requiresAuth) {
+      localStorage.removeItem('shimi_password')
+      window.location.reload()
+    }
+  }
+
+  return response
+}
+
+// Login Screen Component
+const LoginScreen = ({ onLogin }) => {
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setLoading(true)
+    setError('')
+
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password })
+      })
+      const data = await res.json()
+
+      if (data.success) {
+        localStorage.setItem('shimi_password', password)
+        onLogin()
+      } else {
+        setError('Invalid password')
+      }
+    } catch (err) {
+      setError('Connection failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="login-screen">
+      <div className="login-card">
+        <h1 className="login-title">🎰 Shimi</h1>
+        <p className="login-subtitle">Enter password to access</p>
+        <form onSubmit={handleSubmit}>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Password"
+            className="login-input"
+            autoFocus
+          />
+          {error && <p className="login-error">{error}</p>}
+          <button type="submit" className="login-button" disabled={loading}>
+            {loading ? 'Checking...' : 'Login'}
+          </button>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 // All tracked tokens with their colors and icons
 const TOKEN_CONFIG = {
   BTC: { color: '#f7931a', name: 'Bitcoin', icon: '₿' },
@@ -277,6 +364,10 @@ const DollarStepper = ({ value, onChange, min = 1, max = 100, step = 1, label })
 )
 
 function App() {
+  // Auth state
+  const [needsLogin, setNeedsLogin] = useState(null) // null = checking, true = show login, false = logged in
+  const [checkingAuth, setCheckingAuth] = useState(true)
+
   const [tab, setTab] = useState('dashboard')
   const [opportunities, setOpportunities] = useState([])
   const [prices, setPrices] = useState({})
@@ -298,6 +389,31 @@ function App() {
   const [betStatus, setBetStatus] = useState(null)
   const [placingBet, setPlacingBet] = useState(null)
   const [tickerTime, setTickerTime] = useState(Date.now())
+
+  // Check if authentication is required on mount
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const password = getStoredPassword()
+        const res = await fetch(`${API_BASE}/api/auth/status`, {
+          headers: password ? { 'x-shimi-password': password } : {}
+        })
+        const data = await res.json()
+
+        if (data.requiresAuth && !data.isAuthenticated) {
+          setNeedsLogin(true)
+        } else {
+          setNeedsLogin(false)
+        }
+      } catch (err) {
+        // If server is down, try to proceed anyway
+        setNeedsLogin(false)
+      } finally {
+        setCheckingAuth(false)
+      }
+    }
+    checkAuth()
+  }, [])
   // New: Risk tracking and market filtering
   const [risk, setRisk] = useState({
     current: 0,
@@ -326,7 +442,7 @@ function App() {
   // Fetch prices directly (faster updates)
   const fetchPrices = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/crypto/prices`)
+      const res = await authFetch(`${API_BASE}/api/crypto/prices`)
       const data = await res.json()
 
       if (data.success && data.prices) {
@@ -351,7 +467,7 @@ function App() {
   // Fetch opportunities (now uses unified endpoint for all market types)
   const fetchOpportunities = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/opportunities/all`)
+      const res = await authFetch(`${API_BASE}/api/opportunities/all`)
       const data = await res.json()
 
       if (data.success) {
@@ -378,7 +494,7 @@ function App() {
   // Fetch portfolio
   const fetchPortfolio = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/portfolio`)
+      const res = await authFetch(`${API_BASE}/api/portfolio`)
       const data = await res.json()
 
       if (data.success) {
@@ -397,7 +513,7 @@ function App() {
   // Fetch performance data
   const fetchPerformance = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/performance`)
+      const res = await authFetch(`${API_BASE}/api/performance`)
       const data = await res.json()
       if (data.success) {
         setPerformance(data)
@@ -410,7 +526,7 @@ function App() {
   // Fetch scan status (for auto-bet diagnostics)
   const fetchScanStatus = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/scan-status`)
+      const res = await authFetch(`${API_BASE}/api/scan-status`)
       const data = await res.json()
       if (data.success) {
         setScanStatus(data)
@@ -475,9 +591,8 @@ function App() {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 15000) // 15s timeout
 
-      const res = await fetch(`${API_BASE}/api/bet`, {
+      const res = await authFetch(`${API_BASE}/api/bet`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ticker: opp.ticker,
           side: opp.betSide,
@@ -527,9 +642,8 @@ function App() {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 15000) // 15s timeout
 
-      const res = await fetch(`${API_BASE}/api/crypto/auto-bet`, {
+      const res = await authFetch(`${API_BASE}/api/crypto/auto-bet`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         signal: controller.signal
       })
 
@@ -568,9 +682,8 @@ function App() {
   // Toggle continuous auto-betting
   const toggleAutoBet = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/crypto/auto-bet/toggle`, {
+      const res = await authFetch(`${API_BASE}/api/crypto/auto-bet/toggle`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: !autoBetEnabled, intervalSeconds: 10 })
       })
       const data = await res.json()
@@ -592,9 +705,8 @@ function App() {
   // Save risk settings to server
   const saveRiskSettings = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/settings/risk`, {
+      const res = await authFetch(`${API_BASE}/api/settings/risk`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(riskSettings)
       })
       const data = await res.json()
@@ -626,9 +738,8 @@ function App() {
   // Save scale-in settings to server
   const saveScaleInSettings = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/settings/scale-in`, {
+      const res = await authFetch(`${API_BASE}/api/settings/scale-in`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(scaleInSettings)
       })
       const data = await res.json()
@@ -649,9 +760,8 @@ function App() {
     setAuthError(null)
 
     try {
-      const res = await fetch(`${API_BASE}/api/auth/configure`, {
+      const res = await authFetch(`${API_BASE}/api/auth/configure`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(authForm)
       })
       const data = await res.json()
@@ -678,6 +788,23 @@ function App() {
   const avgEdge = opportunities.length > 0
     ? opportunities.reduce((sum, o) => sum + (o.edge || 0), 0) / opportunities.length
     : 0
+
+  // Show loading while checking auth
+  if (checkingAuth) {
+    return (
+      <div className="login-screen">
+        <div className="login-card">
+          <h1 className="login-title">🎰 Shimi</h1>
+          <p className="login-subtitle">Connecting...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Show login screen if authentication required
+  if (needsLogin) {
+    return <LoginScreen onLogin={() => setNeedsLogin(false)} />
+  }
 
   return (
     <div className="app">

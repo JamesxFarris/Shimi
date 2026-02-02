@@ -12,6 +12,60 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// ============================================
+// AUTHENTICATION
+// ============================================
+// Set SHIMI_PASSWORD environment variable to protect your API
+const AUTH_PASSWORD = process.env.SHIMI_PASSWORD || null;
+
+// Auth middleware - checks for password in header
+function requireAuth(req, res, next) {
+  // If no password is set, allow all requests (for local development)
+  if (!AUTH_PASSWORD) {
+    return next();
+  }
+
+  const providedPassword = req.headers['x-shimi-password'] || req.headers['authorization']?.replace('Bearer ', '');
+
+  if (providedPassword === AUTH_PASSWORD) {
+    return next();
+  }
+
+  return res.status(401).json({
+    success: false,
+    error: 'Unauthorized. Set x-shimi-password header.',
+    requiresAuth: true
+  });
+}
+
+// Login endpoint - verify password
+app.post('/api/auth/login', express.json(), (req, res) => {
+  const { password } = req.body;
+
+  // If no password is configured, always succeed
+  if (!AUTH_PASSWORD) {
+    return res.json({ success: true, message: 'No password required' });
+  }
+
+  if (password === AUTH_PASSWORD) {
+    return res.json({ success: true, message: 'Authenticated' });
+  }
+
+  return res.status(401).json({ success: false, error: 'Invalid password' });
+});
+
+// Check if auth is required
+app.get('/api/auth/status', (req, res) => {
+  const providedPassword = req.headers['x-shimi-password'] || req.headers['authorization']?.replace('Bearer ', '');
+  const isAuthenticated = !AUTH_PASSWORD || providedPassword === AUTH_PASSWORD;
+
+  res.json({
+    success: true,
+    requiresAuth: !!AUTH_PASSWORD,
+    isAuthenticated
+  });
+});
+
 // Global error handlers
 process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception:', err.message);
@@ -22,6 +76,16 @@ process.on('unhandledRejection', (err) => {
 
 app.use(cors());
 app.use(express.json());
+
+// Apply auth to all /api routes EXCEPT auth endpoints and health check
+app.use('/api', (req, res, next) => {
+  // Skip auth for these paths
+  const publicPaths = ['/api/auth/login', '/api/auth/status', '/api/health'];
+  if (publicPaths.includes(req.path)) {
+    return next();
+  }
+  return requireAuth(req, res, next);
+});
 
 const KALSHI_API_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
 
