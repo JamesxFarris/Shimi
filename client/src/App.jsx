@@ -20,18 +20,7 @@ const authFetch = async (url, options = {}) => {
   if (password) {
     headers['x-shimi-password'] = password
   }
-  const response = await fetch(url, { ...options, headers })
-
-  // If unauthorized, clear stored password
-  if (response.status === 401) {
-    const data = await response.json()
-    if (data.requiresAuth) {
-      localStorage.removeItem('shimi_password')
-      window.location.reload()
-    }
-  }
-
-  return response
+  return fetch(url, { ...options, headers })
 }
 
 // Login Screen Component
