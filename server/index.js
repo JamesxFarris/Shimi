@@ -962,14 +962,14 @@ fetchAllNews(); // Initial fetch
 
 // All tokens we track - with price ranges for strike detection
 const TRACKED_TOKENS = {
-  BTC: { name: 'Bitcoin', minPrice: 10000, maxPrice: 500000 },
-  ETH: { name: 'Ethereum', minPrice: 100, maxPrice: 20000 },
-  SOL: { name: 'Solana', minPrice: 1, maxPrice: 1000 },
-  XRP: { name: 'XRP', minPrice: 0.1, maxPrice: 100 },
-  DOGE: { name: 'Dogecoin', minPrice: 0.01, maxPrice: 10 },
-  ADA: { name: 'Cardano', minPrice: 0.1, maxPrice: 50 },
-  AVAX: { name: 'Avalanche', minPrice: 1, maxPrice: 500 },
-  LINK: { name: 'Chainlink', minPrice: 1, maxPrice: 200 },
+  BTC: { name: 'Bitcoin', minPrice: 20000, maxPrice: 500000 },
+  ETH: { name: 'Ethereum', minPrice: 500, maxPrice: 20000 },
+  SOL: { name: 'Solana', minPrice: 50, maxPrice: 1000 },
+  XRP: { name: 'XRP', minPrice: 0.3, maxPrice: 100 },
+  DOGE: { name: 'Dogecoin', minPrice: 0.05, maxPrice: 10 },
+  ADA: { name: 'Cardano', minPrice: 0.2, maxPrice: 50 },
+  AVAX: { name: 'Avalanche', minPrice: 10, maxPrice: 500 },
+  LINK: { name: 'Chainlink', minPrice: 5, maxPrice: 200 },
   MATIC: { name: 'Polygon', minPrice: 0.1, maxPrice: 50 },
   DOT: { name: 'Polkadot', minPrice: 1, maxPrice: 200 },
   SHIB: { name: 'Shiba Inu', minPrice: 0.000001, maxPrice: 0.001 },
@@ -2562,7 +2562,8 @@ function parseMarket(market) {
   if (market.floor_strike && typeof market.floor_strike === 'number') {
     strikePrice = market.floor_strike;
   } else {
-    const priceMatches = title.match(/\$?([\d,]+(?:\.\d+)?)/g);
+    // Only match prices with $ sign to avoid matching "15" from "15 mins"
+    const priceMatches = title.match(/\$([\d,]+(?:\.\d+)?)/g);
     if (priceMatches && cryptoType) {
       const cfg = TRACKED_TOKENS[cryptoType];
       for (const match of priceMatches) {
@@ -2572,6 +2573,10 @@ function parseMarket(market) {
           break;
         }
       }
+    }
+    // If no $ price found, try the floor_strike from market data as fallback
+    if (!strikePrice && market.floor_strike) {
+      strikePrice = parseFloat(market.floor_strike);
     }
   }
 
