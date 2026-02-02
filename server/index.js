@@ -2179,37 +2179,11 @@ async function fetchCryptoMarkets() {
   }
 
   try {
-    // Fetch crypto markets directly by series ticker instead of filtering 1000+ markets
-    // This ensures we get the 15-minute crypto markets that would otherwise be buried
+    // Focus only on BTC, ETH, SOL 15-minute markets for speed
     const cryptoSeries = [
-      // 15-minute markets (short term, high frequency)
       'KXBTC15M',   // Bitcoin 15-minute up/down
       'KXETH15M',   // Ethereum 15-minute up/down
       'KXSOL15M',   // Solana 15-minute up/down
-
-      // Daily above/below markets
-      'KXBTCD',     // Bitcoin above/below
-      'KXETHD',     // Ethereum above/below
-      'KXSOLD',     // Solana above/below
-      'KXXRPD',     // XRP above/below
-      'KXDOGED',    // Doge above/below
-      'KXLTCD',     // Litecoin above/below
-      'KXLINKD',    // Chainlink above/below
-      'KXAVAXD',    // Avalanche above/below
-      'KXDOTD',     // Polkadot above/below
-      'KXSHIBAD',   // Shiba above/below
-
-      // Range/min/max markets (look for mispricings)
-      'KXBTCMAXD',  // BTC max daily
-      'KXBTC',      // Bitcoin range
-      'KXETH',      // Ethereum range
-      'KXSOL',      // Solana range
-      'KXXRP',      // XRP range
-
-      // Monthly directional
-      'KXBTCMAXM',  // BTC max monthly
-      'KXETHMAXM',  // ETH max monthly
-      'KXSOLMAXM',  // SOL max monthly
     ];
 
     const allMarkets = [];
@@ -2227,33 +2201,6 @@ async function fetchCryptoMarkets() {
 
     const results = await Promise.all(fetches);
     results.forEach(markets => allMarkets.push(...markets));
-
-    // Also try the general crypto filter as backup
-    try {
-      const data = await kalshiRequest('GET', '/markets?limit=1000&status=open');
-      const markets = data.markets || [];
-
-      markets.forEach(m => {
-        const ticker = (m.ticker || '').toUpperCase();
-        const title = (m.title || '').toUpperCase();
-
-        // Check if already added
-        if (allMarkets.some(existing => existing.ticker === m.ticker)) return;
-
-        // Check if it's a crypto market
-        let isCrypto = false;
-        for (const [token, cfg] of Object.entries(TRACKED_TOKENS)) {
-          if (ticker.includes(token) || title.includes(token) || title.includes(cfg.name.toUpperCase())) {
-            isCrypto = true;
-            break;
-          }
-        }
-
-        if (isCrypto) allMarkets.push(m);
-      });
-    } catch (e) {
-      console.log('Backup market fetch failed:', e.message);
-    }
 
     // Filter for short-term markets (within 4 hours, more than 30 seconds remaining)
     const cryptoMarkets = allMarkets.filter(m => {
@@ -4771,7 +4718,7 @@ app.use((err, req, res, next) => {
 
 const server = app.listen(PORT, '0.0.0.0', async () => {
   console.log(`🎰 Shimi Crypto Bot running on port ${PORT}`);
-  console.log(`📊 Tracking ${Object.keys(TRACKED_TOKENS).length} tokens: ${Object.keys(TRACKED_TOKENS).join(', ')}`);
+  console.log(`📊 Betting on: BTC, ETH, SOL (15-minute markets)`);
   console.log(`💰 Min edge: ${config.minEdge}% | Max bet: ${config.maxBetPercent}%`);
   console.log(`📈 Performance tracking: ${performanceData.bets.length} historical bets loaded`);
 
