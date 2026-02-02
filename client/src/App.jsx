@@ -183,8 +183,24 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
   )
 })
 
+// Format countdown time
+const formatCountdown = (ms) => {
+  if (ms <= 0) return 'Settling...'
+  const seconds = Math.floor(ms / 1000)
+  const minutes = Math.floor(seconds / 60)
+  const hours = Math.floor(minutes / 60)
+
+  if (hours > 0) {
+    return `${hours}h ${minutes % 60}m`
+  } else if (minutes > 0) {
+    return `${minutes}m ${seconds % 60}s`
+  } else {
+    return `${seconds}s`
+  }
+}
+
 // History Item - Shows bet with clear win/loss and profit/loss
-const HistoryItem = memo(({ bet }) => {
+const HistoryItem = ({ bet, currentTime }) => {
   const totalCostCents = bet.totalCost || (bet.count * bet.price) || 0
   const profitCents = bet.profit || 0
 
@@ -194,6 +210,10 @@ const HistoryItem = memo(({ bet }) => {
 
   // Calculate payout for wins (cost + profit)
   const payoutCents = isWin ? totalCostCents + profitCents : 0
+
+  // Calculate time remaining for pending bets
+  const closeTime = bet.closeTime ? new Date(bet.closeTime).getTime() : null
+  const timeRemaining = closeTime ? closeTime - currentTime : null
 
   return (
     <div className={`history-card ${hasOutcome ? (isWin ? 'won' : 'lost') : 'pending'}`}>
@@ -211,7 +231,13 @@ const HistoryItem = memo(({ bet }) => {
           <>
             <span className="result-icon">⏳</span>
             <span className="result-text">PENDING</span>
-            <span className="result-amount">Awaiting result</span>
+            {timeRemaining !== null ? (
+              <span className={`result-countdown ${timeRemaining < 60000 ? 'urgent' : ''}`}>
+                {formatCountdown(timeRemaining)}
+              </span>
+            ) : (
+              <span className="result-amount">Awaiting result</span>
+            )}
           </>
         )}
       </div>
@@ -1014,7 +1040,7 @@ function App() {
               ) : (
                 <div className="history-list">
                   {betHistory.map(bet => (
-                    <HistoryItem key={bet.id} bet={bet} />
+                    <HistoryItem key={bet.id} bet={bet} currentTime={tickerTime} />
                   ))}
                 </div>
               )}

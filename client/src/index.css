@@ -2712,3 +2712,29 @@ body {
 .save-settings-btn.saved {
   background: linear-gradient(135deg, var(--neon-green), var(--accent-green-dim));
 }
+
+/* ============================================
+   BET COUNTDOWN TIMER
+   ============================================ */
+
+.result-countdown {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--neon-cyan);
+  padding: 2px 8px;
+  background: rgba(0, 240, 255, 0.15);
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+}
+
+.result-countdown.urgent {
+  color: var(--neon-orange);
+  background: rgba(255, 102, 0, 0.15);
+  animation: countdownPulse 1s infinite;
+}
+
+@keyframes countdownPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
