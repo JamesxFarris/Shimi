@@ -1052,6 +1052,13 @@ body {
   opacity: 0.8;
 }
 
+/* Opportunities Wrapper with Side Brand */
+.opportunities-wrapper {
+  display: flex;
+  gap: 20px;
+  align-items: stretch;
+}
+
 .opportunities-preview,
 .opportunities-grid {
   display: grid;
@@ -1064,6 +1071,89 @@ body {
   position: relative;
   max-width: 100%;
   box-sizing: border-box;
+  flex: 1;
+}
+
+/* SHIMI Side Brand */
+.shimi-brand-side {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 20px 15px;
+  background: linear-gradient(180deg, rgba(0, 10, 20, 0.3) 0%, rgba(5, 15, 30, 0.5) 100%);
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(0, 240, 255, 0.1);
+  min-width: 80px;
+}
+
+.shimi-vertical {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.shimi-slash {
+  font-family: var(--font-mono);
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--neon-cyan);
+  text-shadow: 0 0 20px rgba(0, 240, 255, 0.6);
+}
+
+.shimi-text {
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 800;
+  letter-spacing: 8px;
+  background: linear-gradient(180deg, var(--neon-cyan) 0%, var(--neon-magenta) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  text-shadow: none;
+  filter: drop-shadow(0 0 15px rgba(0, 240, 255, 0.4));
+}
+
+.shimi-tagline {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 3px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+}
+
+@media (max-width: 900px) {
+  .opportunities-wrapper {
+    flex-direction: column;
+  }
+
+  .shimi-brand-side {
+    flex-direction: row;
+    min-width: auto;
+    padding: 10px 20px;
+  }
+
+  .shimi-vertical {
+    writing-mode: horizontal-tb;
+    margin-bottom: 0;
+    margin-right: 15px;
+  }
+
+  .shimi-tagline {
+    writing-mode: horizontal-tb;
+  }
+}
+
+@media (max-width: 600px) {
+  .shimi-brand-side {
+    display: none;
+  }
 }
 
 /* Opportunity Card */

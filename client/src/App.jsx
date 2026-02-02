@@ -912,15 +912,24 @@ function App() {
                     </p>
                   </div>
                 ) : (
-                  <div className="opportunities-grid">
-                    {opportunities.map(opp => (
-                      <OpportunityCard
-                        key={opp.ticker}
-                        opp={opp}
-                        onBet={placeBet}
-                        isPlacing={placingBet === opp.ticker}
-                      />
-                    ))}
+                  <div className="opportunities-wrapper">
+                    <div className="opportunities-grid">
+                      {opportunities.map(opp => (
+                        <OpportunityCard
+                          key={opp.ticker}
+                          opp={opp}
+                          onBet={placeBet}
+                          isPlacing={placingBet === opp.ticker}
+                        />
+                      ))}
+                    </div>
+                    <div className="shimi-brand-side">
+                      <div className="shimi-vertical">
+                        <span className="shimi-slash">//</span>
+                        <span className="shimi-text">SHIMI</span>
+                      </div>
+                      <div className="shimi-tagline">NEURAL TRADING</div>
+                    </div>
                   </div>
                 )}
               </div>
