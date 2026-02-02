@@ -2545,6 +2545,15 @@ function parseMarket(market) {
     if (!strikePrice && market.floor_strike) {
       strikePrice = parseFloat(market.floor_strike);
     }
+
+    // For "price up/down" 15-min markets, use current price as strike if nothing else
+    if (!strikePrice && cryptoType && (title.includes('up') || title.includes('down'))) {
+      const priceData = cryptoPrices[cryptoType];
+      if (priceData && priceData.price > 0) {
+        strikePrice = priceData.price;
+        console.log(`   📊 Using current ${cryptoType} price as strike: $${strikePrice.toFixed(2)}`);
+      }
+    }
   }
 
   // Determine market type (above/below/between)
@@ -2591,8 +2600,21 @@ function parseMarket(market) {
 
 // Analyze market and find the SAFEST side to bet (highest win probability)
 function analyzeCryptoMarket(parsed) {
-  if (!parsed.cryptoType || !parsed.strikePrice || !parsed.marketType || parsed.marketType === 'between') {
+  // Debug: log why markets are rejected
+  if (!parsed.cryptoType) {
+    console.log(`   ❌ Rejected: No crypto type detected for ${parsed.ticker}`);
     return null;
+  }
+  if (!parsed.strikePrice) {
+    console.log(`   ❌ Rejected ${parsed.cryptoType}: No strike price (title: ${parsed.title?.substring(0, 40)})`);
+    return null;
+  }
+  if (!parsed.marketType) {
+    console.log(`   ❌ Rejected ${parsed.cryptoType}: No market type (above/below) detected`);
+    return null;
+  }
+  if (parsed.marketType === 'between') {
+    return null; // Silently skip between markets
   }
 
   const priceData = cryptoPrices[parsed.cryptoType];
