@@ -278,6 +278,136 @@ function getBucketMidpoint(bucket) {
   return map[bucket] || 60;
 }
 
+// ============================================
+// CALIBRATION ADJUSTMENT
+// ============================================
+// Apply learned adjustments based on historical performance
+// If we predicted 70% but only won 60%, adjust future 70% predictions down
+
+const MIN_BETS_FOR_CALIBRATION = 10;  // Need at least 10 bets in a bucket to calibrate
+
+// Get calibration adjustment for a given probability
+// Returns adjusted probability based on historical accuracy
+function getCalibratedProbability(rawProbability, token = null, marketType = null) {
+  // Start with raw probability
+  let adjustedProb = rawProbability;
+  let adjustments = [];
+
+  // 1. GLOBAL CALIBRATION: Adjust based on probability bucket
+  const bucket = getProbBucket(rawProbability);
+  const bucketData = performanceData.byProbBucket[bucket];
+
+  if (bucketData && bucketData.bets >= MIN_BETS_FOR_CALIBRATION) {
+    const actualWinRate = (bucketData.wins / bucketData.bets) * 100;
+    const bucketMidpoint = getBucketMidpoint(bucket);
+    const calibrationError = actualWinRate - bucketMidpoint;
+
+    // Apply 50% of the correction (conservative - don't over-correct)
+    const correction = calibrationError * 0.5;
+    adjustedProb += correction;
+
+    if (Math.abs(correction) > 0.5) {
+      adjustments.push(`bucket ${bucket}: ${correction > 0 ? '+' : ''}${correction.toFixed(1)}%`);
+    }
+  }
+
+  // 2. TOKEN-SPECIFIC CALIBRATION: Some tokens may be more predictable
+  if (token && performanceData.byToken[token]) {
+    const tokenData = performanceData.byToken[token];
+    if (tokenData.bets >= MIN_BETS_FOR_CALIBRATION) {
+      const tokenWinRate = (tokenData.wins / tokenData.bets) * 100;
+      const overallWinRate = performanceData.summary.winRate || 50;
+
+      // If this token outperforms overall, slight boost; if underperforms, slight reduction
+      const tokenAdjustment = (tokenWinRate - overallWinRate) * 0.25;
+      adjustedProb += tokenAdjustment;
+
+      if (Math.abs(tokenAdjustment) > 0.5) {
+        adjustments.push(`${token}: ${tokenAdjustment > 0 ? '+' : ''}${tokenAdjustment.toFixed(1)}%`);
+      }
+    }
+  }
+
+  // 3. MARKET TYPE CALIBRATION: Hourly vs daily may have different accuracy
+  if (marketType && performanceData.byMarketType[marketType]) {
+    const typeData = performanceData.byMarketType[marketType];
+    if (typeData.bets >= MIN_BETS_FOR_CALIBRATION) {
+      const typeWinRate = (typeData.wins / typeData.bets) * 100;
+      const overallWinRate = performanceData.summary.winRate || 50;
+
+      const typeAdjustment = (typeWinRate - overallWinRate) * 0.25;
+      adjustedProb += typeAdjustment;
+
+      if (Math.abs(typeAdjustment) > 0.5) {
+        adjustments.push(`${marketType}: ${typeAdjustment > 0 ? '+' : ''}${typeAdjustment.toFixed(1)}%`);
+      }
+    }
+  }
+
+  // Clamp to valid probability range
+  adjustedProb = Math.max(1, Math.min(99, adjustedProb));
+
+  // Log significant adjustments
+  if (adjustments.length > 0 && Math.abs(adjustedProb - rawProbability) > 1) {
+    console.log(`   📐 Calibration: ${rawProbability.toFixed(1)}% → ${adjustedProb.toFixed(1)}% (${adjustments.join(', ')})`);
+  }
+
+  return {
+    probability: adjustedProb,
+    rawProbability: rawProbability,
+    wasCalibrated: adjustments.length > 0,
+    adjustments
+  };
+}
+
+// Get overall calibration health score (how well-calibrated is our model?)
+function getCalibrationScore() {
+  const calibration = performanceData.summary.calibration || {};
+  const buckets = Object.values(calibration).filter(b => b.bets >= MIN_BETS_FOR_CALIBRATION);
+
+  if (buckets.length === 0) {
+    return { score: null, status: 'insufficient_data', message: 'Need more bets to calculate calibration' };
+  }
+
+  // Calculate mean absolute error between predicted and actual
+  const totalError = buckets.reduce((sum, b) => sum + Math.abs(b.difference), 0);
+  const mae = totalError / buckets.length;
+
+  // Score from 0-100 where 100 is perfectly calibrated
+  // MAE of 0 = score 100, MAE of 20 = score 0
+  const score = Math.max(0, 100 - (mae * 5));
+
+  let status, message;
+  if (score >= 80) {
+    status = 'excellent';
+    message = 'Model is well-calibrated';
+  } else if (score >= 60) {
+    status = 'good';
+    message = 'Model is reasonably calibrated';
+  } else if (score >= 40) {
+    status = 'needs_adjustment';
+    message = 'Model may be over/under-confident';
+  } else {
+    status = 'poor';
+    message = 'Model predictions are unreliable';
+  }
+
+  return {
+    score: score.toFixed(0),
+    mae: mae.toFixed(1),
+    bucketsAnalyzed: buckets.length,
+    status,
+    message,
+    details: buckets.map(b => ({
+      bucket: Object.keys(calibration).find(k => calibration[k] === b),
+      predicted: b.predicted.toFixed(0),
+      actual: b.actual.toFixed(0),
+      error: b.difference.toFixed(1),
+      bets: b.bets
+    }))
+  };
+}
+
 // Check and settle pending bets (call periodically)
 async function checkPendingSettlements() {
   const pending = performanceData.bets.filter(b => b.outcome === 'pending');
@@ -2295,6 +2425,17 @@ function analyzeIndexMarket(parsed) {
     }
   }
 
+  // APPLY CALIBRATION: Adjust probabilities based on historical accuracy
+  const marketType = parsed.ticker?.includes('1H') ? 'hourly' :
+                     parsed.ticker?.includes('15M') ? '15min' : 'daily';
+
+  const calibratedYes = getCalibratedProbability(probYesWins * 100, 'SPX', marketType);
+  const calibratedNo = getCalibratedProbability(probNoWins * 100, 'SPX', marketType);
+
+  // Use calibrated probabilities
+  probYesWins = calibratedYes.probability / 100;
+  probNoWins = calibratedNo.probability / 100;
+
   // Market implied probabilities
   const marketProbYes = parsed.yesAsk;
   const marketProbNo = parsed.noAsk;
@@ -2484,6 +2625,17 @@ function analyzeCryptoMarket(parsed) {
     probYesWins = prediction.probBelow;
     probNoWins = prediction.probAbove;
   }
+
+  // APPLY CALIBRATION: Adjust probabilities based on historical accuracy
+  const marketType = parsed.ticker?.includes('1H') ? 'hourly' :
+                     parsed.ticker?.includes('15M') ? '15min' : 'daily';
+
+  const calibratedYes = getCalibratedProbability(probYesWins * 100, parsed.cryptoType, marketType);
+  const calibratedNo = getCalibratedProbability(probNoWins * 100, parsed.cryptoType, marketType);
+
+  // Use calibrated probabilities
+  probYesWins = calibratedYes.probability / 100;
+  probNoWins = calibratedNo.probability / 100;
 
   // Market implied probabilities from ask prices
   const marketProbYes = parsed.yesAsk;
@@ -4345,6 +4497,9 @@ app.get('/api/performance', (req, res) => {
   const settled = performanceData.bets.filter(b => b.outcome !== 'pending');
   const pending = performanceData.bets.filter(b => b.outcome === 'pending');
 
+  // Get calibration health score
+  const calibrationScore = getCalibrationScore();
+
   res.json({
     success: true,
     summary: {
@@ -4363,6 +4518,7 @@ app.get('/api/performance', (req, res) => {
     byProbBucket: performanceData.byProbBucket,
     byMarketType: performanceData.byMarketType,
     calibration: performanceData.summary.calibration,
+    calibrationScore,  // NEW: How well-calibrated is the model?
     recentBets: performanceData.bets.slice(-20).reverse()  // Last 20 bets, newest first
   });
 });

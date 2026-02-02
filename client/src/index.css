@@ -2205,6 +2205,76 @@ body {
   font-size: 16px;
 }
 
+/* Calibration Score */
+.calibration-score {
+  padding: 16px;
+  margin-bottom: 16px;
+  border-radius: var(--radius-md);
+  text-align: center;
+  border: 1px solid var(--border-color);
+}
+
+.calibration-score.excellent {
+  background: rgba(0, 255, 136, 0.1);
+  border-color: var(--neon-green);
+}
+
+.calibration-score.good {
+  background: rgba(0, 240, 255, 0.1);
+  border-color: var(--neon-cyan);
+}
+
+.calibration-score.needs_adjustment {
+  background: rgba(255, 238, 0, 0.1);
+  border-color: var(--neon-yellow);
+}
+
+.calibration-score.poor,
+.calibration-score.insufficient_data {
+  background: rgba(255, 51, 102, 0.1);
+  border-color: var(--accent-red);
+}
+
+.cal-score-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.cal-score-value {
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.cal-score-label {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.cal-score-na {
+  font-family: var(--font-display);
+  font-size: 24px;
+  color: var(--text-muted);
+}
+
+.cal-score-status {
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.cal-score-detail {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
 /* Calibration Table */
 .calibration-table {
   display: flex;
@@ -2233,12 +2303,28 @@ body {
   color: var(--text-secondary);
 }
 
+.calibration-row.calibrated {
+  background: rgba(0, 255, 136, 0.05);
+}
+
+.calibration-row.low-sample {
+  opacity: 0.6;
+}
+
 .calibration-row .positive {
   color: var(--neon-green);
 }
 
 .calibration-row .negative {
   color: var(--accent-red);
+}
+
+.calibration-note {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-top: 8px;
+  font-style: italic;
 }
 
 /* Token Performance List */

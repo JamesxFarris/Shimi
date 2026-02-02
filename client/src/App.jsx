@@ -1079,8 +1079,32 @@ function App() {
                 </div>
 
                 {/* Calibration - Predicted vs Actual */}
-                <div className="perf-card">
+                <div className="perf-card calibration-card">
                   <h3 className="perf-card-title">Model Calibration</h3>
+
+                  {/* Calibration Score */}
+                  {performance?.calibrationScore && (
+                    <div className={`calibration-score ${performance.calibrationScore.status}`}>
+                      <div className="cal-score-main">
+                        {performance.calibrationScore.score ? (
+                          <>
+                            <span className="cal-score-value">{performance.calibrationScore.score}</span>
+                            <span className="cal-score-label">/ 100</span>
+                          </>
+                        ) : (
+                          <span className="cal-score-na">N/A</span>
+                        )}
+                      </div>
+                      <div className="cal-score-status">{performance.calibrationScore.message}</div>
+                      {performance.calibrationScore.mae && (
+                        <div className="cal-score-detail">
+                          Mean error: {performance.calibrationScore.mae}% | {performance.calibrationScore.bucketsAnalyzed} buckets
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Calibration Table */}
                   {performance?.calibration && Object.keys(performance.calibration).length > 0 ? (
                     <div className="calibration-table">
                       <div className="calibration-header">
@@ -1090,7 +1114,7 @@ function App() {
                         <span>Bets</span>
                       </div>
                       {Object.entries(performance.calibration).sort((a, b) => parseFloat(a[0]) - parseFloat(b[0])).map(([bucket, data]) => (
-                        <div key={bucket} className="calibration-row">
+                        <div key={bucket} className={`calibration-row ${data.bets >= 10 ? 'calibrated' : 'low-sample'}`}>
                           <span>{bucket}%</span>
                           <span className={data.actual >= data.predicted ? 'positive' : 'negative'}>
                             {data.actual.toFixed(1)}%
@@ -1098,9 +1122,12 @@ function App() {
                           <span className={data.difference >= 0 ? 'positive' : 'negative'}>
                             {data.difference >= 0 ? '+' : ''}{data.difference.toFixed(1)}%
                           </span>
-                          <span>{data.bets}</span>
+                          <span>{data.bets}{data.bets < 10 ? '*' : ''}</span>
                         </div>
                       ))}
+                      <div className="calibration-note">
+                        * Buckets with &lt;10 bets not used for calibration
+                      </div>
                     </div>
                   ) : (
                     <p className="no-data">No calibration data yet. Place some bets!</p>
