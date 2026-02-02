@@ -2112,36 +2112,86 @@ function signRequest(method, path, timestamp) {
   }
 }
 
-async function kalshiRequest(method, endpoint, body = null) {
-  const timestamp = Date.now().toString();
-  const path = `/trade-api/v2${endpoint}`;
+// Rate limiting for Kalshi API
+const rateLimiter = {
+  lastRequest: 0,
+  minDelay: 200,  // 200ms between requests (5 req/sec max)
+  queue: [],
+  processing: false
+};
 
-  const headers = {
-    'Accept': 'application/json',
-    'Content-Type': 'application/json',
-    'User-Agent': 'Shimi/1.0'
-  };
+async function rateLimitedRequest(fn) {
+  return new Promise((resolve, reject) => {
+    rateLimiter.queue.push({ fn, resolve, reject });
+    processQueue();
+  });
+}
 
-  if (config.isAuthenticated && config.apiKeyId && config.privateKey) {
-    const signature = signRequest(method, path, timestamp);
-    headers['KALSHI-ACCESS-KEY'] = config.apiKeyId;
-    headers['KALSHI-ACCESS-TIMESTAMP'] = timestamp;
-    headers['KALSHI-ACCESS-SIGNATURE'] = signature;
+async function processQueue() {
+  if (rateLimiter.processing || rateLimiter.queue.length === 0) return;
+  rateLimiter.processing = true;
+
+  while (rateLimiter.queue.length > 0) {
+    const now = Date.now();
+    const timeSince = now - rateLimiter.lastRequest;
+    if (timeSince < rateLimiter.minDelay) {
+      await new Promise(r => setTimeout(r, rateLimiter.minDelay - timeSince));
+    }
+
+    const { fn, resolve, reject } = rateLimiter.queue.shift();
+    rateLimiter.lastRequest = Date.now();
+
+    try {
+      const result = await fn();
+      resolve(result);
+    } catch (err) {
+      reject(err);
+    }
   }
 
-  const options = { method, headers };
-  if (body && (method === 'POST' || method === 'PUT')) {
-    options.body = JSON.stringify(body);
-  }
+  rateLimiter.processing = false;
+}
 
-  const response = await fetch(`${KALSHI_API_BASE}${endpoint}`, options);
+async function kalshiRequest(method, endpoint, body = null, retries = 3) {
+  return rateLimitedRequest(async () => {
+    const timestamp = Date.now().toString();
+    const path = `/trade-api/v2${endpoint}`;
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Kalshi API error ${response.status}: ${errorText}`);
-  }
+    const headers = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      'User-Agent': 'Shimi/1.0'
+    };
 
-  return response.json();
+    if (config.isAuthenticated && config.apiKeyId && config.privateKey) {
+      const signature = signRequest(method, path, timestamp);
+      headers['KALSHI-ACCESS-KEY'] = config.apiKeyId;
+      headers['KALSHI-ACCESS-TIMESTAMP'] = timestamp;
+      headers['KALSHI-ACCESS-SIGNATURE'] = signature;
+    }
+
+    const options = { method, headers };
+    if (body && (method === 'POST' || method === 'PUT')) {
+      options.body = JSON.stringify(body);
+    }
+
+    const response = await fetch(`${KALSHI_API_BASE}${endpoint}`, options);
+
+    // Handle rate limiting with exponential backoff
+    if (response.status === 429 && retries > 0) {
+      const delay = (4 - retries) * 2000; // 2s, 4s, 6s backoff
+      console.log(`⏳ Rate limited, waiting ${delay/1000}s... (${retries} retries left)`);
+      await new Promise(r => setTimeout(r, delay));
+      return kalshiRequest(method, endpoint, body, retries - 1);
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Kalshi API error ${response.status}: ${errorText}`);
+    }
+
+    return response.json();
+  });
 }
 
 // ============================================
