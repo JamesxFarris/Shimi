@@ -54,10 +54,28 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
   const isIndex = opp.marketCategory === 'index'
   const notRecommended = opp.isRecommended === false
   const isLocked = opp.isLocked === true
+  const isDegen = opp.isDegen === true
+  const isSafe = opp.isSafe === true
   const pctFromStrike = parseFloat(opp.pctFromStrike) || 0
 
   return (
-    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''} ${notRecommended ? 'no-edge' : ''} ${isLocked ? 'locked' : ''}`}>
+    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''} ${notRecommended ? 'no-edge' : ''} ${isLocked ? 'locked' : ''} ${isDegen ? 'degen' : ''} ${isSafe ? 'safe' : ''}`}>
+      {/* DEGEN badge */}
+      {isDegen && !isLocked && (
+        <div className="degen-badge">
+          <span className="degen-icon">🎲</span>
+          <span className="degen-text">DEGEN</span>
+        </div>
+      )}
+
+      {/* SAFE badge */}
+      {isSafe && !isLocked && (
+        <div className="safe-badge">
+          <span className="safe-icon">✓</span>
+          <span className="safe-text">SAFE</span>
+        </div>
+      )}
+
       {/* Locked smoke overlay */}
       {isLocked && (
         <div className="locked-overlay">

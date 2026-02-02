@@ -2939,6 +2939,11 @@ function analyzeCryptoMarket(parsed) {
   const potentialWin = 100 - betPriceCents;
   const ev = (winProbability / 100) * potentialWin - ((100 - winProbability) / 100) * betPriceCents;
 
+  // DEGEN vs SAFE classification
+  // DEGEN = low confidence OR thin edge (1-3%) OR low price (against market)
+  const isDegen = signal.confidence === 'low' || edge < 3 || betPriceCents < 40;
+  const isSafe = !isDegen && edge >= 3 && (signal.confidence === 'high' || signal.confidence === 'very_high');
+
   return {
     ticker: parsed.ticker,
     title: parsed.title,
@@ -2959,7 +2964,10 @@ function analyzeCryptoMarket(parsed) {
     winProbability: winProbability.toFixed(1),
     edge: edge,
     expectedValue: ev.toFixed(2),
-    isRecommended: edge >= 3,
+    isRecommended: edge >= 1, // Show all with 1%+ edge
+    isDegen,  // Risky bet - manual only
+    isSafe,   // Safe bet - auto-bet can place
+    confidence: signal.confidence,
     momentumSignal: signal,
     shortMomentum: signal.momentum,
     hasStrongMomentumSignal: true,
@@ -4033,9 +4041,37 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
 // Toggle auto-betting
 let autoBetInterval = null;
 
+// Safety circuit breaker settings
+const SAFETY_MIN_BETS = 20;      // Need at least 20 bets before safety kicks in
+const SAFETY_MIN_WINRATE = 40;   // Stop auto-betting if win rate drops below 40%
+
 async function runAutoBet() {
   try {
     console.log('\n🤖 ========== AUTO-BET SCAN ==========');
+
+    // SAFETY CIRCUIT BREAKER: Check win rate before betting
+    const completedBets = performanceData.bets.filter(b => b.outcome !== 'pending');
+    if (completedBets.length >= SAFETY_MIN_BETS) {
+      const wins = completedBets.filter(b => b.outcome === 'won').length;
+      const winRate = (wins / completedBets.length) * 100;
+
+      if (winRate < SAFETY_MIN_WINRATE) {
+        console.log(`🛑 SAFETY STOP: Win rate ${winRate.toFixed(1)}% < ${SAFETY_MIN_WINRATE}% (${completedBets.length} bets)`);
+        console.log('   Auto-betting paused. Manual degen bets still allowed.');
+        console.log('========================================\n');
+
+        // Disable auto-bet
+        config.autoBetEnabled = false;
+        saveAutoBetState(false);
+
+        lastScanStatus.blockedReason = 'safety_stop';
+        lastScanStatus.bestOpportunity = {
+          title: 'Safety circuit breaker triggered',
+          reason: `Win rate ${winRate.toFixed(1)}% below ${SAFETY_MIN_WINRATE}% threshold`
+        };
+        return;
+      }
+    }
 
     // Reset scan status
     lastScanStatus = {
@@ -4245,7 +4281,24 @@ async function runAutoBet() {
     const betResults = [];
 
     // Process each opportunity (already sorted by EV)
-    for (const opp of opportunities) {
+    // AUTO-BET ONLY PLACES SAFE BETS - Degen bets require manual click
+    const safeOpportunities = opportunities.filter(o => !o.isDegen);
+    const degenOpportunities = opportunities.filter(o => o.isDegen);
+
+    if (degenOpportunities.length > 0) {
+      console.log(`   🎲 ${degenOpportunities.length} DEGEN bets available (manual only)`);
+    }
+
+    if (safeOpportunities.length === 0) {
+      console.log('   📊 No safe bets - only degen opportunities available');
+      lastScanStatus.blockedReason = 'degen_only';
+      console.log('========================================\n');
+      return;
+    }
+
+    console.log(`   ✅ ${safeOpportunities.length} safe bets to process`);
+
+    for (const opp of safeOpportunities) {
       // Check if we've hit overall limits
       if (getTotalRemainingBudget() < 10) {
         console.log('   ⚠️ Exposure limit reached - stopping');
