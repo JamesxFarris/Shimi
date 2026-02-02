@@ -2359,9 +2359,12 @@ app.post('/api/bet', async (req, res) => {
           max: MAX_TOTAL_RISK_CENTS,
           remaining: getRemainingRiskBudget(),
           currentDollars: (currentRisk / 100).toFixed(2),
-          maxDollars: (MAX_TOTAL_RISK_CENTS / 100).toFixed(2)
+          maxDollars: (MAX_TOTAL_RISK_CENTS / 100).toFixed(2),
+          remainingDollars: (getRemainingRiskBudget() / 100).toFixed(2)
         }
       });
+
+      console.log(`✅ Bet placed. Risk now: $${(currentRisk / 100).toFixed(2)} / $${(MAX_TOTAL_RISK_CENTS / 100).toFixed(2)}`);
     } catch (orderError) {
       console.error('Kalshi order error:', orderError.message);
       res.status(400).json({ success: false, error: `Kalshi: ${orderError.message}` });

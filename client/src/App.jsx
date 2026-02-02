@@ -328,6 +328,7 @@ function App() {
         setOpportunities(data.opportunities || [])
         // Update risk info
         if (data.risk) {
+          console.log('📊 Risk update from opportunities:', data.risk)
           setRisk(data.risk)
         }
         // Also update prices from opportunities as backup
@@ -452,6 +453,7 @@ function App() {
         setBalance(data.newBalance)
         // Update risk if returned
         if (data.risk) {
+          console.log('📊 Risk update from manual bet:', data.risk)
           setRisk(data.risk)
         }
         setBetStatus({
@@ -499,6 +501,7 @@ function App() {
         setBalance(data.newBalance)
         // Update risk if returned
         if (data.risk) {
+          console.log('📊 Risk update from auto-bet:', data.risk)
           setRisk(data.risk)
         }
         setBetStatus({
@@ -619,20 +622,18 @@ function App() {
               {balanceLoading ? '---' : formatCurrency(balance)}
             </span>
           </div>
-          {isAuthenticated && (
-            <div className="risk-display-sidebar">
-              <div className="risk-header">
-                <span className="risk-label">Risk Exposure</span>
-                <span className="risk-value">${risk.currentDollars || '0.00'} / ${risk.maxDollars || '5.00'}</span>
-              </div>
-              <div className="risk-bar-small">
-                <div
-                  className="risk-fill-small"
-                  style={{ width: `${Math.min(100, ((risk.current || 0) / (risk.max || 500)) * 100)}%` }}
-                ></div>
-              </div>
+          <div className="risk-display-sidebar">
+            <div className="risk-header">
+              <span className="risk-label">Risk Exposure</span>
+              <span className="risk-value">${risk.currentDollars || '0.00'} / ${risk.maxDollars || '5.00'}</span>
             </div>
-          )}
+            <div className="risk-bar-small">
+              <div
+                className="risk-fill-small"
+                style={{ width: `${Math.min(100, ((risk.current || 0) / (risk.max || 500)) * 100)}%` }}
+              ></div>
+            </div>
+          </div>
           <div className={`connection-status ${isAuthenticated ? 'connected' : 'simulated'}`}>
             <span className="status-dot"></span>
             <span>{isAuthenticated ? 'Connected to Kalshi' : 'Simulation Mode'}</span>
