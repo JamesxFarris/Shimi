@@ -228,26 +228,104 @@ let performanceData = {
   lastUpdated: null
 };
 
-// Load performance data from file
-function loadPerformanceData() {
+// ============================================
+// JSONBIN.IO CLOUD STORAGE (for persistent stats)
+// ============================================
+// Set these env vars on Render:
+//   JSONBIN_API_KEY = your JSONBin.io API key (free at jsonbin.io)
+//   JSONBIN_BIN_ID = your bin ID (created after first save)
+
+const JSONBIN_API_KEY = process.env.JSONBIN_API_KEY;
+let JSONBIN_BIN_ID = process.env.JSONBIN_BIN_ID;
+
+// Load performance data from JSONBin (cloud) or file (local fallback)
+async function loadPerformanceData() {
+  // Try JSONBin first if configured
+  if (JSONBIN_API_KEY && JSONBIN_BIN_ID) {
+    try {
+      const res = await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}/latest`, {
+        headers: { 'X-Access-Key': JSONBIN_API_KEY }
+      });
+      if (res.ok) {
+        const json = await res.json();
+        performanceData = json.record;
+        console.log(`☁️ Loaded ${performanceData.bets?.length || 0} bets from JSONBin (cloud)`);
+        return;
+      }
+    } catch (err) {
+      console.log('JSONBin load failed, trying local file:', err.message);
+    }
+  }
+
+  // Fallback to local file
   try {
     if (fs.existsSync(PERFORMANCE_FILE)) {
       const data = fs.readFileSync(PERFORMANCE_FILE, 'utf8');
       performanceData = JSON.parse(data);
-      console.log(`📊 Loaded ${performanceData.bets.length} historical bets`);
+      console.log(`📊 Loaded ${performanceData.bets.length} historical bets (local file)`);
     }
   } catch (err) {
     console.log('Could not load performance data:', err.message);
   }
 }
 
-// Save performance data to file
+// Save performance data to JSONBin (cloud) and file (local backup)
+let saveTimeout = null;
 function savePerformanceData() {
+  performanceData.lastUpdated = new Date().toISOString();
+
+  // Always save locally as backup
   try {
-    performanceData.lastUpdated = new Date().toISOString();
     fs.writeFileSync(PERFORMANCE_FILE, JSON.stringify(performanceData, null, 2));
   } catch (err) {
-    console.log('Could not save performance data:', err.message);
+    // Ignore local save errors on Render (read-only filesystem)
+  }
+
+  // Debounce cloud saves (max once per 5 seconds to avoid rate limits)
+  if (JSONBIN_API_KEY) {
+    if (saveTimeout) clearTimeout(saveTimeout);
+    saveTimeout = setTimeout(() => saveToJsonBin(), 5000);
+  }
+}
+
+// Actual JSONBin save (debounced)
+async function saveToJsonBin() {
+  if (!JSONBIN_API_KEY) return;
+
+  try {
+    if (JSONBIN_BIN_ID) {
+      // Update existing bin
+      const res = await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Access-Key': JSONBIN_API_KEY
+        },
+        body: JSON.stringify(performanceData)
+      });
+      if (res.ok) {
+        console.log(`☁️ Saved ${performanceData.bets.length} bets to JSONBin`);
+      }
+    } else {
+      // Create new bin
+      const res = await fetch('https://api.jsonbin.io/v3/b', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Access-Key': JSONBIN_API_KEY,
+          'X-Bin-Name': 'shimi-performance-data'
+        },
+        body: JSON.stringify(performanceData)
+      });
+      if (res.ok) {
+        const json = await res.json();
+        JSONBIN_BIN_ID = json.metadata.id;
+        console.log(`☁️ Created new JSONBin: ${JSONBIN_BIN_ID}`);
+        console.log(`   ⚠️ Add JSONBIN_BIN_ID=${JSONBIN_BIN_ID} to your environment variables!`);
+      }
+    }
+  } catch (err) {
+    console.log('JSONBin save error:', err.message);
   }
 }
 
@@ -619,8 +697,10 @@ async function checkPendingSettlements() {
   }
 }
 
-// Load performance data on startup
-loadPerformanceData();
+// Load performance data on startup (async)
+(async () => {
+  await loadPerformanceData();
+})();
 
 // ============================================
 // AUTO-LOAD CREDENTIALS FROM ENVIRONMENT
