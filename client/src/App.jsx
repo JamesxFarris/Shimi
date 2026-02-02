@@ -287,7 +287,7 @@ function App() {
   const [placingBet, setPlacingBet] = useState(null)
   const [tickerTime, setTickerTime] = useState(Date.now())
   // New: Risk tracking and market filtering
-  const [risk, setRisk] = useState({ current: 0, max: 300, remaining: 300 })
+  const [risk, setRisk] = useState({ current: 0, max: 500, remaining: 500 })
   const [marketFilter, setMarketFilter] = useState('all') // 'all', 'crypto', 'index'
   // News & Sentiment
   const [sentiment, setSentiment] = useState(null)
@@ -450,6 +450,10 @@ function App() {
 
       if (data.success) {
         setBalance(data.newBalance)
+        // Update risk if returned
+        if (data.risk) {
+          setRisk(data.risk)
+        }
         setBetStatus({
           type: 'success',
           message: `Bet placed: ${opp.betSide} on ${opp.cryptoType || opp.assetType}${data.simulated ? ' (simulated)' : ''}`
@@ -611,6 +615,20 @@ function App() {
               {balanceLoading ? '---' : formatCurrency(balance)}
             </span>
           </div>
+          {isAuthenticated && (
+            <div className="risk-display-sidebar">
+              <div className="risk-header">
+                <span className="risk-label">Risk Exposure</span>
+                <span className="risk-value">${risk.currentDollars || '0.00'} / ${risk.maxDollars || '5.00'}</span>
+              </div>
+              <div className="risk-bar-small">
+                <div
+                  className="risk-fill-small"
+                  style={{ width: `${Math.min(100, ((risk.current || 0) / (risk.max || 500)) * 100)}%` }}
+                ></div>
+              </div>
+            </div>
+          )}
           <div className={`connection-status ${isAuthenticated ? 'connected' : 'simulated'}`}>
             <span className="status-dot"></span>
             <span>{isAuthenticated ? 'Connected to Kalshi' : 'Simulation Mode'}</span>
@@ -791,15 +809,15 @@ function App() {
               <div className="risk-display">
                 <div className="risk-info">
                   <span className="risk-label">Risk Exposure</span>
-                  <span className="risk-value">${risk.currentDollars || '0.00'} / ${risk.maxDollars || '3.00'}</span>
+                  <span className="risk-value">${risk.currentDollars || '0.00'} / ${risk.maxDollars || '5.00'}</span>
                 </div>
                 <div className="risk-bar">
                   <div
                     className="risk-fill"
-                    style={{ width: `${Math.min(100, (risk.current / risk.max) * 100)}%` }}
+                    style={{ width: `${Math.min(100, (risk.current / (risk.max || 500)) * 100)}%` }}
                   ></div>
                 </div>
-                <span className="risk-remaining">${risk.remainingDollars || '3.00'} available</span>
+                <span className="risk-remaining">${risk.remainingDollars || '5.00'} available</span>
               </div>
 
               {/* Market Filter */}

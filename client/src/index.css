@@ -1829,6 +1829,62 @@ body {
   color: var(--text-muted);
 }
 
+/* Sidebar Risk Display (compact version) */
+.risk-display-sidebar {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  margin-bottom: 12px;
+  position: relative;
+  overflow: hidden;
+}
+
+.risk-display-sidebar::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--neon-orange), var(--neon-yellow));
+}
+
+.risk-display-sidebar .risk-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.risk-display-sidebar .risk-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.risk-display-sidebar .risk-value {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--neon-cyan);
+}
+
+.risk-bar-small {
+  height: 6px;
+  background: var(--bg-elevated);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.risk-fill-small {
+  height: 100%;
+  background: linear-gradient(90deg, var(--neon-green), var(--neon-yellow), var(--neon-orange), var(--accent-red));
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
 /* ============================================
    MARKET FILTER
    ============================================ */
