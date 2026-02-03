@@ -4241,9 +4241,10 @@ app.post('/api/bet', async (req, res) => {
       });
     }
 
-    // Real bet - check orderbook for liquidity, try opposite side if needed
+    // Real bet - check orderbook for liquidity (but NEVER flip sides on manual bets)
+    // User chose their side intentionally - respect that choice
     let bestAsk = priceCents;
-    let finalSide = side.toLowerCase();
+    const finalSide = side.toLowerCase();
     try {
       const orderbook = await kalshiRequest('GET', `/markets/${ticker}/orderbook`);
       const asks = finalSide === 'yes' ? orderbook.yes : orderbook.no;
@@ -4251,17 +4252,8 @@ app.post('/api/bet', async (req, res) => {
         bestAsk = asks[0][0];
         console.log(`Orderbook check: Best ${finalSide} ask = ${bestAsk}¢, qty = ${asks[0][1]}`);
       } else {
-        // No liquidity on preferred side - try opposite
-        const oppositeSide = finalSide === 'yes' ? 'no' : 'yes';
-        const oppositeAsks = oppositeSide === 'yes' ? orderbook.yes : orderbook.no;
-        if (oppositeAsks && oppositeAsks.length > 0 && oppositeAsks[0] && oppositeAsks[0][1] > 0) {
-          bestAsk = oppositeAsks[0][0];
-          finalSide = oppositeSide;
-          console.log(`Flipped to ${finalSide.toUpperCase()} side: ${bestAsk}¢, qty = ${oppositeAsks[0][1]}`);
-        } else {
-          // Both sides empty - try anyway, Kalshi may have hidden liquidity
-          console.log(`Orderbook appears empty, proceeding anyway with market price`);
-        }
+        // No visible liquidity - try anyway, Kalshi often has hidden liquidity
+        console.log(`Orderbook appears empty for ${finalSide}, proceeding anyway with market price`);
       }
     } catch (obErr) {
       console.log(`Orderbook fetch failed: ${obErr.message}, using market price`);
