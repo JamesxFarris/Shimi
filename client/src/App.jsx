@@ -497,7 +497,7 @@ function App() {
     maxBetMultiplier: 0.5
   })
   const [aggressiveMode, setAggressiveMode] = useState({
-    enabled: true,
+    enabled: false,  // Default to CONSERVATIVE
     minPrice: 26,
     minDistanceFromStrike: 0.05,
     allowNightTrading: true,
