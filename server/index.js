@@ -87,7 +87,8 @@ app.use('/api', (req, res, next) => {
     '/jsonbin-status',
     '/jsonbin-create',
     '/jsonbin-sync',
-    '/ml-model'
+    '/ml-model',
+    '/import-fills'
   ];
   if (publicPaths.includes(req.path)) {
     return next();
@@ -5526,6 +5527,83 @@ app.post('/api/jsonbin-sync', async (req, res) => {
     settledBets: performanceData.bets.filter(b => b.outcome !== 'pending').length,
     ...result
   });
+});
+
+// Import existing Kalshi fills into tracking (one-time setup)
+app.post('/api/import-fills', async (req, res) => {
+  if (!config.isAuthenticated) {
+    return res.status(400).json({ success: false, error: 'Not authenticated with Kalshi' });
+  }
+
+  try {
+    // Fetch recent fills from Kalshi
+    const fillsData = await kalshiRequest('GET', '/portfolio/fills?limit=100');
+    const fills = fillsData.fills || [];
+
+    if (fills.length === 0) {
+      return res.json({ success: true, imported: 0, message: 'No fills found' });
+    }
+
+    let imported = 0;
+    let skipped = 0;
+
+    for (const fill of fills) {
+      // Skip if already tracked
+      const existingBet = performanceData.bets.find(b =>
+        b.ticker === fill.ticker &&
+        Math.abs(new Date(b.timestamp).getTime() - new Date(fill.created_time).getTime()) < 60000
+      );
+      if (existingBet) {
+        skipped++;
+        continue;
+      }
+
+      const side = fill.side?.toLowerCase() || 'unknown';
+      const count = fill.count || 1;
+      let priceCents = fill.price || 50;
+      if (priceCents > 0 && priceCents <= 1) {
+        priceCents = Math.round(priceCents * 100);
+      }
+      // For NO bets, price is 100 - yes_price
+      const actualPrice = side === 'no' ? (100 - priceCents) : priceCents;
+      const totalCost = count * actualPrice;
+
+      const token = getTokenFromTicker(fill.ticker);
+
+      trackBet({
+        id: fill.trade_id || fill.fill_id || Date.now().toString() + imported,
+        ticker: fill.ticker,
+        title: fill.ticker,
+        side,
+        count,
+        price: actualPrice,
+        totalCost,
+        token,
+        predictedProb: actualPrice, // Use market price as proxy
+        marketPrice: actualPrice,
+        strikePrice: 0, // Unknown
+        currentPrice: 0, // Unknown
+        expiryTime: null,
+        marketType: fill.ticker?.includes('15M') ? '15min' : fill.ticker?.includes('1H') ? 'hourly' : 'daily',
+        timestamp: fill.created_time
+      });
+
+      imported++;
+    }
+
+    // Force save to JSONBin
+    await saveToJsonBin();
+
+    res.json({
+      success: true,
+      imported,
+      skipped,
+      totalBets: performanceData.bets.length,
+      message: `Imported ${imported} fills, skipped ${skipped} duplicates`
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ML Model status endpoint
