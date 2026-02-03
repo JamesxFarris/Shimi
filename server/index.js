@@ -290,7 +290,10 @@ function savePerformanceData() {
 
 // Actual JSONBin save (debounced)
 async function saveToJsonBin() {
-  if (!JSONBIN_API_KEY) return;
+  if (!JSONBIN_API_KEY) {
+    console.log('⚠️ JSONBin: No API key configured');
+    return { success: false, error: 'No API key' };
+  }
 
   try {
     if (JSONBIN_BIN_ID) {
@@ -305,9 +308,15 @@ async function saveToJsonBin() {
       });
       if (res.ok) {
         console.log(`☁️ Saved ${performanceData.bets.length} bets to JSONBin`);
+        return { success: true, binId: JSONBIN_BIN_ID, action: 'updated' };
+      } else {
+        const errText = await res.text();
+        console.log(`☁️ JSONBin update failed: ${res.status} - ${errText}`);
+        return { success: false, error: errText };
       }
     } else {
       // Create new bin
+      console.log('☁️ Creating new JSONBin...');
       const res = await fetch('https://api.jsonbin.io/v3/b', {
         method: 'POST',
         headers: {
@@ -320,12 +329,21 @@ async function saveToJsonBin() {
       if (res.ok) {
         const json = await res.json();
         JSONBIN_BIN_ID = json.metadata.id;
-        console.log(`☁️ Created new JSONBin: ${JSONBIN_BIN_ID}`);
-        console.log(`   ⚠️ Add JSONBIN_BIN_ID=${JSONBIN_BIN_ID} to your environment variables!`);
+        console.log(`☁️ ========================================`);
+        console.log(`☁️ CREATED NEW JSONBIN: ${JSONBIN_BIN_ID}`);
+        console.log(`☁️ ADD THIS TO RENDER ENV VARS:`);
+        console.log(`☁️ JSONBIN_BIN_ID=${JSONBIN_BIN_ID}`);
+        console.log(`☁️ ========================================`);
+        return { success: true, binId: JSONBIN_BIN_ID, action: 'created' };
+      } else {
+        const errText = await res.text();
+        console.log(`☁️ JSONBin create failed: ${res.status} - ${errText}`);
+        return { success: false, error: errText };
       }
     }
   } catch (err) {
     console.log('JSONBin save error:', err.message);
+    return { success: false, error: err.message };
   }
 }
 
@@ -5106,6 +5124,52 @@ app.post('/api/settings', (req, res) => {
 // ============================================
 // PERFORMANCE TRACKING ENDPOINTS
 // ============================================
+
+// JSONBin status and management
+app.get('/api/jsonbin-status', async (req, res) => {
+  res.json({
+    success: true,
+    configured: !!JSONBIN_API_KEY,
+    hasApiKey: !!JSONBIN_API_KEY,
+    hasBinId: !!JSONBIN_BIN_ID,
+    binId: JSONBIN_BIN_ID || null,
+    message: JSONBIN_API_KEY
+      ? (JSONBIN_BIN_ID
+          ? `Fully configured. Bin ID: ${JSONBIN_BIN_ID}`
+          : 'API key set but no bin ID yet. Call POST /api/jsonbin-create to create one.')
+      : 'Not configured. Set JSONBIN_API_KEY in Render environment.',
+    betsTracked: performanceData.bets.length
+  });
+});
+
+// Force create/save JSONBin
+app.post('/api/jsonbin-create', async (req, res) => {
+  if (!JSONBIN_API_KEY) {
+    return res.status(400).json({
+      success: false,
+      error: 'JSONBIN_API_KEY not set in environment variables'
+    });
+  }
+
+  const result = await saveToJsonBin();
+
+  if (result.success) {
+    res.json({
+      success: true,
+      binId: JSONBIN_BIN_ID,
+      action: result.action,
+      message: result.action === 'created'
+        ? `Created new bin! Add JSONBIN_BIN_ID=${JSONBIN_BIN_ID} to your Render env vars.`
+        : `Updated existing bin ${JSONBIN_BIN_ID}`,
+      betsTracked: performanceData.bets.length
+    });
+  } else {
+    res.status(500).json({
+      success: false,
+      error: result.error
+    });
+  }
+});
 
 // Get performance summary
 app.get('/api/performance', (req, res) => {
