@@ -1139,6 +1139,75 @@ body {
   margin-top: 4px;
 }
 
+.scan-status-label {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.scan-status-indicator.bet_placed {
+  background: var(--neon-green);
+}
+
+.scan-status-indicator.no_opportunities,
+.scan-status-indicator.scanning {
+  background: var(--neon-yellow);
+}
+
+.scan-status-indicator.risk_limit,
+.scan-status-indicator.token_limit,
+.scan-status-indicator.bet_too_small {
+  background: var(--neon-orange);
+  animation: none;
+}
+
+.scan-status-indicator.error {
+  background: var(--accent-red);
+  animation: none;
+}
+
+.scan-status-indicator.idle {
+  background: var(--text-muted);
+  animation: none;
+}
+
+.scan-status-message {
+  color: var(--text-secondary);
+  margin-top: 6px;
+  font-size: 10px;
+}
+
+.scan-blocked-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.scan-blocked-reasons .blocked-reason {
+  background: rgba(255, 150, 50, 0.1);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 9px;
+}
+
+.scan-last-bet {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(0, 240, 255, 0.1);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.last-bet-label {
+  color: var(--text-muted);
+}
+
+.last-bet-details {
+  color: var(--neon-green);
+  font-weight: 600;
+}
+
 /* ============================================
    Opportunities
    ============================================ */

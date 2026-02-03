@@ -655,7 +655,7 @@ function App() {
   // Fetch scan status (for auto-bet diagnostics)
   const fetchScanStatus = useCallback(async () => {
     try {
-      const res = await authFetch(`${API_BASE}/api/scan-status`)
+      const res = await authFetch(`${API_BASE}/api/auto-bet/status`)
       const data = await res.json()
       if (data.success) {
         setScanStatus(data)
@@ -752,21 +752,35 @@ function App() {
 
   // Delete profile
   const deleteProfile = async (profileId) => {
-    if (!confirm('Delete this profile?')) return
+    const profile = profiles.find(p => p.id === profileId)
+    if (!confirm(`Delete profile "${profile?.name || 'Unknown'}"? This cannot be undone.`)) return
+
+    // If profile has PIN, prompt for it
+    let pin = null
+    if (profile?.hasPin) {
+      pin = prompt('Enter PIN to confirm deletion:')
+      if (!pin) return // Cancelled
+    }
+
     try {
       const res = await authFetch(`${API_BASE}/api/profiles/${profileId}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        body: JSON.stringify({ pin })
       })
       const data = await res.json()
       if (data.success) {
+        alert(`Profile "${profile?.name}" deleted`)
         fetchProfiles()
         if (activeProfile?.id === profileId) {
           setActiveProfile(null)
           setIsAuthenticated(false)
         }
+      } else {
+        alert(data.error || 'Failed to delete profile')
       }
     } catch (err) {
       console.error('Delete profile error:', err)
+      alert('Error deleting profile')
     }
   }
 
@@ -799,13 +813,14 @@ function App() {
     fetchAutoBetStatus()  // Get current auto-bet state
     fetchDegenModeStatus()  // Get current degen mode state
     fetchAggressiveMode()   // Get current aggressive/conservative mode
+    fetchRiskSettings()     // Get saved risk settings
     checkAuth()
 
     // Refresh opportunities every 10 seconds (includes prices)
     const oppInterval = setInterval(fetchOpportunities, 10000)
 
-    // Refresh portfolio every 30 seconds
-    const portfolioInterval = setInterval(fetchPortfolio, 30000)
+    // Refresh portfolio every 10 seconds (faster balance updates)
+    const portfolioInterval = setInterval(fetchPortfolio, 10000)
 
     // Refresh performance stats every 60 seconds
     const perfInterval = setInterval(fetchPerformance, 60000)
@@ -1018,6 +1033,25 @@ function App() {
       if (data.success) setAutoBetEnabled(data.enabled)
     } catch (err) {
       alert('Error toggling auto-bet')
+    }
+  }
+
+  // Fetch risk settings from server
+  const fetchRiskSettings = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/settings/risk`)
+      const data = await res.json()
+      if (data.success && data.riskLimits) {
+        setRiskSettings(data.riskLimits)
+        const totalMax = data.riskLimits.maxTotal || 1500
+        setRisk(prev => ({
+          ...prev,
+          max: totalMax,
+          maxDollars: (totalMax / 100).toFixed(2)
+        }))
+      }
+    } catch (err) {
+      console.error('Error fetching risk settings:', err)
     }
   }
 
@@ -1393,42 +1427,44 @@ function App() {
                 </div>
 
                 {/* Scan Status (visible when auto-bet is enabled) */}
-                {autoBetEnabled && scanStatus?.lastScan && (
+                {autoBetEnabled && scanStatus && (
                   <div className="scan-status">
                     <div className="scan-status-header">
-                      <span className="scan-status-indicator"></span>
-                      Last Scan: {scanStatus.summary?.age || 'just now'}
-                    </div>
-                    <div className="scan-status-details">
-                      <span>Markets: {scanStatus.lastScan.cryptoMarketsFound + scanStatus.lastScan.indexMarketsFound}</span>
-                      <span>Qualifying: {scanStatus.lastScan.above60}</span>
-                      <span className={`scan-result ${scanStatus.lastScan.betPlaced ? 'bet-placed' : scanStatus.lastScan.blockedReason || 'waiting'}`}>
-                        {scanStatus.lastScan.betPlaced ? 'Bet Placed' :
-                         scanStatus.lastScan.blockedReason === 'no_opportunities' ? 'Waiting' :
-                         scanStatus.lastScan.blockedReason === 'risk_limit' ? 'Risk limit' :
-                         scanStatus.lastScan.blockedReason === 'token_limit' ? 'Token limit' :
-                         scanStatus.lastScan.blockedReason === 'error' ? 'Error' :
-                         'Scanning...'}
+                      <span className={`scan-status-indicator ${scanStatus.status}`}></span>
+                      <span className="scan-status-label">
+                        {scanStatus.status === 'scanning' ? 'Scanning...' :
+                         scanStatus.status === 'bet_placed' ? '✅ Bet Placed' :
+                         scanStatus.status === 'no_opportunities' ? '⏳ Waiting' :
+                         scanStatus.status === 'risk_limit' ? '⚠️ Risk Limit' :
+                         scanStatus.status === 'token_limit' ? '⚠️ Token Limit' :
+                         scanStatus.status === 'bet_too_small' ? '⚠️ Budget Low' :
+                         scanStatus.status === 'error' ? '❌ Error' :
+                         scanStatus.status === 'idle' ? '💤 Idle' :
+                         'Unknown'}
                       </span>
                     </div>
-                    {scanStatus.lastScan.bestOpportunity && !scanStatus.lastScan.betPlaced && (
-                      <div className="scan-best-opp">
-                        Best: {scanStatus.lastScan.bestOpportunity.title?.substring(0, 30)}...
-                        ({scanStatus.lastScan.bestOpportunity.winProbability}%)
-                        {scanStatus.lastScan.bestOpportunity.reason && (
-                          <span className="blocked-reason"> - {scanStatus.lastScan.bestOpportunity.reason}</span>
-                        )}
+                    <div className="scan-status-details">
+                      <span>Markets: {scanStatus.marketsScanned || 0}</span>
+                      <span>With Edge: {scanStatus.marketsWithEdge || 0}</span>
+                      <span>Qualifying: {scanStatus.opportunitiesFound || 0}</span>
+                    </div>
+                    <div className="scan-status-message">
+                      {scanStatus.statusMessage}
+                    </div>
+                    {scanStatus.blockedReasons?.length > 0 && scanStatus.status !== 'bet_placed' && (
+                      <div className="scan-blocked-reasons">
+                        {scanStatus.blockedReasons.map((reason, i) => (
+                          <span key={i} className="blocked-reason">{reason}</span>
+                        ))}
                       </div>
                     )}
-                    {scanStatus.lastScan.betPlaced && scanStatus.lastScan.betDetails && (
-                      <div className="scan-bet-placed">
-                        {scanStatus.lastScan.betDetails.count > 1 ? (
-                          <>Placed {scanStatus.lastScan.betDetails.count} bets | ${(scanStatus.lastScan.betDetails.totalAmount / 100).toFixed(2)} total</>
-                        ) : scanStatus.lastScan.betDetails.bets?.[0] ? (
-                          <>Placed: {scanStatus.lastScan.betDetails.bets[0].count}x {scanStatus.lastScan.betDetails.bets[0].side} @ {scanStatus.lastScan.betDetails.bets[0].price}¢</>
-                        ) : (
-                          <>Bet placed</>
-                        )}
+                    {scanStatus.lastBet && (
+                      <div className="scan-last-bet">
+                        <span className="last-bet-label">Last bet:</span>
+                        <span className="last-bet-details">
+                          {scanStatus.lastBet.contracts}x {scanStatus.lastBet.side} @ {scanStatus.lastBet.price}¢
+                          {scanStatus.lastBet.simulated && ' (sim)'}
+                        </span>
                       </div>
                     )}
                   </div>
@@ -1831,7 +1867,7 @@ function App() {
                             {profile.name}
                           </span>
                           <span className="profile-status">
-                            {profile.hasKalshi ? '🟢 Kalshi connected' : '⚪ No Kalshi'}
+                            {profile.hasCredentials ? '🟢 Kalshi connected' : '⚪ No Kalshi'}
                           </span>
                         </div>
                         {profile.isActive ? (
@@ -2087,7 +2123,7 @@ function App() {
                     >
                       <span className="mode-icon">🛡️</span>
                       <span className="mode-name">Conservative</span>
-                      <span className="mode-desc">41¢+ min, no night</span>
+                      <span className="mode-desc">41¢+ min, safer picks</span>
                     </button>
                   </div>
                   <div className="mode-details">
