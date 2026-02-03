@@ -451,6 +451,10 @@ function App() {
   const [activeProfile, setActiveProfile] = useState(null)
   const [showNewProfile, setShowNewProfile] = useState(false)
   const [newProfileName, setNewProfileName] = useState('')
+  const [newProfilePin, setNewProfilePin] = useState('')
+  const [pinPrompt, setPinPrompt] = useState(null) // { profileId, profileName }
+  const [pinInput, setPinInput] = useState('')
+  const [pinError, setPinError] = useState('')
   const [scaleInSettings, setScaleInSettings] = useState({
     enabled: true,
     minProbabilityIncrease: 15,
@@ -629,11 +633,12 @@ function App() {
     try {
       const res = await authFetch(`${API_BASE}/api/profiles`, {
         method: 'POST',
-        body: JSON.stringify({ name: newProfileName.trim() })
+        body: JSON.stringify({ name: newProfileName.trim(), pin: newProfilePin || null })
       })
       const data = await res.json()
       if (data.success) {
         setNewProfileName('')
+        setNewProfilePin('')
         setShowNewProfile(false)
         fetchProfiles()
       }
@@ -642,23 +647,39 @@ function App() {
     }
   }
 
-  // Switch profile
-  const switchProfile = async (profileId) => {
+  // Switch profile (with optional PIN)
+  const switchProfile = async (profileId, pin = null) => {
     try {
       const res = await authFetch(`${API_BASE}/api/profiles/${profileId}/switch`, {
-        method: 'POST'
+        method: 'POST',
+        body: JSON.stringify({ pin })
       })
       const data = await res.json()
       if (data.success) {
         setActiveProfile(data.profile)
         setIsAuthenticated(data.isAuthenticated)
         setBalance(data.balance)
+        setPinPrompt(null)
+        setPinInput('')
+        setPinError('')
         fetchProfiles()
         fetchOpportunities()
         fetchPortfolio()
+      } else if (data.requiresPin) {
+        // Profile requires PIN - show prompt
+        const profile = profiles.find(p => p.id === profileId)
+        setPinPrompt({ profileId, profileName: profile?.name || 'Profile' })
+        setPinError(pin ? 'Incorrect PIN' : '')
       }
     } catch (err) {
       console.error('Switch profile error:', err)
+    }
+  }
+
+  // Handle PIN submit
+  const handlePinSubmit = () => {
+    if (pinPrompt && pinInput) {
+      switchProfile(pinPrompt.profileId, pinInput)
     }
   }
 
@@ -1677,7 +1698,10 @@ function App() {
                         onClick={() => !profile.isActive && switchProfile(profile.id)}
                       >
                         <div className="profile-info">
-                          <span className="profile-name">{profile.name}</span>
+                          <span className="profile-name">
+                            {profile.hasPin && <span className="profile-lock">🔒</span>}
+                            {profile.name}
+                          </span>
                           <span className="profile-status">
                             {profile.hasKalshi ? '🟢 Kalshi connected' : '⚪ No Kalshi'}
                           </span>
@@ -1705,10 +1729,18 @@ function App() {
                         placeholder="Profile name"
                         className="new-profile-input"
                         autoFocus
+                      />
+                      <input
+                        type="password"
+                        value={newProfilePin}
+                        onChange={(e) => setNewProfilePin(e.target.value)}
+                        placeholder="PIN (optional - protects your account)"
+                        className="new-profile-input"
+                        maxLength={6}
                         onKeyDown={(e) => e.key === 'Enter' && createProfile()}
                       />
                       <div className="new-profile-actions">
-                        <button className="btn-secondary" onClick={() => { setShowNewProfile(false); setNewProfileName(''); }}>
+                        <button className="btn-secondary" onClick={() => { setShowNewProfile(false); setNewProfileName(''); setNewProfilePin(''); }}>
                           Cancel
                         </button>
                         <button className="btn-primary" onClick={createProfile}>
@@ -1720,6 +1752,34 @@ function App() {
                     <button className="add-profile-btn" onClick={() => setShowNewProfile(true)}>
                       + Add Profile
                     </button>
+                  )}
+
+                  {/* PIN Prompt Modal */}
+                  {pinPrompt && (
+                    <div className="pin-prompt-overlay" onClick={() => { setPinPrompt(null); setPinInput(''); setPinError(''); }}>
+                      <div className="pin-prompt" onClick={e => e.stopPropagation()}>
+                        <h3>🔒 Enter PIN for {pinPrompt.profileName}</h3>
+                        {pinError && <p className="pin-error">{pinError}</p>}
+                        <input
+                          type="password"
+                          value={pinInput}
+                          onChange={(e) => setPinInput(e.target.value)}
+                          placeholder="Enter PIN"
+                          className="pin-input"
+                          maxLength={6}
+                          autoFocus
+                          onKeyDown={(e) => e.key === 'Enter' && handlePinSubmit()}
+                        />
+                        <div className="pin-actions">
+                          <button className="btn-secondary" onClick={() => { setPinPrompt(null); setPinInput(''); setPinError(''); }}>
+                            Cancel
+                          </button>
+                          <button className="btn-primary" onClick={handlePinSubmit}>
+                            Unlock
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   )}
                 </div>
 

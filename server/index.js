@@ -5910,6 +5910,7 @@ app.get('/api/profiles', (req, res) => {
     id,
     name: p.name,
     hasKalshi: !!(p.kalshiApiKeyId && p.kalshiPrivateKey),
+    hasPin: !!p.pin,
     lastActive: p.lastActive,
     isActive: id === activeProfileId
   }));
@@ -5923,7 +5924,7 @@ app.get('/api/profiles', (req, res) => {
 
 // Create a new profile
 app.post('/api/profiles', (req, res) => {
-  const { name } = req.body;
+  const { name, pin } = req.body;
 
   if (!name || name.trim().length === 0) {
     return res.status(400).json({ success: false, error: 'Name is required' });
@@ -5932,6 +5933,7 @@ app.post('/api/profiles', (req, res) => {
   const id = 'profile_' + Date.now();
   profiles[id] = {
     name: name.trim(),
+    pin: pin || null,  // Optional PIN for protection
     kalshiApiKeyId: null,
     kalshiPrivateKey: null,
     settings: {
@@ -5944,20 +5946,26 @@ app.post('/api/profiles', (req, res) => {
   };
 
   saveProfiles();
-  console.log(`👤 Created profile: ${name}`);
+  console.log(`👤 Created profile: ${name} (PIN: ${pin ? 'yes' : 'no'})`);
 
   res.json({
     success: true,
-    profile: { id, name: profiles[id].name }
+    profile: { id, name: profiles[id].name, hasPin: !!pin }
   });
 });
 
 // Switch to a profile
 app.post('/api/profiles/:id/switch', async (req, res) => {
   const { id } = req.params;
+  const { pin } = req.body;
 
   if (!profiles[id]) {
     return res.status(404).json({ success: false, error: 'Profile not found' });
+  }
+
+  // Check PIN if profile has one
+  if (profiles[id].pin && profiles[id].pin !== pin) {
+    return res.status(401).json({ success: false, error: 'Incorrect PIN', requiresPin: true });
   }
 
   // Save current profile state first

@@ -1,0 +1,29 @@
+{
+  "profiles": {
+    "profile_1770102993536": {
+      "name": "James",
+      "kalshiApiKeyId": null,
+      "kalshiPrivateKey": null,
+      "settings": {
+        "riskLimits": {
+          "maxPerBet": 300,
+          "maxPerToken": 500,
+          "maxTotal": 1000
+        },
+        "degenMode": {
+          "enabled": false,
+          "minPrice": 15,
+          "maxPrice": 39,
+          "requireStrongMomentum": true,
+          "maxTimeMinutes": 5,
+          "maxBetMultiplier": 0.5
+        }
+      },
+      "betHistory": [],
+      "createdAt": "2026-02-03T07:16:33.536Z",
+      "lastActive": "2026-02-03T07:16:33.536Z"
+    }
+  },
+  "activeProfileId": "profile_1770102993536",
+  "savedAt": "2026-02-03T07:16:35.512Z"
+}

@@ -2631,6 +2631,71 @@ body {
   justify-content: flex-end;
 }
 
+.profile-lock {
+  margin-right: 6px;
+  font-size: 12px;
+}
+
+/* PIN Prompt Modal */
+.pin-prompt-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.pin-prompt {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 24px;
+  width: 300px;
+  text-align: center;
+}
+
+.pin-prompt h3 {
+  margin: 0 0 16px 0;
+  color: var(--text-primary);
+  font-size: 16px;
+}
+
+.pin-error {
+  color: var(--accent-red);
+  font-size: 13px;
+  margin: 0 0 12px 0;
+}
+
+.pin-input {
+  width: 100%;
+  padding: 12px;
+  background: var(--bg-darker);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 18px;
+  text-align: center;
+  letter-spacing: 8px;
+  margin-bottom: 16px;
+}
+
+.pin-input:focus {
+  outline: none;
+  border-color: var(--neon-cyan);
+}
+
+.pin-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
 .settings-list {
   display: flex;
   flex-direction: column;
