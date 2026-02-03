@@ -2496,6 +2496,26 @@ body {
   box-shadow: var(--glow-cyan);
 }
 
+.disconnect-btn {
+  margin-top: 10px;
+  padding: 8px 16px;
+  background: transparent;
+  border: 1px solid var(--accent-red);
+  border-radius: var(--radius-sm);
+  color: var(--accent-red);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.disconnect-btn:hover {
+  background: var(--accent-red);
+  color: var(--bg-dark);
+  box-shadow: 0 0 10px rgba(255, 51, 102, 0.4);
+}
+
 .settings-list {
   display: flex;
   flex-direction: column;

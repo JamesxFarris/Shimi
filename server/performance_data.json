@@ -1,0 +1,24 @@
+{
+  "bets": [],
+  "summary": {
+    "totalBets": 0,
+    "wins": 0,
+    "losses": 0,
+    "pending": 0,
+    "totalWagered": 0,
+    "totalProfit": 0,
+    "winRate": 0,
+    "avgPredictedProb": 0,
+    "avgActualWinRate": 0,
+    "calibration": {}
+  },
+  "byToken": {},
+  "byProbBucket": {},
+  "byMarketType": {},
+  "lastUpdated": "2026-02-03T07:02:25.950Z",
+  "autoBetState": {
+    "enabled": true,
+    "intervalSeconds": 10,
+    "savedAt": "2026-02-03T07:02:25.950Z"
+  }
+}

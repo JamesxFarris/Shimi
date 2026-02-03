@@ -5789,6 +5789,21 @@ app.get('/api/auth/status', (req, res) => {
   });
 });
 
+// Disconnect from Kalshi
+app.post('/api/auth/disconnect', (req, res) => {
+  config.apiKeyId = null;
+  config.privateKey = null;
+  config.isAuthenticated = false;
+  portfolio.positions = [];
+
+  console.log('🔌 Disconnected from Kalshi');
+
+  res.json({
+    success: true,
+    message: 'Disconnected from Kalshi'
+  });
+});
+
 // Quick balance refresh endpoint
 app.get('/api/balance/refresh', async (req, res) => {
   try {

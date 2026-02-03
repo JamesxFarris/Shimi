@@ -905,6 +905,22 @@ function App() {
     }
   }
 
+  // Disconnect from Kalshi
+  const handleDisconnect = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/auth/disconnect`, {
+        method: 'POST'
+      })
+      const data = await res.json()
+      if (data.success) {
+        setIsAuthenticated(false)
+        setBalance(25) // Reset to default simulated balance
+      }
+    } catch (err) {
+      console.error('Disconnect failed:', err)
+    }
+  }
+
   // Calculate stats
   const totalBets = betHistory.length
   const winningBets = betHistory.filter(b => b.status === 'won').length
@@ -1571,6 +1587,9 @@ function App() {
                         Connected to Kalshi
                       </div>
                       <p>Real money betting is enabled</p>
+                      <button className="disconnect-btn" onClick={handleDisconnect}>
+                        Disconnect
+                      </button>
                     </div>
                   ) : (
                     <div className="connect-prompt">
