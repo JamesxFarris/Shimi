@@ -1,29 +1,44 @@
 {
   "profiles": {
-    "profile_1770102993536": {
+    "profile_1770154598858": {
       "name": "James",
+      "pin": "6437",
+      "userId": "user_1770154582980_ab06fa18",
       "kalshiApiKeyId": null,
       "kalshiPrivateKey": null,
       "settings": {
         "riskLimits": {
-          "maxPerBet": 300,
+          "maxPerBet": 500,
           "maxPerToken": 500,
-          "maxTotal": 1000
+          "maxTotal": 500,
+          "hourly": {
+            "maxPerBet": 500,
+            "maxTotal": 500
+          },
+          "other": {
+            "maxPerBet": 500,
+            "maxTotal": 500
+          }
         },
-        "degenMode": {
+        "scaleIn": {
+          "enabled": true,
+          "minProbabilityIncrease": 15,
+          "maxBetsPerMarket": 3,
+          "minTimeBetweenBets": 60000
+        },
+        "aggressiveMode": {
           "enabled": false,
-          "minPrice": 15,
-          "maxPrice": 39,
-          "requireStrongMomentum": true,
-          "maxTimeMinutes": 5,
-          "maxBetMultiplier": 0.5
+          "minPrice": 26,
+          "minDistanceFromStrike": 0.05,
+          "allowNightTrading": true,
+          "minConfidenceScore": 1
         }
       },
       "betHistory": [],
-      "createdAt": "2026-02-03T07:16:33.536Z",
-      "lastActive": "2026-02-03T07:16:33.536Z"
+      "createdAt": "2026-02-03T21:36:38.858Z",
+      "lastActive": "2026-02-03T21:36:38.858Z"
     }
   },
-  "activeProfileId": "profile_1770102993536",
-  "savedAt": "2026-02-03T07:16:35.512Z"
+  "activeProfileId": null,
+  "savedAt": "2026-02-03T21:36:38.858Z"
 }

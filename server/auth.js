@@ -4,8 +4,11 @@ import jwt from 'jsonwebtoken';
 import fs from 'fs';
 import crypto from 'crypto';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
-const JWT_SECRET_FILE = path.join(path.dirname(new URL(import.meta.url).pathname), 'jwt_secret.txt');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const JWT_SECRET_FILE = path.join(__dirname, 'jwt_secret.txt');
 const JWT_EXPIRY = '7d'; // Tokens expire in 7 days
 
 // Load or generate JWT secret - persists across server restarts
