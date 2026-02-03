@@ -423,7 +423,6 @@ function App() {
   })
   const [riskSettings, setRiskSettings] = useState({
     maxPerBet: 500,
-    maxTotal: 1500,
     maxPerToken: 500,
     maxPer15Min: 1000,
     maxPerHourly: 1000
@@ -755,11 +754,12 @@ function App() {
       })
       const data = await res.json()
       if (data.success) {
-        // Update local risk state with new limits
+        // Total exposure = sum of timeframe limits
+        const totalMax = (data.riskLimits.maxPer15Min || 1000) + (data.riskLimits.maxPerHourly || 1000)
         setRisk(prev => ({
           ...prev,
-          max: data.riskLimits.maxTotal,
-          maxDollars: (data.riskLimits.maxTotal / 100).toFixed(2)
+          max: totalMax,
+          maxDollars: (totalMax / 100).toFixed(2)
         }))
         setRiskSettings(data.riskLimits)
         setSettingsSaved(true)
@@ -1527,7 +1527,7 @@ function App() {
                     </div>
                     <div className="settings-item">
                       <span className="settings-label">Max Exposure</span>
-                      <span className="settings-value">${((riskSettings.maxTotal || 1500) / 100).toFixed(2)}</span>
+                      <span className="settings-value">${(((riskSettings.maxPer15Min || 1000) + (riskSettings.maxPerHourly || 1000)) / 100).toFixed(2)}</span>
                     </div>
                     <div className="settings-item">
                       <span className="settings-label">Min Edge</span>
@@ -1560,13 +1560,6 @@ function App() {
                         onChange={(v) => updateRiskSettings('maxPerBet', v * 100)}
                         min={1}
                         max={10}
-                      />
-                      <DollarStepper
-                        label="Max total exposure"
-                        value={Math.round((riskSettings.maxTotal || 1500) / 100)}
-                        onChange={(v) => updateRiskSettings('maxTotal', v * 100)}
-                        min={1}
-                        max={100}
                       />
                       <DollarStepper
                         label="Max per token"

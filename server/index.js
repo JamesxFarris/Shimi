@@ -114,12 +114,12 @@ let config = {
   minEdge: 3, // 3% minimum - lowered for more action
   autoBetEnabled: false,
   // Risk management settings (in cents)
+  // Note: Total exposure = maxPer15Min + maxPerHourly (no separate maxTotal)
   riskLimits: {
     maxPerBet: 500,      // $5.00 max per bet
-    maxTotal: 1500,      // $15.00 max total exposure
     maxPerToken: 500,    // $5.00 max per token
     maxPer15Min: 1000,   // $10.00 max for 15-minute markets
-    maxPerHourly: 1000   // $10.00 max for hourly markets
+    maxPerHourly: 1000   // $10.00 max for hourly markets (total = $20)
   },
   // Scale-in settings: add to position when probability improves
   scaleIn: {
@@ -2722,8 +2722,11 @@ function calculateIndexVolatility(history) {
 // ============================================
 
 // Risk limits are now configurable via config.riskLimits
+// Total max = sum of timeframe limits
 function getMaxRisk() {
-  return config.riskLimits.maxTotal;
+  const max15Min = config.riskLimits.maxPer15Min || 1000;
+  const maxHourly = config.riskLimits.maxPerHourly || 1000;
+  return max15Min + maxHourly;
 }
 
 function getMaxPerBet() {
@@ -2770,7 +2773,10 @@ function calculateKellyBet(probability, priceCents, bankrollCents, maxBetCents) 
 }
 
 function getMaxTotalRisk() {
-  return config.riskLimits.maxTotal;
+  // Total exposure = sum of timeframe limits
+  const max15Min = config.riskLimits.maxPer15Min || 1000;
+  const maxHourly = config.riskLimits.maxPerHourly || 1000;
+  return max15Min + maxHourly;
 }
 
 // Get current total exposure - counts Kalshi positions + pending bets
@@ -4203,14 +4209,12 @@ app.get('/api/settings/risk', (req, res) => {
 });
 
 // Update risk settings
+// Note: Total exposure = maxPer15Min + maxPerHourly (calculated, not stored)
 app.post('/api/settings/risk', (req, res) => {
-  const { maxPerBet, maxTotal, maxPerToken, maxPer15Min, maxPerHourly } = req.body;
+  const { maxPerBet, maxPerToken, maxPer15Min, maxPerHourly } = req.body;
 
   if (maxPerBet !== undefined) {
     config.riskLimits.maxPerBet = Math.max(10, Math.min(1000, parseInt(maxPerBet) || 200));
-  }
-  if (maxTotal !== undefined) {
-    config.riskLimits.maxTotal = Math.max(100, Math.min(10000, parseInt(maxTotal) || 1500));
   }
   if (maxPerToken !== undefined) {
     config.riskLimits.maxPerToken = Math.max(100, Math.min(5000, parseInt(maxPerToken) || 500));
