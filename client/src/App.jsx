@@ -137,7 +137,14 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
   const showQtySelector = isDegen && !isLocked && !notRecommended
 
   return (
-    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''} ${notRecommended ? 'no-edge' : ''} ${isLocked ? 'locked' : ''} ${isDegen ? 'degen' : ''} ${isSafe ? 'safe' : ''} ${isDegenSafe ? 'degen-safe' : ''}`}>
+    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''} ${notRecommended ? 'no-edge' : ''} ${isLocked ? 'locked' : ''} ${isDegen ? 'degen' : ''} ${isSafe ? 'safe' : ''} ${isDegenSafe ? 'degen-safe' : ''} ${isPlacing ? 'placing' : ''}`}>
+      {/* Loading overlay when placing bet */}
+      {isPlacing && (
+        <div className="placing-overlay">
+          <div className="placing-spinner"></div>
+          <span className="placing-text">Placing bet...</span>
+        </div>
+      )}
       {/* DEGEN badge (manual only) */}
       {isDegen && !isLocked && (
         <div className="degen-badge">
@@ -331,13 +338,28 @@ const HistoryItem = ({ bet, currentTime }) => {
             <span className="bet-info-label">Total Cost</span>
             <span className="bet-info-value">{formatCurrency(totalCostCents / 100)}</span>
           </div>
-          {hasOutcome && (
+          {hasOutcome ? (
             <div className="bet-info-item">
               <span className="bet-info-label">{isWin ? 'Payout' : 'Lost'}</span>
               <span className={`bet-info-value ${isWin ? 'positive' : 'negative'}`}>
                 {isWin ? formatCurrency(payoutCents / 100) : formatCurrency(totalCostCents / 100)}
               </span>
             </div>
+          ) : (
+            <>
+              <div className="bet-info-item">
+                <span className="bet-info-label">Payout if Right</span>
+                <span className="bet-info-value potential-payout">{formatCurrency((bet.count || 1) * 1)}</span>
+              </div>
+              {bet.currentMarketPrice && (
+                <div className="bet-info-item">
+                  <span className="bet-info-label">Now</span>
+                  <span className={`bet-info-value ${bet.profitIfSellNow >= 0 ? 'positive' : 'negative'}`}>
+                    {bet.currentMarketPrice}¢ ({bet.profitIfSellNow >= 0 ? '+' : ''}{formatCurrency(bet.profitIfSellNow / 100)})
+                  </span>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -396,7 +418,7 @@ function App() {
   const [betHistory, setBetHistory] = useState([])
   const [betStats, setBetStats] = useState({ totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 })
   const [newBetsCount, setNewBetsCount] = useState(0)
-  const [lastSeenBetCount, setLastSeenBetCount] = useState(null) // null = not initialized yet
+  const [lastSeenBetId, setLastSeenBetId] = useState(null) // Track by ID, not count
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [autoBetEnabled, setAutoBetEnabled] = useState(false)
@@ -441,6 +463,13 @@ function App() {
     remaining: 1500,
     currentDollars: '0.00',
     maxDollars: '15.00'
+  })
+  const [portfolioWorth, setPortfolioWorth] = useState({
+    balance: 0,
+    positionValue: '0.00',
+    portfolioWorth: '0.00',
+    projectedMax: '0.00',
+    positionCount: 0
   })
   const [riskSettings, setRiskSettings] = useState({
     maxPerBet: 500,
@@ -539,14 +568,23 @@ function App() {
         setBetHistory(newHistory)
         setBetStats(data.stats || { totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 })
         setIsAuthenticated(!data.simulated)
-        // Track new bets for notification badge
-        // Only show badge for bets placed AFTER initial load
-        if (lastSeenBetCount === null) {
-          // First load - initialize to current count (no badge)
-          setLastSeenBetCount(newHistory.length)
-        } else if (newHistory.length > lastSeenBetCount && tab !== 'history') {
-          // New bets placed since last check
-          setNewBetsCount(newHistory.length - lastSeenBetCount)
+        // Track new bets for notification badge using bet IDs
+        // Only show badge for NEW bets placed AFTER initial load
+        if (newHistory.length > 0) {
+          const latestBetId = newHistory[0]?.id
+          if (lastSeenBetId === null) {
+            // First load - initialize to current latest (no badge)
+            setLastSeenBetId(latestBetId)
+          } else if (latestBetId !== lastSeenBetId && tab !== 'history') {
+            // New bet detected - count how many are new
+            const lastSeenIndex = newHistory.findIndex(b => b.id === lastSeenBetId)
+            if (lastSeenIndex > 0) {
+              setNewBetsCount(lastSeenIndex)
+            } else if (lastSeenIndex === -1) {
+              // Last seen bet no longer in history, show badge for latest
+              setNewBetsCount(1)
+            }
+          }
         }
       }
     } catch (err) {
@@ -569,6 +607,19 @@ function App() {
       console.error('Balance refresh error:', err)
     } finally {
       setBalanceRefreshing(false)
+    }
+  }, [])
+
+  // Fetch portfolio worth (projected value based on current market prices)
+  const fetchPortfolioWorth = useCallback(async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/portfolio/worth`)
+      const data = await res.json()
+      if (data.success) {
+        setPortfolioWorth(data)
+      }
+    } catch (err) {
+      console.error('Portfolio worth fetch error:', err)
     }
   }, [])
 
@@ -790,7 +841,7 @@ function App() {
       const data = await res.json()
 
       if (data.success) {
-        setBalance(data.newBalance)
+        if (data.newBalance) setBalance(data.newBalance)
         // Update risk if returned
         if (data.risk) {
           setRisk(data.risk)
@@ -801,12 +852,23 @@ function App() {
         }
         const priceInfo = data.avgPrice ? ` @ ${data.avgPrice}¢` : ''
         const fillInfo = data.filled ? ` (${data.filled} contract${data.filled > 1 ? 's' : ''})` : ''
-        setBetStatus({
-          type: 'success',
-          message: `✓ Bought ${opp.betSide.toUpperCase()}${priceInfo}${fillInfo} on ${opp.cryptoType || opp.assetType}${data.simulated ? ' (simulated)' : ''}`
-        })
+
+        // Handle resting orders (placed but waiting for fill)
+        if (data.resting) {
+          setBetStatus({
+            type: 'success',
+            message: `⏳ Order placed on ${opp.cryptoType || opp.assetType} - waiting for fill`
+          })
+        } else {
+          setBetStatus({
+            type: 'success',
+            message: `✓ Bought ${opp.betSide.toUpperCase()}${priceInfo}${fillInfo} on ${opp.cryptoType || opp.assetType}${data.simulated ? ' (simulated)' : ''}`
+          })
+        }
         // Refresh opportunities after placing a bet
         fetchOpportunities()
+        // Also refresh portfolio to see the bet
+        fetchPortfolio()
       } else {
         setBetStatus({ type: 'error', message: data.error || 'Bet failed - try refreshing' })
       }
@@ -1090,7 +1152,7 @@ function App() {
             setTab('history');
             fetchPerformance();
             setNewBetsCount(0);
-            setLastSeenBetCount(betHistory.length);
+            setLastSeenBetId(betHistory[0]?.id);
           }}>
             <span className="nav-icon">◰</span>
             <span className="nav-text">History</span>
@@ -2078,7 +2140,7 @@ function App() {
             <span>📊</span>
             <span>Home</span>
           </button>
-          <button className={`mobile-nav-item ${tab === 'history' ? 'active' : ''}`} onClick={() => { setTab('history'); fetchPerformance(); setNewBetsCount(0); setLastSeenBetCount(betHistory.length); }}>
+          <button className={`mobile-nav-item ${tab === 'history' ? 'active' : ''}`} onClick={() => { setTab('history'); fetchPerformance(); setNewBetsCount(0); setLastSeenBetId(betHistory[0]?.id); }}>
             <span>📜</span>
             <span>History</span>
             {newBetsCount > 0 && <span className="nav-badge mobile">{newBetsCount}</span>}

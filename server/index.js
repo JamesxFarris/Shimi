@@ -192,6 +192,7 @@ function switchToProfile(profileId) {
   // Load profile settings
   if (profile.settings) {
     config.riskLimits = { ...config.riskLimits, ...profile.settings.riskLimits };
+    config.scaleIn = { ...config.scaleIn, ...profile.settings.scaleIn };
     config.degenMode = { ...config.degenMode, ...profile.settings.degenMode };
     // Restore auto-bet state for this profile
     if (profile.settings.autoBetEnabled !== undefined) {
@@ -216,6 +217,7 @@ function saveToActiveProfile() {
   profiles[activeProfileId].kalshiPrivateKey = config.privateKey;
   profiles[activeProfileId].settings = {
     riskLimits: config.riskLimits,
+    scaleIn: config.scaleIn,
     degenMode: config.degenMode,
     autoBetEnabled: config.autoBetEnabled
   };
@@ -228,8 +230,46 @@ function saveToActiveProfile() {
 // Initialize profiles on startup
 loadProfiles();
 
+// Auto-restore active profile's credentials and settings on startup
+function restoreActiveProfile() {
+  if (activeProfileId && profiles[activeProfileId]) {
+    const profile = profiles[activeProfileId];
+    console.log(`🔄 Restoring active profile: ${profile.name}`);
+
+    // Restore Kalshi credentials
+    if (profile.kalshiApiKeyId && profile.kalshiPrivateKey) {
+      config.apiKeyId = profile.kalshiApiKeyId;
+      config.privateKey = profile.kalshiPrivateKey;
+      config.isAuthenticated = true;
+      console.log(`🔑 Restored Kalshi credentials for ${profile.name}`);
+    }
+
+    // Restore settings
+    if (profile.settings) {
+      if (profile.settings.riskLimits) {
+        config.riskLimits = { ...config.riskLimits, ...profile.settings.riskLimits };
+      }
+      if (profile.settings.scaleIn) {
+        config.scaleIn = { ...config.scaleIn, ...profile.settings.scaleIn };
+      }
+      if (profile.settings.degenMode) {
+        config.degenMode = { ...config.degenMode, ...profile.settings.degenMode };
+      }
+    }
+
+    // Restore bet history
+    if (profile.betHistory) {
+      betHistory = profile.betHistory;
+      console.log(`📊 Restored ${betHistory.length} bets from profile`);
+    }
+  }
+}
+
 let betHistory = [];
 let portfolio = { balance: 0, positions: [] };
+
+// Call restore after betHistory is declared
+restoreActiveProfile();
 
 // Track last auto-bet scan status for diagnostics
 let lastScanStatus = {
@@ -1178,11 +1218,20 @@ loadMLModel();
 
 // Check and settle pending bets (call periodically)
 async function checkPendingSettlements() {
+  // Check performanceData.bets
   const pending = performanceData.bets.filter(b => b.outcome === 'pending');
-  if (pending.length === 0) return;
 
-  console.log(`📊 Checking ${pending.length} pending bets for settlement...`);
+  // Also check betHistory for simulated bets that haven't been settled
+  const simulatedPending = betHistory.filter(b =>
+    b.status === 'simulated' && !b.outcome
+  );
 
+  const totalPending = pending.length + simulatedPending.length;
+  if (totalPending === 0) return;
+
+  console.log(`📊 Checking ${totalPending} pending bets for settlement...`);
+
+  // Process performanceData bets
   for (const bet of pending) {
     try {
       // Check if market has settled
@@ -1219,6 +1268,61 @@ async function checkPendingSettlements() {
       }
     } catch (err) {
       console.log(`Error checking settlement for ${bet.ticker}:`, err.message);
+    }
+  }
+
+  // Process simulated bets from betHistory
+  for (const bet of simulatedPending) {
+    try {
+      // Try to get market result from Kalshi
+      if (config.isAuthenticated && bet.ticker) {
+        try {
+          const market = await kalshiRequest('GET', `/markets/${bet.ticker}`);
+          if (market.market?.result) {
+            const result = market.market.result;  // 'yes' or 'no'
+            const won = (bet.side.toLowerCase() === result);
+            const contracts = bet.count || 1;
+            const profit = won ? (contracts * 100 - bet.totalCost) : -bet.totalCost;
+
+            // Update the bet in betHistory
+            bet.outcome = won ? 'won' : 'lost';
+            bet.status = 'settled';
+            bet.marketResult = result;
+            bet.profit = profit;
+            bet.payout = won ? contracts * 100 : 0;
+            bet.closeTime = market.market.close_time;
+
+            console.log(`   ✅ Settled simulated ${bet.ticker}: ${bet.outcome} (${profit > 0 ? '+' : ''}${profit}¢)`);
+
+            // Save to profile
+            saveToActiveProfile();
+          }
+        } catch (e) {
+          // Market might not exist or API error - check by ticker pattern
+          // Parse expiry time from ticker (e.g., KXBTC15M-26FEB030415-15 -> 04:15 on Feb 3)
+          const tickerMatch = bet.ticker?.match(/(\d{2})(\w{3})(\d{2})(\d{2})(\d{2})/);
+          if (tickerMatch) {
+            const [, day, mon, hour, min] = tickerMatch;
+            const months = { JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5, JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11 };
+            const expiry = new Date();
+            expiry.setMonth(months[mon.toUpperCase()] || 0);
+            expiry.setDate(parseInt(day));
+            expiry.setHours(parseInt(hour), parseInt(min), 0, 0);
+
+            // If expired more than 5 minutes ago and we can't get result, mark as lost (safer assumption)
+            if (Date.now() - expiry.getTime() > 5 * 60 * 1000) {
+              bet.outcome = 'lost';
+              bet.status = 'settled';
+              bet.profit = -bet.totalCost;
+              bet.payout = 0;
+              console.log(`   ⚠️ Settled simulated ${bet.ticker}: lost (couldn't verify - expired)`);
+              saveToActiveProfile();
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.log(`Error checking simulated settlement for ${bet.ticker}:`, err.message);
     }
   }
 }
@@ -2943,10 +3047,14 @@ function calculateKellyBet(probability, priceCents, bankrollCents, maxBetCents) 
   // Cap at max per bet
   betSize = Math.min(betSize, maxBetCents);
 
-  // Minimum bet of $1 (100 cents) - skip if Kelly suggests less
-  // This avoids taking tiny edge bets that aren't worth the exposure
-  const MIN_BET_CENTS = 100;
-  if (betSize < MIN_BET_CENTS) return 0;
+  // For small bankrolls: if Kelly says bet is too small but we have enough
+  // for at least 1 contract, bet 1 contract anyway (user wants action on good edge)
+  if (betSize < priceCents && priceCents <= maxBetCents) {
+    betSize = priceCents;  // Buy exactly 1 contract
+  }
+
+  // Only skip if we truly can't afford even 1 contract
+  if (betSize < priceCents) return 0;
 
   return betSize;
 }
@@ -4361,6 +4469,105 @@ app.get('/api/risk', async (req, res) => {
   }
 });
 
+// Get portfolio worth (projected value based on current market prices)
+// This calculates what your portfolio would be worth if all positions were liquidated at current prices
+app.get('/api/portfolio/worth', async (req, res) => {
+  try {
+    // Get current balance
+    let currentBalance = portfolio.balance || 0;
+
+    // Get positions
+    let positions = portfolio.positions || [];
+
+    // If authenticated, refresh from Kalshi
+    if (config.isAuthenticated) {
+      try {
+        // Get fresh balance
+        const balanceData = await kalshiRequest('GET', '/portfolio/balance');
+        currentBalance = balanceData.balance || 0;
+
+        // Get fresh positions
+        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
+        positions = posData.market_positions || posData.positions || [];
+      } catch (e) {
+        console.log('Could not refresh portfolio for worth calc:', e.message);
+      }
+    }
+
+    // Calculate position values based on current market prices
+    let totalPositionValue = 0;
+    let totalPayoutIfAllWin = 0;
+    const positionDetails = [];
+
+    for (const pos of positions) {
+      const contracts = Math.abs(pos.position || 0);
+      if (contracts === 0) continue;
+
+      const isYes = (pos.position || 0) > 0;
+      let avgPriceCents = pos.average_price || 50;
+
+      // Kalshi returns average_price as decimal (0.85) not cents (85)
+      if (avgPriceCents > 0 && avgPriceCents <= 1) {
+        avgPriceCents = Math.round(avgPriceCents * 100);
+      }
+
+      // Try to get current market price
+      let currentPriceCents = avgPriceCents; // fallback to avg price
+      try {
+        const orderbook = await kalshiRequest('GET', `/markets/${pos.ticker}/orderbook`);
+        if (orderbook) {
+          // Current value is based on what we could sell for
+          // For YES positions, use the best bid (yes bid)
+          // For NO positions, use 100 - best ask (since we'd buy back our NO)
+          if (isYes && orderbook.yes?.length > 0) {
+            currentPriceCents = orderbook.yes[0][0];
+          } else if (!isYes && orderbook.no?.length > 0) {
+            currentPriceCents = orderbook.no[0][0];
+          }
+        }
+      } catch (e) {
+        // Use average price as fallback
+      }
+
+      // Current value = contracts * current price (in cents)
+      const currentValue = contracts * currentPriceCents;
+      totalPositionValue += currentValue;
+
+      // Payout if this position wins = contracts * 100 cents
+      totalPayoutIfAllWin += contracts * 100;
+
+      positionDetails.push({
+        ticker: pos.ticker,
+        contracts,
+        side: isYes ? 'yes' : 'no',
+        avgPrice: avgPriceCents,
+        currentPrice: currentPriceCents,
+        currentValue: currentValue / 100, // in dollars
+        payoutIfWin: contracts // in dollars (each contract pays $1)
+      });
+    }
+
+    // Portfolio worth = balance + current position value
+    const portfolioWorth = currentBalance + (totalPositionValue / 100);
+
+    // Projected max = balance + payout if all positions win
+    const projectedMax = currentBalance + totalPayoutIfAllWin / 100;
+
+    res.json({
+      success: true,
+      balance: currentBalance,
+      positionValue: (totalPositionValue / 100).toFixed(2),
+      portfolioWorth: portfolioWorth.toFixed(2),
+      projectedMax: projectedMax.toFixed(2),
+      positionCount: positionDetails.length,
+      positions: positionDetails
+    });
+  } catch (error) {
+    console.error('Error calculating portfolio worth:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Get risk settings
 app.get('/api/settings/risk', (req, res) => {
   res.json({
@@ -4383,8 +4590,9 @@ app.post('/api/settings/risk', (req, res) => {
     config.riskLimits.maxTotal = Math.max(100, Math.min(10000, parseInt(maxTotal) || 1500));
   }
 
-  // Persist to disk
+  // Persist to disk and profile
   saveSettings();
+  saveToActiveProfile();
 
   console.log(`⚙️ Risk settings updated:`, JSON.stringify(config.riskLimits));
 
@@ -4420,8 +4628,9 @@ app.post('/api/settings/scale-in', (req, res) => {
     config.scaleIn.minTimeBetweenBets = Math.max(30000, Math.min(600000, parseInt(minTimeBetweenBets) || 60000));
   }
 
-  // Persist to disk
+  // Persist to disk and profile
   saveSettings();
+  saveToActiveProfile();
 
   console.log(`⚙️ Scale-in settings updated:`, JSON.stringify(config.scaleIn));
 
@@ -4463,8 +4672,9 @@ app.post('/api/settings/degen-mode', (req, res) => {
     config.degenMode.maxBetMultiplier = Math.max(0.1, Math.min(1, parseFloat(maxBetMultiplier) || 0.5));
   }
 
-  // Persist to disk
+  // Persist to disk and profile
   saveSettings();
+  saveToActiveProfile();
 
   console.log(`🔥 Degen mode ${config.degenMode.enabled ? 'ENABLED' : 'disabled'}:`, JSON.stringify(config.degenMode));
 
@@ -4745,10 +4955,48 @@ app.post('/api/bet', async (req, res) => {
       }
 
       // Check if order was filled
-      const status = order.status;
-      const filledCount = order.filled_count || 0;
+      let status = order.status;
+      let filledCount = order.filled_count || 0;
 
+      // If order is resting/open but not filled, wait briefly and check again
+      if (filledCount === 0 && (status === 'resting' || status === 'open')) {
+        console.log(`Order resting, waiting 500ms to check fill...`);
+        await new Promise(r => setTimeout(r, 500));
+
+        // Re-check the order status
+        try {
+          const orderCheck = await kalshiRequest('GET', `/portfolio/orders/${order.order_id}`);
+          if (orderCheck.order) {
+            status = orderCheck.order.status;
+            filledCount = orderCheck.order.filled_count || 0;
+            console.log(`Re-checked order: status=${status}, filled=${filledCount}`);
+          }
+        } catch (e) {
+          console.log(`Could not re-check order: ${e.message}`);
+        }
+      }
+
+      // If still not filled, check if order was at least placed
       if (filledCount === 0) {
+        // Order exists but wasn't filled - it may fill later or needs cancellation
+        if (order.order_id && (status === 'resting' || status === 'open')) {
+          // Order is sitting on the book - return partial success
+          console.log(`Order placed but resting on book (order_id: ${order.order_id})`);
+
+          betRecord.status = 'resting';
+          betRecord.orderId = order.order_id;
+          betRecord.filledCount = 0;
+          betHistory.unshift(betRecord);
+
+          return res.json({
+            success: true,
+            resting: true,
+            orderId: order.order_id,
+            message: `Order placed but waiting for fill. It may fill shortly.`,
+            bet: betRecord
+          });
+        }
+
         return res.status(400).json({
           success: false,
           error: `Order not filled. Status: ${status}. No liquidity at current price.`
@@ -6262,24 +6510,54 @@ app.get('/api/portfolio', async (req, res) => {
       // Sort by timestamp descending
       combinedHistory.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
+      // Fetch live prices for open/pending bets (limit to 3 to avoid API overload)
+      const openBets = combinedHistory.filter(b => b.status === 'open' || b.status === 'pending' || b.status === 'resting');
+      const betsToPrice = openBets.slice(0, 3);
+
+      for (const bet of betsToPrice) {
+        if (!bet.ticker) continue;
+        try {
+          const orderbook = await kalshiRequest('GET', `/markets/${bet.ticker}/orderbook`);
+          if (orderbook) {
+            // Get current price based on bet side
+            const side = bet.side?.toLowerCase();
+            if (side === 'yes' && orderbook.yes?.length > 0) {
+              bet.currentMarketPrice = orderbook.yes[0][0]; // Best yes bid
+            } else if (side === 'no' && orderbook.no?.length > 0) {
+              bet.currentMarketPrice = orderbook.no[0][0]; // Best no bid
+            }
+            // Calculate current value (what we could sell for)
+            if (bet.currentMarketPrice) {
+              bet.currentValue = (bet.count || 1) * bet.currentMarketPrice;
+              bet.profitIfSellNow = bet.currentValue - bet.totalCost;
+            }
+          }
+        } catch (e) {
+          // Skip - couldn't get price
+        }
+      }
+
       // Calculate totals
       const settled = combinedHistory.filter(b => b.outcome);
       const totalProfit = settled.reduce((sum, b) => sum + (b.profit || 0), 0);
       const wins = settled.filter(b => b.outcome === 'won').length;
       const losses = settled.filter(b => b.outcome === 'lost').length;
 
+      // Use performanceData for all-time stats (persisted across restarts)
+      const allTimeStats = {
+        totalBets: performanceData.summary.totalBets || settled.length,
+        wins: performanceData.summary.wins || wins,
+        losses: performanceData.summary.losses || losses,
+        winRate: performanceData.summary.winRate?.toFixed(1) || (settled.length > 0 ? ((wins / settled.length) * 100).toFixed(1) : '0'),
+        totalProfit: (performanceData.summary.totalProfit || totalProfit) / 100 // in dollars
+      };
+
       res.json({
         success: true,
         simulated: false,
         balance: portfolio.balance / 100,
         betHistory: combinedHistory.slice(0, 20),
-        stats: {
-          totalBets: settled.length,
-          wins,
-          losses,
-          winRate: settled.length > 0 ? ((wins / settled.length) * 100).toFixed(1) : '0',
-          totalProfit: totalProfit / 100 // in dollars
-        }
+        stats: allTimeStats
       });
     } else {
       // Return simulated data
@@ -7042,26 +7320,48 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
     console.log(`   Set JSONBIN_API_KEY and JSONBIN_BIN_ID in Render environment variables`);
   }
 
-  // Auto-load Kalshi credentials from environment
+  // Auto-load Kalshi credentials from environment (if set)
   await loadCredentialsFromEnv();
 
-  // Restore saved settings (risk limits, etc.)
-  const savedSettings = loadSettings();
-  if (savedSettings) {
-    if (savedSettings.riskLimits) {
-      config.riskLimits = { ...config.riskLimits, ...savedSettings.riskLimits };
+  // Verify profile credentials if restored (and env didn't override)
+  if (config.isAuthenticated && config.apiKeyId && !process.env.KALSHI_API_KEY_ID) {
+    console.log(`🔐 Verifying Kalshi credentials from profile...`);
+    try {
+      const balanceData = await kalshiRequest('GET', '/portfolio/balance');
+      portfolio.balance = balanceData.balance || 0;
+      config.bankroll = portfolio.balance;
+      console.log(`✅ Kalshi verified! Balance: $${(portfolio.balance / 100).toFixed(2)}`);
+    } catch (error) {
+      console.error(`❌ Profile Kalshi credentials invalid: ${error.message}`);
+      console.log(`   You may need to re-authenticate in the app.`);
+      config.apiKeyId = null;
+      config.privateKey = null;
+      config.isAuthenticated = false;
     }
-    if (savedSettings.scaleIn) {
-      config.scaleIn = { ...config.scaleIn, ...savedSettings.scaleIn };
+  }
+
+  // Only load global settings if no active profile (profile settings already loaded in restoreActiveProfile)
+  if (!activeProfileId) {
+    const savedSettings = loadSettings();
+    if (savedSettings) {
+      if (savedSettings.riskLimits) {
+        config.riskLimits = { ...config.riskLimits, ...savedSettings.riskLimits };
+      }
+      if (savedSettings.scaleIn) {
+        config.scaleIn = { ...config.scaleIn, ...savedSettings.scaleIn };
+      }
+      if (savedSettings.degenMode) {
+        config.degenMode = { ...config.degenMode, ...savedSettings.degenMode };
+      }
+      if (savedSettings.minEdge !== undefined) {
+        config.minEdge = savedSettings.minEdge;
+      }
     }
-    if (savedSettings.degenMode) {
-      config.degenMode = { ...config.degenMode, ...savedSettings.degenMode };
-    }
-    if (savedSettings.minEdge !== undefined) {
-      config.minEdge = savedSettings.minEdge;
-    }
-    console.log(`⚙️ Risk limits: $${config.riskLimits.maxPerBet/100}/bet, $${(config.riskLimits.maxTotal || 1500)/100} max exposure`);
-    console.log(`🔥 Degen mode: ${config.degenMode.enabled ? 'ENABLED' : 'disabled'}`);
+  }
+  console.log(`⚙️ Risk limits: $${config.riskLimits.maxPerBet/100}/bet, $${(config.riskLimits.maxTotal || 1500)/100} max exposure`);
+  console.log(`🔥 Degen mode: ${config.degenMode.enabled ? 'ENABLED' : 'disabled'}`);
+  if (activeProfileId) {
+    console.log(`👤 Using settings from profile: ${profiles[activeProfileId]?.name}`);
   }
 
   // Restore auto-bet state from previous session

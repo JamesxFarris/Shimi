@@ -460,6 +460,76 @@ body {
   50% { opacity: 1; }
 }
 
+/* Portfolio Worth Display */
+.portfolio-worth-display {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 10px;
+  margin-bottom: 8px;
+  position: relative;
+  overflow: hidden;
+}
+
+.portfolio-worth-display::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--neon-cyan);
+  box-shadow: 0 0 8px rgba(0, 255, 255, 0.5);
+}
+
+.worth-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 3px;
+}
+
+.worth-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.worth-positions {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--neon-cyan);
+  background: rgba(0, 255, 255, 0.1);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+.worth-value {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--neon-cyan);
+  text-shadow: 0 0 8px rgba(0, 255, 255, 0.5);
+}
+
+.worth-details {
+  margin-top: 4px;
+}
+
+.worth-max {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.worth-max::before {
+  content: '▲ ';
+  color: var(--neon-green);
+}
+
 .connection-status {
   display: flex;
   align-items: center;
@@ -1233,6 +1303,50 @@ body {
   border-color: var(--neon-cyan);
   transform: translateY(-2px);
   box-shadow: 0 6px 20px rgba(0, 240, 255, 0.2);
+}
+
+/* Placing bet overlay */
+.opp-card.placing {
+  pointer-events: none;
+}
+
+.placing-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 10, 20, 0.85);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  backdrop-filter: blur(3px);
+}
+
+.placing-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid rgba(0, 255, 255, 0.2);
+  border-top-color: var(--neon-cyan);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-bottom: 12px;
+}
+
+.placing-text {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--neon-cyan);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
 }
 
 .opp-card.safe-bet {
@@ -2313,6 +2427,7 @@ body {
 
 .bet-info-value.positive { color: var(--neon-green); }
 .bet-info-value.negative { color: var(--accent-red); }
+.bet-info-value.potential-payout { color: var(--neon-cyan); text-shadow: 0 0 5px rgba(0, 255, 255, 0.3); }
 
 .side-badge {
   font-family: var(--font-mono);
@@ -2668,8 +2783,9 @@ body {
   background: rgba(0, 0, 0, 0.9);
   backdrop-filter: blur(8px);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
+  padding-top: 100px;
   z-index: 9999;
 }
 
