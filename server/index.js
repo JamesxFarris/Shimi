@@ -193,6 +193,10 @@ function switchToProfile(profileId) {
   if (profile.settings) {
     config.riskLimits = { ...config.riskLimits, ...profile.settings.riskLimits };
     config.degenMode = { ...config.degenMode, ...profile.settings.degenMode };
+    // Restore auto-bet state for this profile
+    if (profile.settings.autoBetEnabled !== undefined) {
+      config.autoBetEnabled = profile.settings.autoBetEnabled;
+    }
   }
 
   // Reset portfolio for this user
@@ -212,7 +216,8 @@ function saveToActiveProfile() {
   profiles[activeProfileId].kalshiPrivateKey = config.privateKey;
   profiles[activeProfileId].settings = {
     riskLimits: config.riskLimits,
-    degenMode: config.degenMode
+    degenMode: config.degenMode,
+    autoBetEnabled: config.autoBetEnabled
   };
   profiles[activeProfileId].betHistory = betHistory;
   profiles[activeProfileId].lastActive = new Date().toISOString();
@@ -5971,8 +5976,21 @@ app.post('/api/profiles/:id/switch', async (req, res) => {
   // Save current profile state first
   saveToActiveProfile();
 
+  // Stop any existing auto-bet interval
+  if (autoBetInterval) {
+    clearInterval(autoBetInterval);
+    autoBetInterval = null;
+  }
+
   // Switch to new profile
   switchToProfile(id);
+
+  // Restart auto-bet if profile had it enabled
+  if (config.autoBetEnabled && config.isAuthenticated) {
+    console.log('🤖 Restoring auto-bet for profile...');
+    runAutoBet();
+    autoBetInterval = setInterval(runAutoBet, 10000);
+  }
 
   // Try to fetch balance if connected to Kalshi
   let balance = config.bankroll / 100;
@@ -6041,10 +6059,17 @@ app.post('/api/profiles/logout', (req, res) => {
     console.log(`👋 Logged out of profile: ${profiles[activeProfileId]?.name}`);
   }
 
+  // Stop auto-bet when logging out
+  if (autoBetInterval) {
+    clearInterval(autoBetInterval);
+    autoBetInterval = null;
+  }
+
   activeProfileId = null;
   config.apiKeyId = null;
   config.privateKey = null;
   config.isAuthenticated = false;
+  config.autoBetEnabled = false;
   portfolio = { balance: 0, positions: [] };
   betHistory = [];
 
