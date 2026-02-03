@@ -1,0 +1,23 @@
+{
+  "riskLimits": {
+    "maxPerBet": 300,
+    "maxPerToken": 500,
+    "maxTotal": 1000
+  },
+  "scaleIn": {
+    "enabled": true,
+    "minProbabilityIncrease": 15,
+    "maxBetsPerMarket": 3,
+    "minTimeBetweenBets": 60000
+  },
+  "degenMode": {
+    "enabled": false,
+    "minPrice": 15,
+    "maxPrice": 39,
+    "requireStrongMomentum": true,
+    "maxTimeMinutes": 5,
+    "maxBetMultiplier": 0.5
+  },
+  "minEdge": 3,
+  "savedAt": "2026-02-03T07:09:58.134Z"
+}

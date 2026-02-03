@@ -2516,6 +2516,121 @@ body {
   box-shadow: 0 0 10px rgba(255, 51, 102, 0.4);
 }
 
+/* Profiles */
+.profiles-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.profile-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--bg-darker);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.profile-item:hover:not(.active) {
+  border-color: var(--neon-cyan);
+  background: rgba(0, 255, 255, 0.05);
+}
+
+.profile-item.active {
+  border-color: var(--neon-green);
+  background: rgba(0, 255, 136, 0.08);
+  cursor: default;
+}
+
+.profile-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.profile-name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.profile-status {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.profile-active-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: var(--neon-green);
+  color: var(--bg-dark);
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+.profile-delete-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 14px;
+  opacity: 0.5;
+  transition: all 0.2s;
+}
+
+.profile-delete-btn:hover {
+  color: var(--accent-red);
+  opacity: 1;
+}
+
+.add-profile-btn {
+  width: 100%;
+  padding: 10px;
+  background: transparent;
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-family: var(--font-body);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.add-profile-btn:hover {
+  border-color: var(--neon-cyan);
+  color: var(--neon-cyan);
+}
+
+.new-profile-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.new-profile-input {
+  padding: 10px 12px;
+  background: var(--bg-darker);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+}
+
+.new-profile-input:focus {
+  outline: none;
+  border-color: var(--neon-cyan);
+}
+
+.new-profile-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .settings-list {
   display: flex;
   flex-direction: column;

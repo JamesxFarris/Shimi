@@ -137,6 +137,92 @@ let config = {
   }
 };
 
+// ============================================
+// PROFILES SYSTEM
+// ============================================
+const PROFILES_FILE = path.join(__dirname, 'profiles.json');
+let profiles = {};
+let activeProfileId = null;
+
+// Load profiles from disk
+function loadProfiles() {
+  try {
+    if (fs.existsSync(PROFILES_FILE)) {
+      const data = JSON.parse(fs.readFileSync(PROFILES_FILE, 'utf8'));
+      profiles = data.profiles || {};
+      activeProfileId = data.activeProfileId || null;
+      console.log(`👥 Loaded ${Object.keys(profiles).length} profiles`);
+    }
+  } catch (err) {
+    console.log('Could not load profiles:', err.message);
+  }
+}
+
+// Save profiles to disk
+function saveProfiles() {
+  try {
+    fs.writeFileSync(PROFILES_FILE, JSON.stringify({
+      profiles,
+      activeProfileId,
+      savedAt: new Date().toISOString()
+    }, null, 2));
+  } catch (err) {
+    console.log('Could not save profiles:', err.message);
+  }
+}
+
+// Switch to a profile (loads their Kalshi credentials)
+function switchToProfile(profileId) {
+  const profile = profiles[profileId];
+  if (!profile) return false;
+
+  activeProfileId = profileId;
+
+  // Load this profile's Kalshi credentials
+  if (profile.kalshiApiKeyId && profile.kalshiPrivateKey) {
+    config.apiKeyId = profile.kalshiApiKeyId;
+    config.privateKey = profile.kalshiPrivateKey;
+    config.isAuthenticated = true;
+  } else {
+    config.apiKeyId = null;
+    config.privateKey = null;
+    config.isAuthenticated = false;
+  }
+
+  // Load profile settings
+  if (profile.settings) {
+    config.riskLimits = { ...config.riskLimits, ...profile.settings.riskLimits };
+    config.degenMode = { ...config.degenMode, ...profile.settings.degenMode };
+  }
+
+  // Reset portfolio for this user
+  portfolio = { balance: 0, positions: [] };
+  betHistory = profile.betHistory || [];
+
+  saveProfiles();
+  console.log(`👤 Switched to profile: ${profile.name}`);
+  return true;
+}
+
+// Save current state to active profile
+function saveToActiveProfile() {
+  if (!activeProfileId || !profiles[activeProfileId]) return;
+
+  profiles[activeProfileId].kalshiApiKeyId = config.apiKeyId;
+  profiles[activeProfileId].kalshiPrivateKey = config.privateKey;
+  profiles[activeProfileId].settings = {
+    riskLimits: config.riskLimits,
+    degenMode: config.degenMode
+  };
+  profiles[activeProfileId].betHistory = betHistory;
+  profiles[activeProfileId].lastActive = new Date().toISOString();
+
+  saveProfiles();
+}
+
+// Initialize profiles on startup
+loadProfiles();
+
 let betHistory = [];
 let portfolio = { balance: 0, positions: [] };
 
@@ -5766,6 +5852,9 @@ app.post('/api/auth/configure', async (req, res) => {
       portfolio.balance = balanceData.balance || 0;
       config.bankroll = portfolio.balance;
 
+      // Save credentials to active profile
+      saveToActiveProfile();
+
       res.json({
         success: true,
         message: 'Connected to Kalshi',
@@ -5785,7 +5874,11 @@ app.post('/api/auth/configure', async (req, res) => {
 app.get('/api/auth/status', (req, res) => {
   res.json({
     isAuthenticated: config.isAuthenticated,
-    hasApiKey: !!config.apiKeyId
+    hasApiKey: !!config.apiKeyId,
+    activeProfile: activeProfileId ? {
+      id: activeProfileId,
+      name: profiles[activeProfileId]?.name
+    } : null
   });
 });
 
@@ -5798,10 +5891,139 @@ app.post('/api/auth/disconnect', (req, res) => {
 
   console.log('🔌 Disconnected from Kalshi');
 
+  // Save to profile if active
+  saveToActiveProfile();
+
   res.json({
     success: true,
     message: 'Disconnected from Kalshi'
   });
+});
+
+// ============================================
+// PROFILE ENDPOINTS
+// ============================================
+
+// Get all profiles
+app.get('/api/profiles', (req, res) => {
+  const profileList = Object.entries(profiles).map(([id, p]) => ({
+    id,
+    name: p.name,
+    hasKalshi: !!(p.kalshiApiKeyId && p.kalshiPrivateKey),
+    lastActive: p.lastActive,
+    isActive: id === activeProfileId
+  }));
+
+  res.json({
+    success: true,
+    profiles: profileList,
+    activeProfileId
+  });
+});
+
+// Create a new profile
+app.post('/api/profiles', (req, res) => {
+  const { name } = req.body;
+
+  if (!name || name.trim().length === 0) {
+    return res.status(400).json({ success: false, error: 'Name is required' });
+  }
+
+  const id = 'profile_' + Date.now();
+  profiles[id] = {
+    name: name.trim(),
+    kalshiApiKeyId: null,
+    kalshiPrivateKey: null,
+    settings: {
+      riskLimits: { ...config.riskLimits },
+      degenMode: { ...config.degenMode }
+    },
+    betHistory: [],
+    createdAt: new Date().toISOString(),
+    lastActive: new Date().toISOString()
+  };
+
+  saveProfiles();
+  console.log(`👤 Created profile: ${name}`);
+
+  res.json({
+    success: true,
+    profile: { id, name: profiles[id].name }
+  });
+});
+
+// Switch to a profile
+app.post('/api/profiles/:id/switch', async (req, res) => {
+  const { id } = req.params;
+
+  if (!profiles[id]) {
+    return res.status(404).json({ success: false, error: 'Profile not found' });
+  }
+
+  // Save current profile state first
+  saveToActiveProfile();
+
+  // Switch to new profile
+  switchToProfile(id);
+
+  // Try to fetch balance if connected to Kalshi
+  let balance = config.bankroll / 100;
+  if (config.isAuthenticated) {
+    try {
+      const balanceData = await kalshiRequest('GET', '/portfolio/balance');
+      portfolio.balance = balanceData.balance || 0;
+      config.bankroll = portfolio.balance;
+      balance = portfolio.balance / 100;
+    } catch (e) {
+      console.log('Could not fetch balance for profile:', e.message);
+    }
+  }
+
+  res.json({
+    success: true,
+    profile: {
+      id,
+      name: profiles[id].name,
+      hasKalshi: config.isAuthenticated
+    },
+    balance,
+    isAuthenticated: config.isAuthenticated
+  });
+});
+
+// Delete a profile
+app.delete('/api/profiles/:id', (req, res) => {
+  const { id } = req.params;
+
+  if (!profiles[id]) {
+    return res.status(404).json({ success: false, error: 'Profile not found' });
+  }
+
+  const name = profiles[id].name;
+  delete profiles[id];
+
+  // If deleting active profile, clear it
+  if (activeProfileId === id) {
+    activeProfileId = null;
+    config.apiKeyId = null;
+    config.privateKey = null;
+    config.isAuthenticated = false;
+  }
+
+  saveProfiles();
+  console.log(`🗑️ Deleted profile: ${name}`);
+
+  res.json({ success: true });
+});
+
+// Update active profile's Kalshi credentials (called after connecting)
+app.post('/api/profiles/save-credentials', (req, res) => {
+  if (!activeProfileId) {
+    return res.status(400).json({ success: false, error: 'No active profile' });
+  }
+
+  saveToActiveProfile();
+  res.json({ success: true });
 });
 
 // Quick balance refresh endpoint

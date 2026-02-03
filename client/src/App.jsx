@@ -447,6 +447,10 @@ function App() {
     maxPerToken: 500,
     maxTotal: 1500
   })
+  const [profiles, setProfiles] = useState([])
+  const [activeProfile, setActiveProfile] = useState(null)
+  const [showNewProfile, setShowNewProfile] = useState(false)
+  const [newProfileName, setNewProfileName] = useState('')
   const [scaleInSettings, setScaleInSettings] = useState({
     enabled: true,
     minProbabilityIncrease: 15,
@@ -596,13 +600,93 @@ function App() {
       const res = await fetch(`${API_BASE}/api/auth/status`)
       const data = await res.json()
       setIsAuthenticated(data.isAuthenticated)
+      if (data.activeProfile) {
+        setActiveProfile(data.activeProfile)
+      }
     } catch (err) {}
   }, [])
+
+  // Fetch profiles
+  const fetchProfiles = useCallback(async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/profiles`)
+      const data = await res.json()
+      if (data.success) {
+        setProfiles(data.profiles || [])
+        if (data.activeProfileId) {
+          const active = data.profiles.find(p => p.id === data.activeProfileId)
+          if (active) setActiveProfile(active)
+        }
+      }
+    } catch (err) {
+      console.error('Profiles fetch error:', err)
+    }
+  }, [])
+
+  // Create new profile
+  const createProfile = async () => {
+    if (!newProfileName.trim()) return
+    try {
+      const res = await authFetch(`${API_BASE}/api/profiles`, {
+        method: 'POST',
+        body: JSON.stringify({ name: newProfileName.trim() })
+      })
+      const data = await res.json()
+      if (data.success) {
+        setNewProfileName('')
+        setShowNewProfile(false)
+        fetchProfiles()
+      }
+    } catch (err) {
+      console.error('Create profile error:', err)
+    }
+  }
+
+  // Switch profile
+  const switchProfile = async (profileId) => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/profiles/${profileId}/switch`, {
+        method: 'POST'
+      })
+      const data = await res.json()
+      if (data.success) {
+        setActiveProfile(data.profile)
+        setIsAuthenticated(data.isAuthenticated)
+        setBalance(data.balance)
+        fetchProfiles()
+        fetchOpportunities()
+        fetchPortfolio()
+      }
+    } catch (err) {
+      console.error('Switch profile error:', err)
+    }
+  }
+
+  // Delete profile
+  const deleteProfile = async (profileId) => {
+    if (!confirm('Delete this profile?')) return
+    try {
+      const res = await authFetch(`${API_BASE}/api/profiles/${profileId}`, {
+        method: 'DELETE'
+      })
+      const data = await res.json()
+      if (data.success) {
+        fetchProfiles()
+        if (activeProfile?.id === profileId) {
+          setActiveProfile(null)
+          setIsAuthenticated(false)
+        }
+      }
+    } catch (err) {
+      console.error('Delete profile error:', err)
+    }
+  }
 
 
   // Initial load - runs once
   useEffect(() => {
     // Fetch everything on initial load
+    fetchProfiles()  // Fetch profiles first
     fetchOpportunities()
     fetchPortfolio()
     fetchPerformance()  // Fetch performance stats on load
@@ -1580,9 +1664,68 @@ function App() {
           {tab === 'settings' && (
             <div className="settings-page">
               <div className="settings-grid">
+                {/* Profiles Section */}
+                <div className="settings-card">
+                  <h3 className="settings-card-title">Profiles</h3>
+                  <p className="settings-description">Switch between users - each has their own Kalshi credentials</p>
+
+                  <div className="profiles-list">
+                    {profiles.map(profile => (
+                      <div
+                        key={profile.id}
+                        className={`profile-item ${profile.isActive ? 'active' : ''}`}
+                        onClick={() => !profile.isActive && switchProfile(profile.id)}
+                      >
+                        <div className="profile-info">
+                          <span className="profile-name">{profile.name}</span>
+                          <span className="profile-status">
+                            {profile.hasKalshi ? '🟢 Kalshi connected' : '⚪ No Kalshi'}
+                          </span>
+                        </div>
+                        {profile.isActive ? (
+                          <span className="profile-active-badge">Active</span>
+                        ) : (
+                          <button
+                            className="profile-delete-btn"
+                            onClick={(e) => { e.stopPropagation(); deleteProfile(profile.id); }}
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {showNewProfile ? (
+                    <div className="new-profile-form">
+                      <input
+                        type="text"
+                        value={newProfileName}
+                        onChange={(e) => setNewProfileName(e.target.value)}
+                        placeholder="Profile name"
+                        className="new-profile-input"
+                        autoFocus
+                        onKeyDown={(e) => e.key === 'Enter' && createProfile()}
+                      />
+                      <div className="new-profile-actions">
+                        <button className="btn-secondary" onClick={() => { setShowNewProfile(false); setNewProfileName(''); }}>
+                          Cancel
+                        </button>
+                        <button className="btn-primary" onClick={createProfile}>
+                          Create
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button className="add-profile-btn" onClick={() => setShowNewProfile(true)}>
+                      + Add Profile
+                    </button>
+                  )}
+                </div>
+
                 {/* Account Section */}
                 <div className="settings-card">
-                  <h3 className="settings-card-title">Account</h3>
+                  <h3 className="settings-card-title">Kalshi Connection</h3>
                   {isAuthenticated ? (
                     <div className="connected-info">
                       <div className="connected-badge">
