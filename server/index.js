@@ -2352,18 +2352,21 @@ function calculateEnsembleProbability(token, currentPrice, targetPrice, expiryMi
   const historicalProbStay = crossingAnalysis.reliable ? (1 - crossingAnalysis.crossingProb) : 0.5;
 
   // Momentum is our EDGE - the market doesn't instantly price in recent moves
-  // Strong recent momentum predicts continuation in very short term
+  // With Binance (3s updates), we can detect momentum faster than Kalshi prices adjust
   const momentum = calculateMomentumMultiTimeframe(allHistory);
-  const shortMomentum = calculateMomentum(allHistory, 2); // Last 2 minutes only
+  const shortMomentum = calculateMomentum(allHistory, 2); // Last 2 minutes
+  const veryShortMomentum = calculateMomentum(allHistory, 1); // Last 1 minute (Binance speed advantage)
 
   let momentumAdjust = 0;
-  // Strong short-term momentum = higher adjustment (our actual edge)
-  if (shortMomentum.strength === 'strong') {
+  // Very short-term momentum with fast Binance data = our biggest edge
+  if (veryShortMomentum.strength === 'strong') {
+    momentumAdjust = veryShortMomentum.direction === 'up' ? 0.18 : -0.18;
+  } else if (shortMomentum.strength === 'strong') {
     momentumAdjust = shortMomentum.direction === 'up' ? 0.15 : -0.15;
   } else if (shortMomentum.strength === 'moderate') {
-    momentumAdjust = shortMomentum.direction === 'up' ? 0.08 : -0.08;
+    momentumAdjust = shortMomentum.direction === 'up' ? 0.10 : -0.10;
   } else if (momentum.aligned) {
-    momentumAdjust = momentum.direction === 'bullish' ? 0.05 : -0.05;
+    momentumAdjust = momentum.direction === 'bullish' ? 0.06 : -0.06;
   }
 
   // Combine methods using weighted average
@@ -2395,16 +2398,18 @@ function calculateEnsembleProbability(token, currentPrice, targetPrice, expiryMi
   // Apply momentum adjustment
   ensembleProbAbove = Math.max(0.05, Math.min(0.95, ensembleProbAbove + momentumAdjust));
 
-  // LESS conservative - we need edge to make money
+  // With Binance fast data, we can trust our momentum signals more
   // Only apply shrinkage when momentum is weak (uncertain)
-  const hasStrongMomentumSignal = shortMomentum.strength === 'strong' || shortMomentum.strength === 'moderate';
+  const hasStrongMomentumSignal = veryShortMomentum.strength === 'strong' ||
+                                   shortMomentum.strength === 'strong' ||
+                                   shortMomentum.strength === 'moderate';
 
   if (!hasStrongMomentumSignal) {
     // Weak momentum = less confident = shrink toward 50%
-    const uncertaintyFactor = 0.85;
+    const uncertaintyFactor = 0.88; // Less shrinkage with faster data (was 0.85)
     ensembleProbAbove = 0.5 + (ensembleProbAbove - 0.5) * uncertaintyFactor;
   }
-  // Strong momentum = trust the signal, minimal shrinkage
+  // Strong momentum = trust the signal, no shrinkage
 
   // Data quality adjustment - only for low data
   const dataQualityFactor = Math.min(1, allHistory.length / 50);
@@ -2721,6 +2726,11 @@ let priceInterval = setInterval(fetchCryptoPrices, PRICE_REFRESH_MS);
 fetchCryptoPrices().then(() => {
   console.log(`📊 Price source: ${priceSource.toUpperCase()} (refreshing every ${PRICE_REFRESH_MS/1000}s)`);
 });
+
+// Check for settled bets every 30 seconds
+const SETTLEMENT_CHECK_MS = 30000;
+setInterval(checkPendingSettlements, SETTLEMENT_CHECK_MS);
+console.log(`📊 Settlement check: every ${SETTLEMENT_CHECK_MS/1000}s`);
 
 // ============================================
 // S&P 500 INDEX PRICE TRACKING
