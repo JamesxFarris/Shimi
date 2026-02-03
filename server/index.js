@@ -422,6 +422,23 @@ function trackBet(betInfo) {
   const now = new Date();
   const token = betInfo.token || betInfo.assetType || getTokenFromTicker(betInfo.ticker);
 
+  // DEDUPLICATION: Check if we already have this bet
+  // Match by: ticker + side + similar timestamp (within 60 seconds) + similar price
+  const existingBet = performanceData.bets.find(b => {
+    if (b.ticker !== betInfo.ticker) return false;
+    if (b.side !== betInfo.side) return false;
+    const timeDiff = Math.abs(new Date(b.timestamp).getTime() - now.getTime());
+    if (timeDiff > 60000) return false; // More than 60 seconds apart
+    const priceDiff = Math.abs((b.price || 0) - (betInfo.price || 0));
+    if (priceDiff > 5) return false; // More than 5 cents difference
+    return true;
+  });
+
+  if (existingBet) {
+    console.log(`📋 Skipping duplicate bet: ${betInfo.ticker} ${betInfo.side} (already tracked)`);
+    return existingBet; // Return existing bet instead of creating duplicate
+  }
+
   // Calculate ML features
   const currentPrice = betInfo.currentPrice || 0;
   const strikePrice = betInfo.strikePrice || 0;
@@ -3333,6 +3350,11 @@ function parseMarket(market) {
   const yesBid = (parseFloat(market.yes_bid) || 0) / 100;
   const noBid = (parseFloat(market.no_bid) || 0) / 100;
 
+  // Calculate bid-ask spread (in cents)
+  // Spread is our transaction cost - need edge > spread to profit
+  const yesSpreadCents = Math.round((yesAsk - yesBid) * 100);
+  const noSpreadCents = Math.round((noAsk - noBid) * 100);
+
   return {
     ticker: market.ticker,
     title: market.title,
@@ -3346,6 +3368,8 @@ function parseMarket(market) {
     noAsk,
     yesBid,
     noBid,
+    yesSpreadCents,
+    noSpreadCents,
     volume: parseInt(market.volume) || 0
   };
 }
@@ -3387,6 +3411,25 @@ function analyzeCryptoMarket(parsed) {
 
   // Get momentum info (not for betting decision, just context)
   const momentum = getMomentumBetSignal(parsed.cryptoType);
+
+  // === PRICE STALENESS DETECTION ===
+  // Check if Kalshi price seems stale (hasn't reacted to crypto movement)
+  // This is our edge window - market makers haven't updated yet
+  const yesPriceCents = Math.round(yesPrice * 100);
+  const noPriceCents = Math.round(noPrice * 100);
+
+  // Compare what Kalshi implies vs what our model says
+  // If big gap + recent momentum, Kalshi might be stale
+  let priceStaleness = 0;
+  if (momentum.strength > 0.01) {
+    // If crypto moved significantly in last 2 min and Kalshi price seems off
+    const recentMove = Math.abs(momentum.ret2 || 0);
+    if (recentMove > 0.1) {
+      // Crypto moved 0.1%+ in 2 min - check if Kalshi reacted
+      // Stale price = our edge opportunity
+      priceStaleness = recentMove;
+    }
+  }
 
   // === SIMPLE POSITION-BASED STRATEGY ===
   // Core idea: If price is on one side of strike, bet that side
@@ -3600,6 +3643,15 @@ function analyzeCryptoMarket(parsed) {
   // Cap Kelly at 15% of bankroll max for any single bet
   const cappedKelly = Math.min(halfKelly, 0.15);
 
+  // Get spread for our bet side
+  const spreadCents = betSide === 'YES' ? (parsed.yesSpreadCents || 0) : (parsed.noSpreadCents || 0);
+
+  // Net edge after spread (what we actually keep)
+  const netEdge = edge - spreadCents;
+
+  // If spread eats all our edge, this isn't profitable
+  const spreadWarning = spreadCents > 0 && edge > 0 && netEdge < 1;
+
   return {
     ticker: parsed.ticker,
     title: parsed.title,
@@ -3620,18 +3672,21 @@ function analyzeCryptoMarket(parsed) {
     winProbability: ourProbability.toFixed(1),
     ensembleProbability: (ensembleProb * 100).toFixed(1),
     edge: edge,
+    spreadCents,       // Bid-ask spread (transaction cost)
+    netEdge,           // Edge after spread
+    spreadWarning,     // True if spread eats most of our edge
     mlAdjustment: mlAdjustment ? mlAdjustment.toFixed(1) : '0',
     expectedValue: ev.toFixed(2),
     kellyFraction: (kellyFraction * 100).toFixed(1),  // As percentage
     recommendedBetFraction: (cappedKelly * 100).toFixed(1),  // Half Kelly, capped
-    isRecommended: edge > 0,
+    isRecommended: edge > 0 && !spreadWarning,  // Don't recommend if spread kills edge
     isDegen,
-    isSafe,
+    isSafe: isSafe && !spreadWarning,  // Not safe if spread eats edge
     isDegenSafe,
     confidence,
     confidenceScore: score,
     momentumSignal: momentum,
-    reason
+    reason: spreadWarning ? `${reason} | ⚠️ Spread (${spreadCents}¢) eats edge` : reason
   };
 }
 
@@ -5953,6 +6008,55 @@ app.post('/api/import-fills', async (req, res) => {
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
+});
+
+// Deduplicate bets - remove duplicates based on ticker + side + similar timestamp
+app.post('/api/deduplicate-bets', async (req, res) => {
+  const beforeCount = performanceData.bets.length;
+
+  // Group bets by ticker + side, then dedupe by timestamp proximity
+  const seen = new Map();
+  const uniqueBets = [];
+
+  for (const bet of performanceData.bets) {
+    const key = `${bet.ticker}-${bet.side}`;
+    const timestamp = new Date(bet.timestamp).getTime();
+
+    if (!seen.has(key)) {
+      seen.set(key, []);
+    }
+
+    // Check if we have a similar bet within 60 seconds
+    const similar = seen.get(key).find(existing => {
+      const timeDiff = Math.abs(existing.timestamp - timestamp);
+      return timeDiff < 60000; // Within 60 seconds
+    });
+
+    if (!similar) {
+      seen.get(key).push({ timestamp, bet });
+      uniqueBets.push(bet);
+    }
+  }
+
+  // Replace bets with deduplicated list
+  performanceData.bets = uniqueBets;
+
+  // Recalculate summary
+  recalculateSummary();
+
+  // Save to JSONBin
+  await saveToJsonBin();
+
+  const removed = beforeCount - uniqueBets.length;
+  console.log(`🧹 Deduplicated: removed ${removed} duplicates, ${uniqueBets.length} remaining`);
+
+  res.json({
+    success: true,
+    before: beforeCount,
+    after: uniqueBets.length,
+    removed,
+    summary: performanceData.summary
+  });
 });
 
 // Reset tracking data (use carefully!)
