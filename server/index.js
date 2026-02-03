@@ -1218,14 +1218,51 @@ function addPendingExposure(token, amountCents) {
   console.log(`   📝 All pending: ${allPending.join(', ')}`);
 }
 
-// Clean up old pending exposure (older than 5 minutes - positions should have updated by then)
+// Clean up old pending exposure (older than 2 minutes - positions should have updated by then)
 function cleanupPendingExposure() {
   const now = Date.now();
-  const EXPIRY = 5 * 60 * 1000; // 5 minutes
+  const EXPIRY = 2 * 60 * 1000; // 2 minutes (was 5, reduced for faster cleanup)
   for (const [token, data] of pendingTokenExposure.entries()) {
     if (now - data.timestamp > EXPIRY) {
       pendingTokenExposure.delete(token);
     }
+  }
+}
+
+// Clean up settled positions from portfolio cache
+// This removes positions for markets that have likely expired
+function cleanupSettledPositions() {
+  if (!portfolio.positions || !Array.isArray(portfolio.positions)) return;
+
+  const now = Date.now();
+  const beforeCount = portfolio.positions.length;
+
+  portfolio.positions = portfolio.positions.filter(pos => {
+    // Check if this is a 15-minute crypto market
+    if (pos.ticker && pos.ticker.includes('15M')) {
+      // Check if we have a close_time or can infer expiry
+      if (pos.close_time) {
+        const closeTime = new Date(pos.close_time).getTime();
+        if (now > closeTime) {
+          console.log(`   🧹 Removing expired position: ${pos.ticker} (expired ${Math.round((now - closeTime) / 1000)}s ago)`);
+          return false;
+        }
+      }
+      // Also check if the bet is in our settled list
+      const settledBet = performanceData.bets.find(b =>
+        b.ticker === pos.ticker &&
+        (b.outcome === 'won' || b.outcome === 'lost')
+      );
+      if (settledBet) {
+        console.log(`   🧹 Removing settled position: ${pos.ticker} (${settledBet.outcome})`);
+        return false;
+      }
+    }
+    return true;
+  });
+
+  if (beforeCount > portfolio.positions.length) {
+    console.log(`   🧹 Cleaned up ${beforeCount - portfolio.positions.length} settled positions`);
   }
 }
 
@@ -2738,6 +2775,9 @@ function getMaxTotalRisk() {
 function getCurrentExposure() {
   // Clean up old pending exposure first
   cleanupPendingExposure();
+
+  // Also clean up settled positions from portfolio cache
+  cleanupSettledPositions();
 
   let totalExposure = 0;
 
