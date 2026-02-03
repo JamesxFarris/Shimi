@@ -5356,6 +5356,15 @@ async function runAutoBet() {
   }
 }
 
+// Get auto-bet status (for frontend refresh)
+app.get('/api/auto-bet/status', (req, res) => {
+  res.json({
+    success: true,
+    autoBetEnabled: config.autoBetEnabled,
+    intervalSeconds: performanceData.autoBetState?.intervalSeconds || 15
+  });
+});
+
 app.post('/api/crypto/auto-bet/toggle', (req, res) => {
   const { enabled, intervalSeconds = 15 } = req.body; // Check every 15 seconds
 
