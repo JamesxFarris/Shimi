@@ -5863,6 +5863,131 @@ app.post('/api/reset-tracking', async (req, res) => {
   res.json({ success: true, message: 'Tracking data and ML model reset' });
 });
 
+// Analyze historical data for insights
+app.get('/api/analyze-history', (req, res) => {
+  const bets = performanceData.bets || [];
+  const settled = bets.filter(b => b.outcome === 'won' || b.outcome === 'lost');
+
+  if (settled.length < 5) {
+    return res.json({
+      success: true,
+      message: 'Need at least 5 settled bets for analysis',
+      totalBets: bets.length,
+      settledBets: settled.length
+    });
+  }
+
+  // Analyze by token
+  const byToken = {};
+  settled.forEach(b => {
+    const token = b.token || 'unknown';
+    if (!byToken[token]) byToken[token] = { wins: 0, losses: 0, profit: 0 };
+    if (b.outcome === 'won') {
+      byToken[token].wins++;
+      byToken[token].profit += (b.actualProfit || 0);
+    } else {
+      byToken[token].losses++;
+      byToken[token].profit -= (b.totalCost || 0);
+    }
+  });
+
+  // Calculate win rates
+  Object.keys(byToken).forEach(token => {
+    const t = byToken[token];
+    t.total = t.wins + t.losses;
+    t.winRate = ((t.wins / t.total) * 100).toFixed(1) + '%';
+    t.profitDollars = (t.profit / 100).toFixed(2);
+  });
+
+  // Analyze by price bucket
+  const byPrice = {
+    'cheap_10_25': { wins: 0, losses: 0, label: '10-25¢ (long shots)' },
+    'low_26_40': { wins: 0, losses: 0, label: '26-40¢ (risky)' },
+    'mid_41_60': { wins: 0, losses: 0, label: '41-60¢ (balanced)' },
+    'high_61_80': { wins: 0, losses: 0, label: '61-80¢ (likely)' },
+    'safe_81_99': { wins: 0, losses: 0, label: '81-99¢ (very likely)' }
+  };
+
+  settled.forEach(b => {
+    const price = b.price || 50;
+    let bucket;
+    if (price <= 25) bucket = 'cheap_10_25';
+    else if (price <= 40) bucket = 'low_26_40';
+    else if (price <= 60) bucket = 'mid_41_60';
+    else if (price <= 80) bucket = 'high_61_80';
+    else bucket = 'safe_81_99';
+
+    if (b.outcome === 'won') byPrice[bucket].wins++;
+    else byPrice[bucket].losses++;
+  });
+
+  Object.keys(byPrice).forEach(bucket => {
+    const p = byPrice[bucket];
+    p.total = p.wins + p.losses;
+    p.winRate = p.total > 0 ? ((p.wins / p.total) * 100).toFixed(1) + '%' : 'N/A';
+  });
+
+  // Analyze by time of day (hour)
+  const byHour = {};
+  settled.forEach(b => {
+    if (!b.timestamp) return;
+    const hour = new Date(b.timestamp).getHours();
+    const period = hour < 6 ? 'night_0_5' : hour < 12 ? 'morning_6_11' : hour < 18 ? 'afternoon_12_17' : 'evening_18_23';
+    if (!byHour[period]) byHour[period] = { wins: 0, losses: 0 };
+    if (b.outcome === 'won') byHour[period].wins++;
+    else byHour[period].losses++;
+  });
+
+  Object.keys(byHour).forEach(period => {
+    const h = byHour[period];
+    h.total = h.wins + h.losses;
+    h.winRate = ((h.wins / h.total) * 100).toFixed(1) + '%';
+  });
+
+  // Analyze by side
+  const bySide = { yes: { wins: 0, losses: 0 }, no: { wins: 0, losses: 0 } };
+  settled.forEach(b => {
+    const side = (b.side || 'yes').toLowerCase();
+    if (b.outcome === 'won') bySide[side].wins++;
+    else bySide[side].losses++;
+  });
+  Object.keys(bySide).forEach(side => {
+    const s = bySide[side];
+    s.total = s.wins + s.losses;
+    s.winRate = s.total > 0 ? ((s.wins / s.total) * 100).toFixed(1) + '%' : 'N/A';
+  });
+
+  // Overall stats
+  const totalWins = settled.filter(b => b.outcome === 'won').length;
+  const totalLosses = settled.filter(b => b.outcome === 'lost').length;
+  const overallWinRate = ((totalWins / settled.length) * 100).toFixed(1);
+
+  // Find best and worst
+  const tokensSorted = Object.entries(byToken).sort((a, b) => parseFloat(b[1].winRate) - parseFloat(a[1].winRate));
+  const bestToken = tokensSorted[0];
+  const worstToken = tokensSorted[tokensSorted.length - 1];
+
+  res.json({
+    success: true,
+    totalBets: bets.length,
+    settledBets: settled.length,
+    pendingBets: bets.length - settled.length,
+    overall: {
+      wins: totalWins,
+      losses: totalLosses,
+      winRate: overallWinRate + '%'
+    },
+    insights: {
+      bestToken: bestToken ? { token: bestToken[0], ...bestToken[1] } : null,
+      worstToken: worstToken ? { token: worstToken[0], ...worstToken[1] } : null,
+    },
+    byToken,
+    byPrice,
+    byTimeOfDay: byHour,
+    bySide
+  });
+});
+
 // ML Model status endpoint
 app.get('/api/ml-model', (req, res) => {
   res.json({
