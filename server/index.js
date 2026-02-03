@@ -5013,8 +5013,8 @@ async function runAutoBet() {
         let reason = '';
         if (closest.edge < AUTO_BET_MIN_EDGE) {
           reason = `Edge too low: ${parseFloat(closest.edge || 0).toFixed(1)}% (need ${AUTO_BET_MIN_EDGE}%+)`;
-        } else if (winProb < MIN_PROB) {
-          reason = `Prob too low: ${winProb}% (need ${MIN_PROB}%+)`;
+        } else if (winProb < 50) {
+          reason = `Prob too low: ${winProb}% (need 50%+)`;
         } else {
           reason = 'Already bet on this market';
         }
