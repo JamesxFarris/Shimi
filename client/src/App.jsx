@@ -1107,7 +1107,7 @@ function App() {
         body: JSON.stringify({ enabled: !autoBetEnabled, intervalSeconds: 10 })
       })
       const data = await res.json()
-      if (data.success) setAutoBetEnabled(data.enabled)
+      if (data.success) setAutoBetEnabled(data.autoBetEnabled)
     } catch (err) {
       alert('Error toggling auto-bet')
     }
