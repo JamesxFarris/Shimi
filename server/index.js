@@ -4000,7 +4000,8 @@ app.get('/api/opportunities/all', async (req, res) => {
         remaining: getTotalRemainingBudget(),
         currentDollars: (riskByType.total / 100).toFixed(2),
         maxDollars: (getMaxTotalRisk() / 100).toFixed(2),
-        remainingDollars: (getTotalRemainingBudget() / 100).toFixed(2)
+        remainingDollars: (getTotalRemainingBudget() / 100).toFixed(2),
+        positionCount: portfolio.positions?.length || 0
       },
       opportunities: allOpportunities
     });

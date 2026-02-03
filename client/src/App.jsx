@@ -1016,8 +1016,8 @@ function App() {
                   color={avgEdge >= 0 ? "#00f0ff" : "#ff4466"}
                 />
                 <StatsCard
-                  title="Bets"
-                  value={totalBets}
+                  title="Active"
+                  value={risk.positionCount || 0}
                   icon="▣"
                   color="#ff00aa"
                 />
