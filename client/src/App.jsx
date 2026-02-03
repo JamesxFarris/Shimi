@@ -440,6 +440,7 @@ function App() {
     maxBetMultiplier: 0.5
   })
   const [settingsSaved, setSettingsSaved] = useState(false)
+  const [settingsSaving, setSettingsSaving] = useState(false)
   const [degenSettingsSaved, setDegenSettingsSaved] = useState(false)
   const [marketFilter, setMarketFilter] = useState('all') // 'all', 'crypto', 'index'
   const [marketStats, setMarketStats] = useState({ totalAnalyzed: 0, recommended: 0, filteredNoEdge: 0, filteredLowProb: 0 })
@@ -747,6 +748,7 @@ function App() {
 
   // Save risk settings to server
   const saveRiskSettings = async () => {
+    setSettingsSaving(true)
     try {
       const res = await authFetch(`${API_BASE}/api/settings/risk`, {
         method: 'POST',
@@ -762,11 +764,15 @@ function App() {
           maxDollars: (totalMax / 100).toFixed(2)
         }))
         setRiskSettings(data.riskLimits)
+        // Refresh opportunities to update exposure bar
+        await fetchOpportunities()
         setSettingsSaved(true)
         setTimeout(() => setSettingsSaved(false), 3000)
       }
     } catch (err) {
       console.error('Error saving risk settings:', err)
+    } finally {
+      setSettingsSaving(false)
     }
   }
 
@@ -1820,6 +1826,18 @@ function App() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Settings Saving Overlay */}
+      {settingsSaving && (
+        <div className="settings-saving-overlay">
+          <div className="settings-saving-content">
+            <div className="shimi-loader">
+              <span className="shimi-text">//SHIMI</span>
+            </div>
+            <span className="saving-text">Syncing settings...</span>
           </div>
         </div>
       )}
