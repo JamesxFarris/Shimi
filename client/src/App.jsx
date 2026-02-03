@@ -496,6 +496,13 @@ function App() {
     requireStrongMomentum: true,
     maxBetMultiplier: 0.5
   })
+  const [aggressiveMode, setAggressiveMode] = useState({
+    enabled: true,
+    minPrice: 26,
+    minDistanceFromStrike: 0.05,
+    allowNightTrading: true,
+    minConfidenceScore: 1
+  })
   const [settingsSaved, setSettingsSaved] = useState(false)
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [degenSettingsSaved, setDegenSettingsSaved] = useState(false)
@@ -782,6 +789,7 @@ function App() {
     fetchPerformance()  // Fetch performance stats on load
     fetchAutoBetStatus()  // Get current auto-bet state
     fetchDegenModeStatus()  // Get current degen mode state
+    fetchAggressiveMode()   // Get current aggressive/conservative mode
     checkAuth()
 
     // Refresh opportunities every 10 seconds (includes prices)
@@ -956,6 +964,37 @@ function App() {
       }
     } catch (err) {
       console.error('Error fetching degen mode status:', err)
+    }
+  }
+
+  // Fetch aggressive mode settings
+  const fetchAggressiveMode = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/settings/aggressive-mode`)
+      const data = await res.json()
+      if (data.success && data.aggressiveMode) {
+        setAggressiveMode(data.aggressiveMode)
+      }
+    } catch (err) {
+      console.error('Error fetching aggressive mode:', err)
+    }
+  }
+
+  // Toggle aggressive/conservative mode
+  const toggleAggressiveMode = async () => {
+    const newEnabled = !aggressiveMode.enabled
+    setAggressiveMode(prev => ({ ...prev, enabled: newEnabled }))
+    try {
+      const res = await authFetch(`${API_BASE}/api/settings/aggressive-mode`, {
+        method: 'POST',
+        body: JSON.stringify({ enabled: newEnabled })
+      })
+      const data = await res.json()
+      if (data.success) {
+        setAggressiveMode(data.aggressiveMode)
+      }
+    } catch (err) {
+      console.error('Error toggling aggressive mode:', err)
     }
   }
 
@@ -2016,6 +2055,46 @@ function App() {
                   <button className={`save-settings-btn ${settingsSaved ? 'saved' : ''}`} onClick={saveScaleInSettings}>
                     {settingsSaved ? '✓ Saved' : 'Save Scale-In Settings'}
                   </button>
+                </div>
+
+                {/* Trading Mode Toggle */}
+                <div className="settings-card trading-mode-card">
+                  <h3 className="settings-card-title">⚡ Trading Mode</h3>
+                  <p className="settings-description">
+                    Based on 474-bet analysis: Aggressive = more volume, Conservative = higher win rate.
+                  </p>
+                  <div className="trading-mode-toggle">
+                    <button
+                      className={`mode-btn ${aggressiveMode.enabled ? 'active' : ''}`}
+                      onClick={() => toggleAggressiveMode()}
+                    >
+                      <span className="mode-icon">🚀</span>
+                      <span className="mode-name">Aggressive</span>
+                      <span className="mode-desc">26¢+ min, night OK</span>
+                    </button>
+                    <button
+                      className={`mode-btn ${!aggressiveMode.enabled ? 'active' : ''}`}
+                      onClick={() => toggleAggressiveMode()}
+                    >
+                      <span className="mode-icon">🛡️</span>
+                      <span className="mode-name">Conservative</span>
+                      <span className="mode-desc">41¢+ min, no night</span>
+                    </button>
+                  </div>
+                  <div className="mode-details">
+                    <div className="mode-stat">
+                      <span className="stat-label">Min Price:</span>
+                      <span className="stat-value">{aggressiveMode.enabled ? '26¢' : '41¢'}</span>
+                    </div>
+                    <div className="mode-stat">
+                      <span className="stat-label">Night Trading:</span>
+                      <span className="stat-value">{aggressiveMode.enabled ? '✓ Allowed' : '✗ Blocked'}</span>
+                    </div>
+                    <div className="mode-stat">
+                      <span className="stat-label">NO Bet Bonus:</span>
+                      <span className="stat-value">+2 confidence (70.6% vs 53.1% win rate)</span>
+                    </div>
+                  </div>
                 </div>
 
                 {/* Degen Mode Settings */}
