@@ -181,6 +181,7 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
           </div>
         </div>
         <div className="opp-meta">
+          {opp.marketTimeframe === 'hourly' && <span className="timeframe-badge hourly">1H</span>}
           {opp.isObviousBet && !notRecommended && <span className="high-conf-dot" title="High Confidence"></span>}
           <span className="time-badge">{opp.timeRemainingFormatted || 'Scanning...'}</span>
         </div>
@@ -423,7 +424,9 @@ function App() {
   const [riskSettings, setRiskSettings] = useState({
     maxPerBet: 500,
     maxTotal: 1500,
-    maxPerToken: 500
+    maxPerToken: 500,
+    maxPer15Min: 1000,
+    maxPerHourly: 1000
   })
   const [scaleInSettings, setScaleInSettings] = useState({
     enabled: true,
@@ -1569,6 +1572,21 @@ function App() {
                         label="Max per token"
                         value={Math.round((riskSettings.maxPerToken || 500) / 100)}
                         onChange={(v) => updateRiskSettings('maxPerToken', v * 100)}
+                        min={1}
+                        max={50}
+                      />
+                      <h4 style={{ marginTop: '16px' }}>Timeframe Limits</h4>
+                      <DollarStepper
+                        label="Max for 15-min markets"
+                        value={Math.round((riskSettings.maxPer15Min || 1000) / 100)}
+                        onChange={(v) => updateRiskSettings('maxPer15Min', v * 100)}
+                        min={1}
+                        max={50}
+                      />
+                      <DollarStepper
+                        label="Max for hourly markets"
+                        value={Math.round((riskSettings.maxPerHourly || 1000) / 100)}
+                        onChange={(v) => updateRiskSettings('maxPerHourly', v * 100)}
                         min={1}
                         max={50}
                       />

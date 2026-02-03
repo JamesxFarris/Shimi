@@ -117,7 +117,9 @@ let config = {
   riskLimits: {
     maxPerBet: 500,      // $5.00 max per bet
     maxTotal: 1500,      // $15.00 max total exposure
-    maxPerToken: 500     // $5.00 max per token
+    maxPerToken: 500,    // $5.00 max per token
+    maxPer15Min: 1000,   // $10.00 max for 15-minute markets
+    maxPerHourly: 1000   // $10.00 max for hourly markets
   },
   // Scale-in settings: add to position when probability improves
   scaleIn: {
@@ -2923,6 +2925,75 @@ function getRemainingTokenBudget(ticker, assetType) {
   return remaining;
 }
 
+// Get timeframe from ticker (15min, hourly, daily)
+function getTimeframeFromTicker(ticker) {
+  if (!ticker) return '15min';
+  const t = ticker.toUpperCase();
+  if (t.includes('1H')) return 'hourly';
+  if (t.includes('15M')) return '15min';
+  if (t.includes('1D') || t.includes('DAILY')) return 'daily';
+  return '15min'; // default
+}
+
+// Get exposure by market timeframe
+function getExposureByTimeframe() {
+  cleanupPendingExposure();
+
+  const timeframeExposure = { '15min': 0, 'hourly': 0, 'daily': 0 };
+
+  // Count actual Kalshi positions
+  if (portfolio.positions && Array.isArray(portfolio.positions)) {
+    for (const pos of portfolio.positions) {
+      const contracts = Math.abs(pos.position || 0);
+      if (contracts > 0) {
+        let posRisk;
+
+        if (pos.market_exposure && pos.market_exposure > 0) {
+          posRisk = pos.market_exposure;
+        } else {
+          let avgPrice = pos.average_price || 75;
+          if (avgPrice > 0 && avgPrice <= 1) {
+            avgPrice = Math.round(avgPrice * 100);
+          }
+          posRisk = contracts * avgPrice;
+        }
+
+        const timeframe = getTimeframeFromTicker(pos.ticker);
+        timeframeExposure[timeframe] = (timeframeExposure[timeframe] || 0) + posRisk;
+      }
+    }
+  }
+
+  // Add pending exposure by timeframe
+  for (const [token, data] of pendingTokenExposure.entries()) {
+    // Pending exposure doesn't track timeframe, so skip here
+    // (Could enhance pendingTokenExposure to track timeframe if needed)
+  }
+
+  return timeframeExposure;
+}
+
+// Get max allowed per timeframe
+function getMaxPerTimeframe(timeframe) {
+  if (timeframe === 'hourly') {
+    return config.riskLimits.maxPerHourly || 1000; // Default $10
+  }
+  return config.riskLimits.maxPer15Min || 1000; // Default $10
+}
+
+// Get remaining budget for a specific timeframe
+function getRemainingTimeframeBudget(ticker) {
+  const timeframe = getTimeframeFromTicker(ticker);
+  const timeframeExposure = getExposureByTimeframe();
+  const currentExposure = timeframeExposure[timeframe] || 0;
+  const maxPerTimeframe = getMaxPerTimeframe(timeframe);
+  const remaining = Math.max(0, maxPerTimeframe - currentExposure);
+
+  console.log(`   ⏱️ Timeframe ${timeframe}: exposure=$${(currentExposure/100).toFixed(2)}, max=$${(maxPerTimeframe/100).toFixed(2)}, remaining=$${(remaining/100).toFixed(2)}`);
+
+  return remaining;
+}
+
 // ============================================
 // KALSHI API
 // ============================================
@@ -3397,12 +3468,23 @@ function parseMarket(market) {
   const yesSpreadCents = Math.round((yesAsk - yesBid) * 100);
   const noSpreadCents = Math.round((noAsk - noBid) * 100);
 
+  // Detect market timeframe from ticker
+  let marketTimeframe = '15min'; // default
+  if (ticker.includes('1H')) {
+    marketTimeframe = 'hourly';
+  } else if (ticker.includes('15M')) {
+    marketTimeframe = '15min';
+  } else if (ticker.includes('1D') || ticker.includes('DAILY')) {
+    marketTimeframe = 'daily';
+  }
+
   return {
     ticker: market.ticker,
     title: market.title,
     cryptoType,
     strikePrice,
     marketType,
+    marketTimeframe,
     closeTime: market.close_time,
     timeRemaining,
     timeRemainingMinutes,
@@ -3424,6 +3506,7 @@ function buildBaseResult(parsed, currentPrice, timeMinutes, signal) {
     cryptoType: parsed.cryptoType,
     assetType: parsed.cryptoType,
     marketType: parsed.marketType,
+    marketTimeframe: parsed.marketTimeframe || '15min',
     currentPrice,
     strikePrice: parsed.strikePrice || currentPrice,
     timeRemaining: parsed.timeRemaining,
@@ -3450,6 +3533,8 @@ function analyzeCryptoMarket(parsed) {
   const timeMinutes = parsed.timeRemainingMinutes || 15;
   const yesPrice = parsed.yesAsk || 0.5;
   const noPrice = parsed.noAsk || 0.5;
+  const marketTimeframe = parsed.marketTimeframe || '15min';
+  const isHourly = marketTimeframe === 'hourly';
 
   // Get momentum info (not for betting decision, just context)
   const momentum = getMomentumBetSignal(parsed.cryptoType);
@@ -3513,10 +3598,18 @@ function analyzeCryptoMarket(parsed) {
   // Below 0.05% = too close, risky
 
   // Time remaining (less time = price more likely to stay)
-  if (timeMinutes <= 3) score += 3;       // Very little time
-  else if (timeMinutes <= 5) score += 2;  // Little time
-  else if (timeMinutes <= 8) score += 1;  // Some time
-  // More than 8 min = lots can change
+  // Adjust thresholds for hourly markets (4x the time)
+  if (isHourly) {
+    if (timeMinutes <= 12) score += 3;       // Very little time (hourly)
+    else if (timeMinutes <= 20) score += 2;  // Little time
+    else if (timeMinutes <= 32) score += 1;  // Some time
+    // More than 32 min = lots can change
+  } else {
+    if (timeMinutes <= 3) score += 3;       // Very little time (15-min)
+    else if (timeMinutes <= 5) score += 2;  // Little time
+    else if (timeMinutes <= 8) score += 1;  // Some time
+    // More than 8 min = lots can change
+  }
 
   // Momentum alignment
   const momentumHelps = (betSide === 'YES' && momentum.direction === 'up') ||
@@ -3639,23 +3732,29 @@ function analyzeCryptoMarket(parsed) {
   // LOW PRICE (<40¢): Need price to MOVE toward strike
   //   → Handled by degen mode (requires strong momentum)
 
+  // Time limits depend on PRICE, MOMENTUM, and TIMEFRAME:
+  // Hourly markets get ~4x the time thresholds
   let maxTimeForSafe;
+  const timeMultiplier = isHourly ? 4 : 1;
+
   if (betPriceCents >= 60) {
     // High price = high probability = betting on stability
     // These are safe earlier because we're betting price STAYS, not MOVES
-    maxTimeForSafe = 12;
+    maxTimeForSafe = 12 * timeMultiplier;
   } else {
     // Mid price (40-59¢) = use momentum-based limits
-    maxTimeForSafe = hasStrongMomentum ? 12 : hasAlignedMomentum ? 10 : hasMomentum ? 8 : 6;
+    const baseTime = hasStrongMomentum ? 12 : hasAlignedMomentum ? 10 : hasMomentum ? 8 : 6;
+    maxTimeForSafe = baseTime * timeMultiplier;
   }
 
   let isSafe = edge > 0 && betPriceCents >= 40 && timeMinutes <= maxTimeForSafe && score >= 2;
 
   // CRITICAL: Block bets where momentum is actively against us with significant time left
   // This prevents NO bets when price is trending UP (and vice versa)
-  // With 4+ minutes, opposing momentum can easily push price past strike
-  if (momentumHurts && momentum.strength >= 0.01 && timeMinutes > 4) {
-    isSafe = false;  // Don't auto-bet against momentum with 4+ min left
+  // For 15-min: 4+ minutes is risky. For hourly: 16+ minutes is risky.
+  const momentumBlockTime = isHourly ? 16 : 4;
+  if (momentumHurts && momentum.strength >= 0.01 && timeMinutes > momentumBlockTime) {
+    isSafe = false;  // Don't auto-bet against momentum with significant time left
   }
 
   // Check if qualifies for degen-safe (low price but strong momentum)
@@ -3700,6 +3799,7 @@ function analyzeCryptoMarket(parsed) {
     cryptoType: parsed.cryptoType,
     assetType: parsed.cryptoType,
     marketType: parsed.marketType,
+    marketTimeframe,
     currentPrice,
     strikePrice,
     pctFromStrike: pctFromStrike.toFixed(3),
@@ -4001,7 +4101,12 @@ app.get('/api/opportunities/all', async (req, res) => {
         currentDollars: (riskByType.total / 100).toFixed(2),
         maxDollars: (getMaxTotalRisk() / 100).toFixed(2),
         remainingDollars: (getTotalRemainingBudget() / 100).toFixed(2),
-        positionCount: portfolio.positions?.length || 0
+        positionCount: portfolio.positions?.length || 0,
+        timeframeExposure: getExposureByTimeframe(),
+        timeframeLimits: {
+          '15min': config.riskLimits.maxPer15Min || 1000,
+          'hourly': config.riskLimits.maxPerHourly || 1000
+        }
       },
       opportunities: allOpportunities
     });
@@ -4099,7 +4204,7 @@ app.get('/api/settings/risk', (req, res) => {
 
 // Update risk settings
 app.post('/api/settings/risk', (req, res) => {
-  const { maxPerBet, maxTotal, maxPerToken } = req.body;
+  const { maxPerBet, maxTotal, maxPerToken, maxPer15Min, maxPerHourly } = req.body;
 
   if (maxPerBet !== undefined) {
     config.riskLimits.maxPerBet = Math.max(10, Math.min(1000, parseInt(maxPerBet) || 200));
@@ -4109,6 +4214,12 @@ app.post('/api/settings/risk', (req, res) => {
   }
   if (maxPerToken !== undefined) {
     config.riskLimits.maxPerToken = Math.max(100, Math.min(5000, parseInt(maxPerToken) || 500));
+  }
+  if (maxPer15Min !== undefined) {
+    config.riskLimits.maxPer15Min = Math.max(100, Math.min(5000, parseInt(maxPer15Min) || 1000));
+  }
+  if (maxPerHourly !== undefined) {
+    config.riskLimits.maxPerHourly = Math.max(100, Math.min(5000, parseInt(maxPerHourly) || 1000));
   }
 
   // Persist to disk
@@ -4673,7 +4784,9 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     }
 
     const remainingTokenBudget = getRemainingTokenBudget(best.ticker, best.assetType || best.cryptoType);
-    console.log(`Auto-bet found [${category}]: ${best.title} | Win prob: ${best.winProbability}% | Side: ${best.betSide} | Price: ${priceCents}¢`);
+    const remainingTimeframeBudget = getRemainingTimeframeBudget(best.ticker);
+    const timeframe = getTimeframeFromTicker(best.ticker);
+    console.log(`Auto-bet found [${category}]: ${best.title} | Win prob: ${best.winProbability}% | Side: ${best.betSide} | Price: ${priceCents}¢ | Timeframe: ${timeframe}`);
 
     // Check per-token limit first - must be able to afford at least 1 contract
     if (remainingTokenBudget < priceCents) {
@@ -4682,6 +4795,17 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       return res.json({
         success: true,
         message: `Token limit reached for ${token}. Only $${(remainingTokenBudget/100).toFixed(2)} remaining of $${(getMaxPerToken()/100).toFixed(2)} max.`,
+        bet: null,
+        risk: getRiskByType()
+      });
+    }
+
+    // Check per-timeframe limit
+    if (remainingTimeframeBudget < priceCents) {
+      console.log(`⚠️ Timeframe limit reached for ${timeframe} - $${(remainingTimeframeBudget/100).toFixed(2)} remaining < ${priceCents}¢ per contract`);
+      return res.json({
+        success: true,
+        message: `${timeframe} market limit reached. Only $${(remainingTimeframeBudget/100).toFixed(2)} remaining of $${(getMaxPerTimeframe(timeframe)/100).toFixed(2)} max.`,
         bet: null,
         risk: getRiskByType()
       });
@@ -4707,8 +4831,8 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       });
     }
 
-    // Cap at remaining risk budget, max per bet, OR token budget - whichever is lowest
-    const MAX_BET_CENTS = Math.min(kellyBetCents, maxPerBet, remainingBudget, remainingTokenBudget);
+    // Cap at remaining risk budget, max per bet, token budget, OR timeframe budget - whichever is lowest
+    const MAX_BET_CENTS = Math.min(kellyBetCents, maxPerBet, remainingBudget, remainingTokenBudget, remainingTimeframeBudget);
 
     console.log(`   📊 Kelly sizing: ${(kellyFraction * 100).toFixed(1)}% of $${(bankrollCents/100).toFixed(2)} = $${(kellyBetCents/100).toFixed(2)} → capped at $${(MAX_BET_CENTS/100).toFixed(2)}`);
 
@@ -5240,8 +5364,10 @@ async function runAutoBet() {
       const winProb = parseFloat(opp.winProbability);
       const remainingBudget = getRemainingRiskBudget();
       const remainingTokenBudget = getRemainingTokenBudget(opp.ticker, opp.assetType || opp.cryptoType);
+      const remainingTimeframeBudget = getRemainingTimeframeBudget(opp.ticker);
+      const timeframe = getTimeframeFromTicker(opp.ticker);
 
-      console.log(`      Budget: $${(remainingBudget/100).toFixed(2)} remaining, $${(remainingTokenBudget/100).toFixed(2)} for ${tokenName}, price=${priceCents}¢`);
+      console.log(`      Budget: $${(remainingBudget/100).toFixed(2)} remaining, $${(remainingTokenBudget/100).toFixed(2)} for ${tokenName}, $${(remainingTimeframeBudget/100).toFixed(2)} for ${timeframe}, price=${priceCents}¢`);
 
       // Skip if budget exhausted
       if (remainingBudget < priceCents) {
@@ -5255,9 +5381,15 @@ async function runAutoBet() {
         continue;
       }
 
-      // Kelly Criterion bet sizing - use actual balance, capped by token budget
+      // Skip if timeframe limit exhausted
+      if (remainingTimeframeBudget < priceCents) {
+        console.log(`   ⏭️ ${tokenName}: ${timeframe} timeframe limit reached ($${(remainingTimeframeBudget/100).toFixed(2)} remaining < ${priceCents}¢ per contract)`);
+        continue;
+      }
+
+      // Kelly Criterion bet sizing - use actual balance, capped by token budget AND timeframe budget
       const actualBankroll = Math.max(config.bankroll, portfolio.balance || 0);
-      let maxBetCents = Math.min(getMaxPerBet(), remainingBudget, remainingTokenBudget);
+      let maxBetCents = Math.min(getMaxPerBet(), remainingBudget, remainingTokenBudget, remainingTimeframeBudget);
 
       // Apply degen mode bet multiplier (bet smaller on risky low-price bets)
       if (opp.isDegenSafe) {

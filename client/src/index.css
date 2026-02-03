@@ -1458,6 +1458,21 @@ body {
   border-radius: 6px;
 }
 
+.timeframe-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+
+.timeframe-badge.hourly {
+  color: #ff9500;
+  background: rgba(255, 149, 0, 0.15);
+  border: 1px solid rgba(255, 149, 0, 0.4);
+}
+
 /* Stacked Stats - Vertical Layout */
 .stacked-stats {
   display: flex;
