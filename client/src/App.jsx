@@ -557,6 +557,8 @@ function App() {
     fetchOpportunities()
     fetchPortfolio()
     fetchPerformance()  // Fetch performance stats on load
+    fetchAutoBetStatus()  // Get current auto-bet state
+    fetchDegenModeStatus()  // Get current degen mode state
     checkAuth()
 
     // Refresh opportunities every 10 seconds (includes prices)
@@ -690,6 +692,32 @@ function App() {
 
     setPlacingBet(null)
     setTimeout(() => setBetStatus(null), 5000)
+  }
+
+  // Fetch auto-bet status from server (for initial load / refresh)
+  const fetchAutoBetStatus = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/auto-bet/status`)
+      const data = await res.json()
+      if (data.success) {
+        setAutoBetEnabled(data.autoBetEnabled)
+      }
+    } catch (err) {
+      console.error('Error fetching auto-bet status:', err)
+    }
+  }
+
+  // Fetch degen mode status from server
+  const fetchDegenModeStatus = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/settings/degen-mode`)
+      const data = await res.json()
+      if (data.success && data.degenMode) {
+        setDegenModeSettings(data.degenMode)
+      }
+    } catch (err) {
+      console.error('Error fetching degen mode status:', err)
+    }
   }
 
   // Toggle continuous auto-betting
