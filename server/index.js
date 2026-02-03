@@ -4174,7 +4174,7 @@ app.get('/api/opportunities/all', async (req, res) => {
         filteredLowProb: lowProb.length
       },
       cryptoCount: cryptoOpps.filter(m => m.isRecommended).length,
-      indexCount: indexOpps.filter(m => m.isRecommended).length,
+      indexCount: 0,
       prices: priceDisplay,
       risk: {
         current: riskByType.total,
@@ -4508,21 +4508,12 @@ app.post('/api/bet', async (req, res) => {
 
     // Force fresh market data by clearing cache
     marketCache.lastFetch = 0;
-    indexMarketCache.lastFetch = 0;
 
-    // Search both crypto and index markets
-    const [cryptoMarkets, indexMarkets] = await Promise.all([
-      fetchCryptoMarkets(),
-      fetchIndexMarkets()
-    ]);
+    // Fetch crypto markets
+    const cryptoMarkets = await fetchCryptoMarkets();
 
     let market = cryptoMarkets.find(m => m.ticker === ticker);
     let marketType = 'crypto';
-
-    if (!market) {
-      market = indexMarkets.find(m => m.ticker === ticker);
-      marketType = 'index';
-    }
 
     if (!market) {
       return res.status(404).json({ success: false, error: `Market ${ticker} not found or has expired` });
@@ -5237,7 +5228,7 @@ async function runAutoBet() {
       });
     }
 
-    const opportunities = [...cryptoOpps, ...indexOpps]
+    const opportunities = cryptoOpps
       .filter(m => {
         if (m === null) return false;
 

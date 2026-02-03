@@ -33,7 +33,8 @@
       "Bash(PORT=3002 node:*)",
       "Bash(API_BASE=http://localhost:3002 node:*)",
       "Bash(powershell \"Get-Process -Id 18948 | Select-Object ProcessName, Id\")",
-      "Bash(export API_BASE=http://localhost:3002)"
+      "Bash(export API_BASE=http://localhost:3002)",
+      "Bash(npm run dev:*)"
     ]
   }
 }
