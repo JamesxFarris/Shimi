@@ -1784,13 +1784,14 @@ function App() {
                   {pinPrompt && (
                     <div className="pin-prompt-overlay" onClick={() => { setPinPrompt(null); setPinInput(''); setPinError(''); }}>
                       <div className="pin-prompt" onClick={e => e.stopPropagation()}>
-                        <h3>🔒 Enter PIN for {pinPrompt.profileName}</h3>
+                        <h3>ACCESS LOCKED</h3>
+                        <p className="pin-prompt-subtitle">Enter PIN for {pinPrompt.profileName}</p>
                         {pinError && <p className="pin-error">{pinError}</p>}
                         <input
                           type="password"
                           value={pinInput}
                           onChange={(e) => setPinInput(e.target.value)}
-                          placeholder="Enter PIN"
+                          placeholder="******"
                           className="pin-input"
                           maxLength={6}
                           autoFocus
