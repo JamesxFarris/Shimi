@@ -396,7 +396,7 @@ function App() {
   const [betHistory, setBetHistory] = useState([])
   const [betStats, setBetStats] = useState({ totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 })
   const [newBetsCount, setNewBetsCount] = useState(0)
-  const [lastSeenBetCount, setLastSeenBetCount] = useState(0)
+  const [lastSeenBetCount, setLastSeenBetCount] = useState(null) // null = not initialized yet
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [autoBetEnabled, setAutoBetEnabled] = useState(false)
@@ -533,7 +533,12 @@ function App() {
         setBetStats(data.stats || { totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 })
         setIsAuthenticated(!data.simulated)
         // Track new bets for notification badge
-        if (newHistory.length > lastSeenBetCount && tab !== 'history') {
+        // Only show badge for bets placed AFTER initial load
+        if (lastSeenBetCount === null) {
+          // First load - initialize to current count (no badge)
+          setLastSeenBetCount(newHistory.length)
+        } else if (newHistory.length > lastSeenBetCount && tab !== 'history') {
+          // New bets placed since last check
           setNewBetsCount(newHistory.length - lastSeenBetCount)
         }
       }
@@ -1852,9 +1857,10 @@ function App() {
             <span>📊</span>
             <span>Home</span>
           </button>
-          <button className={`mobile-nav-item ${tab === 'history' ? 'active' : ''}`} onClick={() => { setTab('history'); fetchPerformance(); }}>
+          <button className={`mobile-nav-item ${tab === 'history' ? 'active' : ''}`} onClick={() => { setTab('history'); fetchPerformance(); setNewBetsCount(0); setLastSeenBetCount(betHistory.length); }}>
             <span>📜</span>
             <span>History</span>
+            {newBetsCount > 0 && <span className="nav-badge mobile">{newBetsCount}</span>}
           </button>
           <button className={`mobile-nav-item ${tab === 'performance' ? 'active' : ''}`} onClick={() => { setTab('performance'); fetchPerformance(); }}>
             <span>📈</span>
