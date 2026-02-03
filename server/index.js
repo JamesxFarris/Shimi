@@ -85,7 +85,9 @@ app.use('/api', (req, res, next) => {
     '/auth/status',
     '/health',
     '/jsonbin-status',
-    '/jsonbin-create'
+    '/jsonbin-create',
+    '/jsonbin-sync',
+    '/ml-model'
   ];
   if (publicPaths.includes(req.path)) {
     return next();
@@ -444,7 +446,7 @@ function trackBet(betInfo) {
   performanceData.summary.totalWagered += bet.totalCost;
 
   savePerformanceData();
-  console.log(`📊 Tracked bet: ${bet.side} on ${bet.token} @ ${bet.price}¢ (${bet.predictedProb.toFixed(1)}% pred, ${bet.distanceFromStrikePct?.toFixed(2) || '?'}% from strike)`);
+  console.log(`🧠 TRACKED BET #${performanceData.bets.length}: ${bet.side} on ${bet.token} @ ${bet.price}¢ (${bet.predictedProb.toFixed(1)}% pred)`);
 
   return bet;
 }
@@ -3398,7 +3400,33 @@ function analyzeCryptoMarket(parsed) {
   else if (confidence === 'medium') probAdjustment = 5;
   else probAdjustment = 2;
 
-  const ourProbability = Math.min(95, marketImpliedProb + probAdjustment);
+  let ourProbability = Math.min(95, marketImpliedProb + probAdjustment);
+
+  // Apply ML adjustment if model has learned enough
+  let mlAdjustment = 0;
+  if (mlModel.trainedOn >= 10) {
+    try {
+      const mlFeatures = extractMLFeatures({
+        token: parsed.cryptoType,
+        strikePrice,
+        currentPrice,
+        timeRemainingMinutes: timeMinutes,
+        volatility: priceData.volatility,
+        momentum,
+        betSide,
+        confidence,
+        winProbability: ourProbability,
+        marketPrice: betPriceCents,
+        edge: ourProbability - betPriceCents
+      }, priceData);
+      const mlResult = getMLAdjustment(mlFeatures);
+      mlAdjustment = mlResult.adjustment * (mlResult.confidence === 'high' ? 1.0 : mlResult.confidence === 'medium' ? 0.6 : 0.3);
+      ourProbability = Math.max(5, Math.min(95, ourProbability + mlAdjustment));
+    } catch (err) {
+      // ML adjustment failed, continue without it
+    }
+  }
+
   const edge = ourProbability - betPriceCents;
 
   // Expected value
@@ -3439,6 +3467,7 @@ function analyzeCryptoMarket(parsed) {
     betPrice,
     winProbability: ourProbability.toFixed(1),
     edge: edge,
+    mlAdjustment: mlAdjustment ? mlAdjustment.toFixed(1) : '0',
     expectedValue: ev.toFixed(2),
     isRecommended: edge > 0,
     isDegen,
@@ -5481,6 +5510,22 @@ app.post('/api/jsonbin-create', async (req, res) => {
       error: result.error
     });
   }
+});
+
+// Force sync to JSONBin (useful for debugging)
+app.post('/api/jsonbin-sync', async (req, res) => {
+  if (!JSONBIN_API_KEY) {
+    return res.status(400).json({ success: false, error: 'JSONBIN_API_KEY not set' });
+  }
+
+  const result = await saveToJsonBin();
+  res.json({
+    success: result.success,
+    betsTracked: performanceData.bets.length,
+    pendingBets: performanceData.bets.filter(b => b.outcome === 'pending').length,
+    settledBets: performanceData.bets.filter(b => b.outcome !== 'pending').length,
+    ...result
+  });
 });
 
 // ML Model status endpoint
