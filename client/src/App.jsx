@@ -7,25 +7,35 @@ const API_BASE = import.meta.env.PROD ? '' : 'http://localhost:3001'
 // AUTHENTICATION
 // ============================================
 
-// Get stored password from localStorage
-const getStoredPassword = () => localStorage.getItem('shimi_password') || ''
+// Get stored auth token from localStorage
+const getStoredToken = () => localStorage.getItem('shimi_auth_token') || ''
+const getStoredUser = () => {
+  try {
+    return JSON.parse(localStorage.getItem('shimi_user') || 'null')
+  } catch {
+    return null
+  }
+}
 
 // Make authenticated API calls
 const authFetch = async (url, options = {}) => {
-  const password = getStoredPassword()
+  const token = getStoredToken()
   const headers = {
     ...options.headers,
     'Content-Type': 'application/json',
   }
-  if (password) {
-    headers['x-shimi-password'] = password
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
   }
   return fetch(url, { ...options, headers })
 }
 
-// Login Screen Component
+// Login/Register Screen Component
 const LoginScreen = ({ onLogin }) => {
+  const [mode, setMode] = useState('login') // 'login' or 'register'
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -34,19 +44,27 @@ const LoginScreen = ({ onLogin }) => {
     setLoading(true)
     setError('')
 
+    if (mode === 'register' && password !== confirmPassword) {
+      setError('Passwords do not match')
+      setLoading(false)
+      return
+    }
+
     try {
-      const res = await fetch(`${API_BASE}/api/auth/login`, {
+      const endpoint = mode === 'register' ? '/api/auth/register' : '/api/auth/login'
+      const res = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password })
+        body: JSON.stringify({ email, password })
       })
       const data = await res.json()
 
       if (data.success) {
-        localStorage.setItem('shimi_password', password)
-        onLogin()
+        localStorage.setItem('shimi_auth_token', data.token)
+        localStorage.setItem('shimi_user', JSON.stringify(data.user))
+        onLogin(data.user)
       } else {
-        setError('Invalid password')
+        setError(data.error || 'Authentication failed')
       }
     } catch (err) {
       setError('Connection failed')
@@ -58,20 +76,57 @@ const LoginScreen = ({ onLogin }) => {
   return (
     <div className="login-screen">
       <div className="login-card">
-        <h1 className="login-title">🎰 Shimi</h1>
-        <p className="login-subtitle">Enter password to access</p>
+        <h1 className="login-title">SHIMI</h1>
+        <p className="login-subtitle">Neural Trading System</p>
+
+        <div className="auth-tabs">
+          <button
+            className={`auth-tab ${mode === 'login' ? 'active' : ''}`}
+            onClick={() => { setMode('login'); setError('') }}
+          >
+            Login
+          </button>
+          <button
+            className={`auth-tab ${mode === 'register' ? 'active' : ''}`}
+            onClick={() => { setMode('register'); setError('') }}
+          >
+            Register
+          </button>
+        </div>
+
         <form onSubmit={handleSubmit}>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="Email"
+            className="login-input"
+            autoFocus
+            required
+          />
           <input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Password"
             className="login-input"
-            autoFocus
+            required
+            minLength={6}
           />
+          {mode === 'register' && (
+            <input
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="Confirm Password"
+              className="login-input"
+              required
+              minLength={6}
+            />
+          )}
           {error && <p className="login-error">{error}</p>}
           <button type="submit" className="login-button" disabled={loading}>
-            {loading ? 'Checking...' : 'Login'}
+            {loading ? 'Please wait...' : (mode === 'register' ? 'Create Account' : 'Login')}
           </button>
         </form>
       </div>
@@ -278,6 +333,20 @@ const formatCountdown = (ms) => {
   }
 }
 
+// Trading quotes for rotation in history sidebar
+const tradingQuotes = [
+  { text: "The market can stay irrational longer than you can stay solvent.", author: "John Maynard Keynes" },
+  { text: "Be fearful when others are greedy, greedy when others are fearful.", author: "Warren Buffett" },
+  { text: "The trend is your friend until the end when it bends.", author: "Ed Seykota" },
+  { text: "Cut your losses short and let your winners run.", author: "Jesse Livermore" },
+  { text: "Risk comes from not knowing what you're doing.", author: "Warren Buffett" },
+  { text: "In trading, the impossible happens about twice a year.", author: "Henri M. Simoes" },
+  { text: "Markets are never wrong, opinions often are.", author: "Jesse Livermore" },
+  { text: "The goal isn't to be right, it's to make money.", author: "Mark Minervini" },
+  { text: "It's not whether you're right or wrong, but how much you make when right.", author: "George Soros" },
+  { text: "The best trade is the one you don't make.", author: "Anonymous" },
+]
+
 // History Item - Shows bet with clear win/loss and profit/loss
 const HistoryItem = ({ bet, currentTime }) => {
   const totalCostCents = bet.totalCost || (bet.count * bet.price) || 0
@@ -415,6 +484,7 @@ function App() {
   // Auth state
   const [needsLogin, setNeedsLogin] = useState(null) // null = checking, true = show login, false = logged in
   const [checkingAuth, setCheckingAuth] = useState(true)
+  const [currentUser, setCurrentUser] = useState(getStoredUser())
 
   const [tab, setTab] = useState('dashboard')
   const [opportunities, setOpportunities] = useState([])
@@ -445,20 +515,34 @@ function App() {
   useEffect(() => {
     const checkAuth = async () => {
       try {
-        const password = getStoredPassword()
-        const res = await fetch(`${API_BASE}/api/auth/status`, {
-          headers: password ? { 'x-shimi-password': password } : {}
-        })
-        const data = await res.json()
-
-        if (data.requiresAuth && !data.isAuthenticated) {
+        const token = getStoredToken()
+        if (!token) {
+          // No token stored, require login
           setNeedsLogin(true)
-        } else {
+          setCheckingAuth(false)
+          return
+        }
+
+        // Verify token is still valid
+        const res = await fetch(`${API_BASE}/api/auth/me`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+
+        if (res.ok) {
+          const data = await res.json()
+          setCurrentUser(data.user)
           setNeedsLogin(false)
+        } else {
+          // Token invalid, clear and require login
+          localStorage.removeItem('shimi_auth_token')
+          localStorage.removeItem('shimi_user')
+          setCurrentUser(null)
+          setNeedsLogin(true)
         }
       } catch (err) {
-        // If server is down, try to proceed anyway
-        setNeedsLogin(false)
+        // If server is down, check if we have stored credentials
+        const token = getStoredToken()
+        setNeedsLogin(!token)
       } finally {
         setCheckingAuth(false)
       }
@@ -493,6 +577,7 @@ function App() {
   const [pinPrompt, setPinPrompt] = useState(null) // { profileId, profileName }
   const [pinInput, setPinInput] = useState('')
   const [pinError, setPinError] = useState('')
+  const [quoteIndex, setQuoteIndex] = useState(Math.floor(Math.random() * tradingQuotes.length))
   const [scaleInSettings, setScaleInSettings] = useState({
     enabled: true,
     minProbabilityIncrease: 15,
@@ -747,6 +832,19 @@ function App() {
         fetchProfiles()
         fetchOpportunities()
         fetchPortfolio()
+
+        // Auto-link profile to user account if logged in
+        const token = getStoredToken()
+        if (token && currentUser) {
+          try {
+            await authFetch(`${API_BASE}/api/auth/link-profile`, {
+              method: 'POST',
+              body: JSON.stringify({ profileId })
+            })
+          } catch (e) {
+            // Silently fail - linking is optional
+          }
+        }
       } else if (data.requiresPin) {
         // Profile requires PIN - show prompt
         const profile = profiles.find(p => p.id === profileId)
@@ -831,11 +929,19 @@ function App() {
     fetchRiskSettings()     // Get saved risk settings
     checkAuth()
 
-    // Refresh opportunities every 10 seconds (includes prices)
+    // Refresh opportunities every 10 seconds (includes prices and risk/exposure)
     const oppInterval = setInterval(fetchOpportunities, 10000)
 
     // Refresh portfolio every 10 seconds (faster balance updates)
     const portfolioInterval = setInterval(fetchPortfolio, 10000)
+
+    // Faster exposure updates: poll every 3 seconds when there are pending bets
+    const fastExposureInterval = setInterval(() => {
+      const hasPendingBets = betHistory.some(b => b.outcome !== 'won' && b.outcome !== 'lost')
+      if (hasPendingBets) {
+        fetchOpportunities() // This updates exposure/risk
+      }
+    }, 3000)
 
     // Refresh performance stats every 60 seconds
     const perfInterval = setInterval(fetchPerformance, 60000)
@@ -850,6 +956,7 @@ function App() {
       clearInterval(portfolioInterval)
       clearInterval(perfInterval)
       clearInterval(tickerTimeInterval)
+      clearInterval(fastExposureInterval)
     }
   }, []) // Empty dependency - only runs on mount
 
@@ -861,6 +968,14 @@ function App() {
       return () => clearInterval(scanInterval)
     }
   }, [autoBetEnabled, fetchScanStatus])
+
+  // Rotate trading quotes every 30 seconds
+  useEffect(() => {
+    const quoteInterval = setInterval(() => {
+      setQuoteIndex(prev => (prev + 1) % tradingQuotes.length)
+    }, 30000)
+    return () => clearInterval(quoteInterval)
+  }, [])
 
   // Place a bet
   const placeBet = async (opp, qty = 1) => {
@@ -1228,7 +1343,10 @@ function App() {
 
   // Show login screen if authentication required
   if (needsLogin) {
-    return <LoginScreen onLogin={() => setNeedsLogin(false)} />
+    return <LoginScreen onLogin={(user) => {
+      setCurrentUser(user)
+      setNeedsLogin(false)
+    }} />
   }
 
   return (
@@ -1300,6 +1418,22 @@ function App() {
             <span className="status-dot"></span>
             <span>{isAuthenticated ? 'Connected to Kalshi' : 'Simulation Mode'}</span>
           </div>
+          {currentUser && (
+            <div className="user-info-sidebar">
+              <span className="user-email">{currentUser.email}</span>
+              <button
+                className="logout-btn"
+                onClick={() => {
+                  localStorage.removeItem('shimi_auth_token')
+                  localStorage.removeItem('shimi_user')
+                  setCurrentUser(null)
+                  setNeedsLogin(true)
+                }}
+              >
+                Logout
+              </button>
+            </div>
+          )}
         </div>
       </aside>
 
@@ -1334,9 +1468,9 @@ function App() {
               <span className="cyber-bracket">]</span>
             </div>
             <div className="cyber-center">
-              <span className="cyber-divider">//</span>
+              <span className="cyber-divider">\\</span>
               <span className="cyber-title">SHIMI NEURAL TRADING</span>
-              <span className="cyber-divider">//</span>
+              <span className="cyber-divider">\\</span>
             </div>
             <div className="cyber-right">
               <span className="cyber-bracket">[</span>
@@ -1647,8 +1781,8 @@ function App() {
 
                 <div className="sidebar-quote">
                   <div className="quote-marks">"</div>
-                  <p className="quote-text">The market can stay irrational longer than you can stay solvent.</p>
-                  <span className="quote-author">— John Maynard Keynes</span>
+                  <p className="quote-text">{tradingQuotes[quoteIndex].text}</p>
+                  <span className="quote-author">— {tradingQuotes[quoteIndex].author}</span>
                 </div>
 
                 <div className="sidebar-decoration">

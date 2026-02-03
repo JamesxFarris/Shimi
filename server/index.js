@@ -6,6 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { parseStringPromise } from 'xml2js';
+import * as auth from './auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -3114,6 +3115,7 @@ app.post('/api/settings/risk', (req, res) => {
   // Flat structure from simplified UI
   if (maxPerBet !== undefined) {
     const val = Math.max(10, Math.min(10000, parseInt(maxPerBet) || 200));
+    config.riskLimits.maxPerBet = val; // Top-level for client reads
     config.riskLimits.hourly.maxPerBet = val;
     config.riskLimits.other.maxPerBet = val;
   }
@@ -4273,7 +4275,10 @@ async function runAutoBet() {
     // Combine and filter using aggressiveMode settings
     const aggMode = config.aggressiveMode || { enabled: true, minPrice: 26, allowNightTrading: true };
     const isAggressive = aggMode.enabled !== false;
-    const minPrice = isAggressive ? (aggMode.minPrice || 26) : 41;
+    // Hard minimum of 40 cents - higher priced bets = lower variance, more consistent wins
+    const ABSOLUTE_MIN_PRICE = 40;
+    const modeMinPrice = isAggressive ? (aggMode.minPrice || 26) : 41;
+    const minPrice = Math.max(ABSOLUTE_MIN_PRICE, modeMinPrice);
     const hourNow = new Date().getHours();
     const isNightTime = hourNow >= 0 && hourNow < 6;
     // Always allow night trading in both modes (user preference)
@@ -4616,6 +4621,7 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
 
   if (enabled && !config.autoBetEnabled) {
     config.autoBetEnabled = true;
+    saveToActiveProfile(); // Persist auto-bet state
 
     runAutoBet();
     autoBetInterval = setInterval(runAutoBet, intervalSeconds * 1000);
@@ -4623,21 +4629,22 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
     res.json({
       success: true,
       message: `Auto-betting enabled (every ${intervalSeconds}s)`,
-      enabled: true
+      autoBetEnabled: true
     });
   } else if (!enabled && config.autoBetEnabled) {
     config.autoBetEnabled = false;
+    saveToActiveProfile(); // Persist auto-bet state
     if (autoBetInterval) {
       clearInterval(autoBetInterval);
       autoBetInterval = null;
     }
 
-    res.json({ success: true, message: 'Auto-betting disabled', enabled: false });
+    res.json({ success: true, message: 'Auto-betting disabled', autoBetEnabled: false });
   } else {
     res.json({
       success: true,
       message: `Auto-betting ${config.autoBetEnabled ? 'running' : 'stopped'}`,
-      enabled: config.autoBetEnabled
+      autoBetEnabled: config.autoBetEnabled
     });
   }
 });
@@ -4646,12 +4653,122 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
 app.get('/api/auto-bet/status', (req, res) => {
   res.json({
     success: true,
-    enabled: config.autoBetEnabled,
+    autoBetEnabled: config.autoBetEnabled,
     ...lastScanStatus
   });
 });
 
-// Auth endpoints
+// ============================================
+// USER AUTHENTICATION (Email/Password)
+// ============================================
+
+// Register new user account
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ success: false, error: 'Email and password required' });
+    }
+
+    const result = await auth.registerUser(email, password);
+    res.json({
+      success: true,
+      message: 'Account created successfully',
+      token: result.token,
+      user: { id: result.userId, email: result.email }
+    });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+// Login with email/password
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    // Support legacy password-only login for backwards compatibility
+    if (password && !email) {
+      // Legacy mode - just check if password is not empty (old behavior)
+      res.json({ success: true, message: 'Legacy login' });
+      return;
+    }
+
+    if (!email || !password) {
+      return res.status(400).json({ success: false, error: 'Email and password required' });
+    }
+
+    const result = await auth.loginUser(email, password);
+
+    // If user has a linked profile, auto-activate it
+    if (result.profileId && profiles[result.profileId]) {
+      activeProfileId = result.profileId;
+      restoreActiveProfile();
+      console.log(`🔐 Auto-activated profile for ${email}`);
+    }
+
+    res.json({
+      success: true,
+      message: 'Logged in successfully',
+      token: result.token,
+      user: { id: result.userId, email: result.email, profileId: result.profileId }
+    });
+  } catch (error) {
+    res.status(401).json({ success: false, error: error.message });
+  }
+});
+
+// Get current user info
+app.get('/api/auth/me', (req, res) => {
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.replace('Bearer ', '');
+
+  if (!token) {
+    return res.status(401).json({ success: false, error: 'Not authenticated' });
+  }
+
+  const userId = auth.verifyToken(token);
+  if (!userId) {
+    return res.status(401).json({ success: false, error: 'Invalid token' });
+  }
+
+  const userInfo = auth.getUserInfo(userId);
+  if (!userInfo) {
+    return res.status(404).json({ success: false, error: 'User not found' });
+  }
+
+  res.json({
+    success: true,
+    user: userInfo,
+    activeProfile: activeProfileId ? profiles[activeProfileId]?.name : null
+  });
+});
+
+// Link profile to user account
+app.post('/api/auth/link-profile', (req, res) => {
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.replace('Bearer ', '');
+
+  if (!token) {
+    return res.status(401).json({ success: false, error: 'Not authenticated' });
+  }
+
+  const userId = auth.verifyToken(token);
+  if (!userId) {
+    return res.status(401).json({ success: false, error: 'Invalid token' });
+  }
+
+  const { profileId } = req.body;
+  if (!profileId || !profiles[profileId]) {
+    return res.status(400).json({ success: false, error: 'Invalid profile ID' });
+  }
+
+  auth.linkProfileToUser(userId, profileId);
+  res.json({ success: true, message: 'Profile linked to account' });
+});
+
+// Kalshi API auth endpoints
 app.post('/api/auth/configure', async (req, res) => {
   try {
     const { apiKeyId, privateKey } = req.body;

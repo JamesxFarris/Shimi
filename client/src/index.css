@@ -732,9 +732,21 @@ body {
 }
 
 .cyber-divider {
-  color: var(--neon-cyan);
-  opacity: 0.4;
+  color: var(--neon-magenta);
+  opacity: 0.8;
   font-weight: 700;
+  animation: dividerPulse 2s ease-in-out infinite;
+}
+
+@keyframes dividerPulse {
+  0%, 100% {
+    opacity: 0.5;
+    text-shadow: 0 0 5px rgba(255, 0, 170, 0.3);
+  }
+  50% {
+    opacity: 1;
+    text-shadow: 0 0 15px rgba(255, 0, 170, 0.8), 0 0 25px rgba(255, 0, 170, 0.4);
+  }
 }
 
 .cyber-title {
@@ -5439,4 +5451,87 @@ body {
 .login-button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* Auth tabs for login/register toggle */
+.auth-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 24px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+}
+
+.auth-tab {
+  flex: 1;
+  padding: 12px 16px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  background: var(--bg-secondary);
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.auth-tab:first-child {
+  border-right: 1px solid var(--border-color);
+}
+
+.auth-tab:hover:not(.active) {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+}
+
+.auth-tab.active {
+  background: linear-gradient(135deg, rgba(0, 255, 200, 0.15) 0%, rgba(0, 255, 136, 0.15) 100%);
+  color: var(--neon-cyan);
+  border-color: var(--neon-cyan);
+}
+
+/* User info in sidebar */
+.user-info-sidebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  margin-top: 10px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+}
+
+.user-email {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 120px;
+}
+
+.logout-btn {
+  padding: 4px 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.logout-btn:hover {
+  background: rgba(255, 68, 68, 0.1);
+  border-color: var(--accent-red);
+  color: var(--accent-red);
 }
