@@ -76,8 +76,110 @@ let config = {
   }
 };
 
+// ============================================
+// PROFILES SYSTEM
+// ============================================
+const PROFILES_FILE = path.join(__dirname, 'profiles.json');
+let profiles = {};
+let activeProfileId = null;
+
+// Load profiles from disk
+function loadProfiles() {
+  try {
+    if (fs.existsSync(PROFILES_FILE)) {
+      const data = JSON.parse(fs.readFileSync(PROFILES_FILE, 'utf8'));
+      profiles = data.profiles || {};
+      activeProfileId = data.activeProfileId || null;
+      console.log(`👥 Loaded ${Object.keys(profiles).length} profiles`);
+      return true;
+    }
+  } catch (err) {
+    console.log('Could not load profiles:', err.message);
+  }
+  return false;
+}
+
+// Save profiles to disk
+function saveProfiles() {
+  try {
+    fs.writeFileSync(PROFILES_FILE, JSON.stringify({
+      profiles,
+      activeProfileId,
+      savedAt: new Date().toISOString()
+    }, null, 2));
+  } catch (err) {
+    console.log('Could not save profiles:', err.message);
+  }
+}
+
+// Restore active profile on startup
+function restoreActiveProfile() {
+  if (activeProfileId && profiles[activeProfileId]) {
+    const profile = profiles[activeProfileId];
+    console.log(`🔄 Restoring active profile: ${profile.name}`);
+
+    // Restore Kalshi credentials
+    if (profile.kalshiApiKeyId && profile.kalshiPrivateKey) {
+      config.apiKeyId = profile.kalshiApiKeyId;
+      config.privateKey = profile.kalshiPrivateKey;
+      config.isAuthenticated = true;
+      console.log(`🔑 Restored Kalshi credentials for ${profile.name}`);
+    }
+
+    // Restore settings
+    if (profile.settings) {
+      if (profile.settings.riskLimits) {
+        config.riskLimits = { ...config.riskLimits, ...profile.settings.riskLimits };
+      }
+      if (profile.settings.scaleIn) {
+        config.scaleIn = { ...config.scaleIn, ...profile.settings.scaleIn };
+      }
+      if (profile.settings.degenMode) {
+        config.degenMode = { ...config.degenMode, ...profile.settings.degenMode };
+      }
+      if (profile.settings.aggressiveMode) {
+        config.aggressiveMode = { ...config.aggressiveMode, ...profile.settings.aggressiveMode };
+      }
+      if (profile.settings.autoBetEnabled !== undefined) {
+        config.autoBetEnabled = profile.settings.autoBetEnabled;
+      }
+    }
+
+    // Restore bet history
+    if (profile.betHistory && profile.betHistory.length > 0) {
+      betHistory = profile.betHistory;
+      console.log(`📊 Restored ${betHistory.length} bets from profile`);
+    }
+
+    return true;
+  }
+  return false;
+}
+
+// Save current state to active profile
+function saveToActiveProfile() {
+  if (activeProfileId && profiles[activeProfileId]) {
+    const profile = profiles[activeProfileId];
+    profile.settings = {
+      riskLimits: config.riskLimits,
+      scaleIn: config.scaleIn,
+      degenMode: config.degenMode,
+      aggressiveMode: config.aggressiveMode,
+      autoBetEnabled: config.autoBetEnabled
+    };
+    profile.betHistory = betHistory;
+    profile.lastActive = new Date().toISOString();
+    saveProfiles();
+  }
+}
+
+// Initialize state BEFORE loading profiles (profiles use these)
 let betHistory = [];
 let portfolio = { balance: 0, positions: [] };
+
+// Load profiles on startup
+loadProfiles();
+restoreActiveProfile();
 
 // ============================================
 // PERFORMANCE TRACKING
@@ -3059,6 +3161,166 @@ app.post('/api/settings/aggressive-mode', (req, res) => {
     mode: mode,
     message: `Trading mode set to ${mode}`
   });
+});
+
+// ============================================
+// PROFILE ENDPOINTS
+// ============================================
+
+// Get all profiles
+app.get('/api/profiles', (req, res) => {
+  const profileList = Object.entries(profiles).map(([id, p]) => ({
+    id,
+    name: p.name,
+    hasCredentials: !!(p.kalshiApiKeyId && p.kalshiPrivateKey),
+    isActive: id === activeProfileId,
+    lastActive: p.lastActive,
+    createdAt: p.createdAt
+  }));
+
+  res.json({
+    success: true,
+    profiles: profileList,
+    activeProfileId
+  });
+});
+
+// Create new profile
+app.post('/api/profiles', (req, res) => {
+  const { name, pin } = req.body;
+
+  if (!name || name.length < 2) {
+    return res.status(400).json({ success: false, error: 'Name must be at least 2 characters' });
+  }
+
+  const id = `profile_${Date.now()}`;
+  profiles[id] = {
+    name,
+    pin: pin || null,
+    kalshiApiKeyId: null,
+    kalshiPrivateKey: null,
+    settings: {
+      riskLimits: { ...config.riskLimits },
+      scaleIn: { ...config.scaleIn },
+      degenMode: { ...config.degenMode },
+      aggressiveMode: { ...config.aggressiveMode }
+    },
+    betHistory: [],
+    createdAt: new Date().toISOString(),
+    lastActive: new Date().toISOString()
+  };
+
+  saveProfiles();
+
+  res.json({
+    success: true,
+    profileId: id,
+    message: `Profile "${name}" created`
+  });
+});
+
+// Switch to profile
+app.post('/api/profiles/:id/switch', async (req, res) => {
+  const { id } = req.params;
+  const { pin } = req.body;
+
+  if (!profiles[id]) {
+    return res.status(404).json({ success: false, error: 'Profile not found' });
+  }
+
+  const profile = profiles[id];
+
+  // Check PIN if set
+  if (profile.pin && profile.pin !== pin) {
+    return res.status(401).json({ success: false, error: 'Invalid PIN' });
+  }
+
+  // Save current profile state before switching
+  if (activeProfileId && profiles[activeProfileId]) {
+    saveToActiveProfile();
+  }
+
+  // Switch to new profile
+  activeProfileId = id;
+
+  // Load profile credentials
+  if (profile.kalshiApiKeyId && profile.kalshiPrivateKey) {
+    config.apiKeyId = profile.kalshiApiKeyId;
+    config.privateKey = profile.kalshiPrivateKey;
+    config.isAuthenticated = true;
+
+    // Verify credentials with Kalshi
+    try {
+      const balanceData = await kalshiRequest('GET', '/portfolio/balance');
+      portfolio.balance = balanceData.balance / 100;
+      console.log(`✅ Kalshi verified for ${profile.name}! Balance: $${portfolio.balance.toFixed(2)}`);
+    } catch (err) {
+      console.log(`⚠️ Kalshi verification failed: ${err.message}`);
+    }
+  } else {
+    config.isAuthenticated = false;
+  }
+
+  // Restore settings
+  if (profile.settings) {
+    if (profile.settings.riskLimits) config.riskLimits = { ...config.riskLimits, ...profile.settings.riskLimits };
+    if (profile.settings.scaleIn) config.scaleIn = { ...config.scaleIn, ...profile.settings.scaleIn };
+    if (profile.settings.degenMode) config.degenMode = { ...config.degenMode, ...profile.settings.degenMode };
+    if (profile.settings.aggressiveMode) config.aggressiveMode = { ...config.aggressiveMode, ...profile.settings.aggressiveMode };
+  }
+
+  // Restore bet history
+  betHistory = profile.betHistory || [];
+
+  // Update last active
+  profile.lastActive = new Date().toISOString();
+  saveProfiles();
+
+  // Restore auto-bet if was enabled
+  if (profile.settings?.autoBetEnabled && !config.autoBetEnabled) {
+    config.autoBetEnabled = true;
+    console.log(`🤖 Restoring auto-bet for ${profile.name}...`);
+  }
+
+  res.json({
+    success: true,
+    profile: {
+      id,
+      name: profile.name,
+      hasCredentials: config.isAuthenticated
+    },
+    balance: portfolio.balance,
+    isAuthenticated: config.isAuthenticated
+  });
+});
+
+// Save credentials to profile
+app.post('/api/profiles/save-credentials', (req, res) => {
+  if (!activeProfileId || !profiles[activeProfileId]) {
+    return res.status(400).json({ success: false, error: 'No active profile' });
+  }
+
+  profiles[activeProfileId].kalshiApiKeyId = config.apiKeyId;
+  profiles[activeProfileId].kalshiPrivateKey = config.privateKey;
+  saveProfiles();
+
+  res.json({ success: true, message: 'Credentials saved to profile' });
+});
+
+// Logout from profile
+app.post('/api/profiles/logout', (req, res) => {
+  if (activeProfileId && profiles[activeProfileId]) {
+    saveToActiveProfile();
+  }
+
+  // Clear credentials but keep profile selected
+  config.apiKeyId = null;
+  config.privateKey = null;
+  config.isAuthenticated = false;
+  config.autoBetEnabled = false;
+  betHistory = [];
+
+  res.json({ success: true, message: 'Logged out' });
 });
 
 // ============================================
