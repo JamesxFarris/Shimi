@@ -89,7 +89,9 @@ app.use('/api', (req, res, next) => {
     '/jsonbin-sync',
     '/ml-model',
     '/import-fills',
-    '/reset-tracking'
+    '/reset-tracking',
+    '/fix-summary',
+    '/deduplicate-bets'
   ];
   if (publicPaths.includes(req.path)) {
     return next();
@@ -6056,6 +6058,48 @@ app.post('/api/deduplicate-bets', async (req, res) => {
     after: uniqueBets.length,
     removed,
     summary: performanceData.summary
+  });
+});
+
+// Force recalculate all summary stats from bets array
+// Use this when summary is out of sync with actual data
+app.post('/api/fix-summary', async (req, res) => {
+  const bets = performanceData.bets || [];
+
+  console.log(`🔧 Fixing summary... ${bets.length} bets in array`);
+
+  // Completely rebuild summary from scratch
+  const wins = bets.filter(b => b.outcome === 'won');
+  const losses = bets.filter(b => b.outcome === 'lost');
+  const pending = bets.filter(b => b.outcome === 'pending' || !b.outcome);
+
+  performanceData.summary = {
+    totalBets: bets.length,
+    wins: wins.length,
+    losses: losses.length,
+    pending: pending.length,
+    totalWagered: bets.reduce((sum, b) => sum + (b.totalCost || 0), 0),
+    totalProfit: wins.reduce((sum, b) => sum + (b.actualProfit || 0), 0) -
+                 losses.reduce((sum, b) => sum + (b.totalCost || 0), 0),
+    winRate: (wins.length + losses.length) > 0
+      ? (wins.length / (wins.length + losses.length)) * 100
+      : 0,
+    avgPredictedProb: bets.length > 0
+      ? bets.reduce((sum, b) => sum + (b.predictedProb || 50), 0) / bets.length
+      : 0,
+    calibration: {}
+  };
+
+  // Save to JSONBin
+  await saveToJsonBin();
+
+  console.log(`✅ Fixed: ${bets.length} total, ${wins.length} wins, ${losses.length} losses, ${pending.length} pending`);
+
+  res.json({
+    success: true,
+    message: 'Summary rebuilt from bets array',
+    summary: performanceData.summary,
+    betCount: bets.length
   });
 });
 
