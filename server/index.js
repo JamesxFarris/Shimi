@@ -114,12 +114,10 @@ let config = {
   minEdge: 3, // 3% minimum - lowered for more action
   autoBetEnabled: false,
   // Risk management settings (in cents)
-  // Note: Total exposure = maxPer15Min + maxPerHourly (no separate maxTotal)
   riskLimits: {
     maxPerBet: 500,      // $5.00 max per bet
     maxPerToken: 500,    // $5.00 max per token
-    maxPer15Min: 1000,   // $10.00 max for 15-minute markets
-    maxPerHourly: 1000   // $10.00 max for hourly markets (total = $20)
+    maxTotal: 1500       // $15.00 total max exposure
   },
   // Scale-in settings: add to position when probability improves
   scaleIn: {
@@ -241,7 +239,7 @@ function saveSettings() {
       savedAt: new Date().toISOString()
     };
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
-    console.log(`💾 Saved settings: $${(config.riskLimits.maxPer15Min + config.riskLimits.maxPerHourly) / 100} max exposure, degen=${config.degenMode.enabled}`);
+    console.log(`💾 Saved settings: $${config.riskLimits.maxTotal / 100} max exposure, degen=${config.degenMode.enabled}`);
   } catch (err) {
     console.log('Could not save settings:', err.message);
   }
@@ -2815,11 +2813,8 @@ function calculateIndexVolatility(history) {
 // ============================================
 
 // Risk limits are now configurable via config.riskLimits
-// Total max = sum of timeframe limits
 function getMaxRisk() {
-  const max15Min = config.riskLimits.maxPer15Min || 1000;
-  const maxHourly = config.riskLimits.maxPerHourly || 1000;
-  return max15Min + maxHourly;
+  return config.riskLimits.maxTotal || 1500;
 }
 
 function getMaxPerBet() {
@@ -2866,10 +2861,7 @@ function calculateKellyBet(probability, priceCents, bankrollCents, maxBetCents) 
 }
 
 function getMaxTotalRisk() {
-  // Total exposure = sum of timeframe limits
-  const max15Min = config.riskLimits.maxPer15Min || 1000;
-  const maxHourly = config.riskLimits.maxPerHourly || 1000;
-  return max15Min + maxHourly;
+  return config.riskLimits.maxTotal || 1500;
 }
 
 // Get current total exposure - counts Kalshi positions + pending bets
@@ -3072,25 +3064,14 @@ function getExposureByTimeframe() {
   return timeframeExposure;
 }
 
-// Get max allowed per timeframe
+// Get max allowed (simplified - no more timeframe limits)
 function getMaxPerTimeframe(timeframe) {
-  if (timeframe === 'hourly') {
-    return config.riskLimits.maxPerHourly || 1000; // Default $10
-  }
-  return config.riskLimits.maxPer15Min || 1000; // Default $10
+  return config.riskLimits.maxTotal || 1500;
 }
 
-// Get remaining budget for a specific timeframe
+// Get remaining budget (simplified - just use total remaining)
 function getRemainingTimeframeBudget(ticker) {
-  const timeframe = getTimeframeFromTicker(ticker);
-  const timeframeExposure = getExposureByTimeframe();
-  const currentExposure = timeframeExposure[timeframe] || 0;
-  const maxPerTimeframe = getMaxPerTimeframe(timeframe);
-  const remaining = Math.max(0, maxPerTimeframe - currentExposure);
-
-  console.log(`   ⏱️ Timeframe ${timeframe}: exposure=$${(currentExposure/100).toFixed(2)}, max=$${(maxPerTimeframe/100).toFixed(2)}, remaining=$${(remaining/100).toFixed(2)}`);
-
-  return remaining;
+  return getRemainingRiskBudget();
 }
 
 // ============================================
@@ -4050,17 +4031,14 @@ app.get('/api/crypto/opportunities', async (req, res) => {
   }
 });
 
-// Get ALL opportunities (crypto + index) - unified endpoint
+// Get ALL opportunities (crypto only) - unified endpoint
 // Add ?showAll=true to include markets without edge (for debugging)
 app.get('/api/opportunities/all', async (req, res) => {
   try {
     const showAll = req.query.showAll === 'true';
 
-    // Fetch both market types in parallel
-    const [cryptoMarkets, indexMarkets] = await Promise.all([
-      fetchCryptoMarkets(),
-      fetchIndexMarkets()
-    ]);
+    // Fetch crypto markets only
+    const cryptoMarkets = await fetchCryptoMarkets();
 
     // Analyze crypto opportunities
     const cryptoOpps = cryptoMarkets
@@ -4081,51 +4059,34 @@ app.get('/api/opportunities/all', async (req, res) => {
         return m;
       });
 
-    // Analyze index opportunities
-    const indexOpps = indexMarkets
-      .map(m => analyzeIndexMarket(parseIndexMarket(m)))
-      .filter(m => m !== null)
-      .map(m => {
-        const winProb = parseFloat(m.winProbability) || 0;
-        m.isRecommended = m.edge >= 0.5 && winProb >= 50;
-        if (!m.isRecommended) {
-          if (m.edge < 0.5) m.filterReason = `No edge (${parseFloat(m.edge || 0).toFixed(1)}%)`;
-          else if (winProb < 50) m.filterReason = `Low prob (${winProb.toFixed(0)}%)`;
-        }
-        return m;
-      });
+    // Combine all analyzed markets (just crypto now)
+    const allAnalyzed = cryptoOpps;
 
-    // Combine all analyzed markets
-    const allAnalyzed = [...cryptoOpps, ...indexOpps];
-
-    // ALWAYS include BTC, ETH, SOL - pick BEST strike per token+timeframe
-    // Hourly markets have multiple strike prices - we want the one with best edge
+    // ALWAYS include BTC, ETH, SOL - pick BEST strike per token
     const coreTokens = ['BTC', 'ETH', 'SOL'];
-    const timeframes = ['15min', 'hourly'];
     const coreMarkets = [];
 
     for (const token of coreTokens) {
-      for (const timeframe of timeframes) {
-        // Find ALL markets for this token+timeframe
-        const tokenTimeframeMarkets = cryptoOpps.filter(m =>
-          (m.cryptoType === token || m.assetType === token) &&
-          (m.marketTimeframe === timeframe)
-        );
+      // Find ALL markets for this token
+      const tokenMarkets = cryptoOpps.filter(m =>
+        (m.cryptoType === token || m.assetType === token)
+      );
 
-        if (tokenTimeframeMarkets.length > 0) {
-          // Pick the one with highest edge (best opportunity)
-          const bestMarket = tokenTimeframeMarkets.reduce((best, current) => {
-            const bestEdge = parseFloat(best.edge) || 0;
-            const currentEdge = parseFloat(current.edge) || 0;
-            return currentEdge > bestEdge ? current : best;
-          });
+      if (tokenMarkets.length > 0) {
+        // Pick the one with highest edge (best opportunity)
+        const bestMarket = tokenMarkets.reduce((best, current) => {
+          const bestEdge = parseFloat(best.edge) || 0;
+          const currentEdge = parseFloat(current.edge) || 0;
+          return currentEdge > bestEdge ? current : best;
+        });
 
-          // Mark as locked if not recommended
-          bestMarket.isLocked = !bestMarket.isRecommended;
-          bestMarket.isCore = true;
-          coreMarkets.push(bestMarket);
-        } else if (timeframe === '15min') {
-          // Only create placeholder for 15min (don't clutter with hourly placeholders)
+        // Mark as locked if not recommended
+        bestMarket.isLocked = !bestMarket.isRecommended;
+        bestMarket.isCore = true;
+        coreMarkets.push(bestMarket);
+      } else {
+        // Create placeholder for 15min
+          const price = cryptoPrices[token]?.price || 0;
           const price = cryptoPrices[token]?.price || 0;
           coreMarkets.push({
             ticker: `KX${token}15M-PLACEHOLDER`,
@@ -4148,7 +4109,6 @@ app.get('/api/opportunities/all', async (req, res) => {
             filterReason: 'No signal'
           });
         }
-        // Skip hourly placeholder if no markets - don't want empty hourly cards
       }
     }
 
@@ -4161,17 +4121,12 @@ app.get('/api/opportunities/all', async (req, res) => {
       !coreTokens.includes(m.cryptoType) && !coreTokens.includes(m.assetType)
     );
 
-    // Core markets first (BTC, ETH, SOL - both 15min and hourly), then other recommended
+    // Core markets first (BTC, ETH, SOL), then other recommended
     const allOpportunities = [...coreMarkets, ...nonCoreRecommended]
       .sort((a, b) => {
         // Core markets first
         if (a.isCore && !b.isCore) return -1;
         if (!a.isCore && b.isCore) return 1;
-        // Then by timeframe (15min before hourly for same token)
-        if (a.isCore && b.isCore && a.cryptoType === b.cryptoType) {
-          if (a.marketTimeframe === '15min' && b.marketTimeframe === 'hourly') return -1;
-          if (a.marketTimeframe === 'hourly' && b.marketTimeframe === '15min') return 1;
-        }
         // Then by recommended status
         if (a.isRecommended && !b.isRecommended) return -1;
         if (!a.isRecommended && b.isRecommended) return 1;
@@ -4229,12 +4184,7 @@ app.get('/api/opportunities/all', async (req, res) => {
         currentDollars: (riskByType.total / 100).toFixed(2),
         maxDollars: (getMaxTotalRisk() / 100).toFixed(2),
         remainingDollars: (getTotalRemainingBudget() / 100).toFixed(2),
-        positionCount: portfolio.positions?.length || 0,
-        timeframeExposure: getExposureByTimeframe(),
-        timeframeLimits: {
-          '15min': config.riskLimits.maxPer15Min || 1000,
-          'hourly': config.riskLimits.maxPerHourly || 1000
-        }
+        positionCount: portfolio.positions?.length || 0
       },
       opportunities: allOpportunities
     });
@@ -4331,21 +4281,17 @@ app.get('/api/settings/risk', (req, res) => {
 });
 
 // Update risk settings
-// Note: Total exposure = maxPer15Min + maxPerHourly (calculated, not stored)
 app.post('/api/settings/risk', (req, res) => {
-  const { maxPerBet, maxPerToken, maxPer15Min, maxPerHourly } = req.body;
+  const { maxPerBet, maxPerToken, maxTotal } = req.body;
 
   if (maxPerBet !== undefined) {
-    config.riskLimits.maxPerBet = Math.max(10, Math.min(1000, parseInt(maxPerBet) || 200));
+    config.riskLimits.maxPerBet = Math.max(10, Math.min(1000, parseInt(maxPerBet) || 500));
   }
   if (maxPerToken !== undefined) {
     config.riskLimits.maxPerToken = Math.max(100, Math.min(5000, parseInt(maxPerToken) || 500));
   }
-  if (maxPer15Min !== undefined) {
-    config.riskLimits.maxPer15Min = Math.max(100, Math.min(5000, parseInt(maxPer15Min) || 1000));
-  }
-  if (maxPerHourly !== undefined) {
-    config.riskLimits.maxPerHourly = Math.max(100, Math.min(5000, parseInt(maxPerHourly) || 1000));
+  if (maxTotal !== undefined) {
+    config.riskLimits.maxTotal = Math.max(100, Math.min(10000, parseInt(maxTotal) || 1500));
   }
 
   // Persist to disk
@@ -4810,11 +4756,8 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       }
     }
 
-    // Fetch both crypto and index markets
-    const [cryptoMarkets, indexMarkets] = await Promise.all([
-      fetchCryptoMarkets(),
-      fetchIndexMarkets()
-    ]);
+    // Fetch crypto markets only
+    const cryptoMarkets = await fetchCryptoMarkets();
     const now = Date.now();
 
     // Clean up old bets from tracking (older than 30 min)
@@ -4832,12 +4775,8 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
         return analyzed;
       });
 
-    // Analyze index opportunities
-    const indexOpps = indexMarkets
-      .map(m => analyzeIndexMarket(parseIndexMarket(m)));
-
-    // Combine and filter
-    const opportunities = [...cryptoOpps, ...indexOpps]
+    // Filter
+    const opportunities = cryptoOpps
       .filter(m => {
         if (m === null) return false;
         // REQUIRE 55%+ WIN PROBABILITY for auto-betting (lowered from 60% for more volume)
@@ -4858,7 +4797,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       // SORT BY WIN PROBABILITY (safest bets first)
       .sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
 
-    const totalScanned = cryptoMarkets.length + indexMarkets.length;
+    const totalScanned = cryptoMarkets.length;
 
     if (opportunities.length === 0) {
       return res.json({
@@ -5207,13 +5146,9 @@ async function runAutoBet() {
 
     // Force fresh market data
     marketCache.lastFetch = 0;
-    indexMarketCache.lastFetch = 0;
 
-    // Fetch both crypto and index markets
-    const [cryptoMarkets, indexMarkets] = await Promise.all([
-      fetchCryptoMarkets(),
-      fetchIndexMarkets()
-    ]);
+    // Fetch crypto markets only (removed hourly/index markets)
+    const cryptoMarkets = await fetchCryptoMarkets();
     const now = Date.now();
 
     // Clean up old bets (remove bets older than 30 minutes)
@@ -5223,12 +5158,12 @@ async function runAutoBet() {
       }
     }
 
-    console.log(`📊 Fetched: ${cryptoMarkets.length} crypto, ${indexMarkets.length} index markets`);
+    console.log(`📊 Fetched: ${cryptoMarkets.length} crypto markets`);
     console.log(`   Recent bets tracking: ${recentBets.size} markets`);
 
     // Update scan status
     lastScanStatus.cryptoMarketsFound = cryptoMarkets.length;
-    lastScanStatus.indexMarketsFound = indexMarkets.length;
+    lastScanStatus.indexMarketsFound = 0;
 
     // Analyze crypto opportunities
     const cryptoOpps = cryptoMarkets
@@ -5238,12 +5173,8 @@ async function runAutoBet() {
         return analyzed;
       });
 
-    // Analyze index opportunities
-    const indexOpps = indexMarkets
-      .map(m => analyzeIndexMarket(parseIndexMarket(m)));
-
     // Count before filtering
-    const allOpps = [...cryptoOpps, ...indexOpps].filter(m => m !== null);
+    const allOpps = cryptoOpps.filter(m => m !== null);
     const withEdge = allOpps.filter(m => m.edge > 0);
     const above50 = allOpps.filter(m => parseFloat(m.winProbability) >= 50);
     const above60 = allOpps.filter(m => parseFloat(m.winProbability) >= 60);
@@ -6851,7 +6782,7 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
     if (savedSettings.minEdge !== undefined) {
       config.minEdge = savedSettings.minEdge;
     }
-    console.log(`⚙️ Risk limits: $${config.riskLimits.maxPerBet/100}/bet, $${(config.riskLimits.maxPer15Min + config.riskLimits.maxPerHourly)/100} max exposure`);
+    console.log(`⚙️ Risk limits: $${config.riskLimits.maxPerBet/100}/bet, $${(config.riskLimits.maxTotal || 1500)/100} max exposure`);
     console.log(`🔥 Degen mode: ${config.degenMode.enabled ? 'ENABLED' : 'disabled'}`);
   }
 
