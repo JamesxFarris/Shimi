@@ -6034,6 +6034,25 @@ app.post('/api/profiles/save-credentials', (req, res) => {
   res.json({ success: true });
 });
 
+// Log out of current profile (deactivate without deleting)
+app.post('/api/profiles/logout', (req, res) => {
+  if (activeProfileId) {
+    saveToActiveProfile();
+    console.log(`👋 Logged out of profile: ${profiles[activeProfileId]?.name}`);
+  }
+
+  activeProfileId = null;
+  config.apiKeyId = null;
+  config.privateKey = null;
+  config.isAuthenticated = false;
+  portfolio = { balance: 0, positions: [] };
+  betHistory = [];
+
+  saveProfiles();
+
+  res.json({ success: true });
+});
+
 // Quick balance refresh endpoint
 app.get('/api/balance/refresh', async (req, res) => {
   try {

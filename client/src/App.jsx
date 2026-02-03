@@ -703,6 +703,24 @@ function App() {
     }
   }
 
+  // Logout of current profile
+  const logoutProfile = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/profiles/logout`, {
+        method: 'POST'
+      })
+      const data = await res.json()
+      if (data.success) {
+        setActiveProfile(null)
+        setIsAuthenticated(false)
+        setBalance(25)
+        fetchProfiles()
+      }
+    } catch (err) {
+      console.error('Logout error:', err)
+    }
+  }
+
 
   // Initial load - runs once
   useEffect(() => {
@@ -1707,7 +1725,15 @@ function App() {
                           </span>
                         </div>
                         {profile.isActive ? (
-                          <span className="profile-active-badge">Active</span>
+                          <div className="profile-actions">
+                            <span className="profile-active-badge">Active</span>
+                            <button
+                              className="profile-logout-btn"
+                              onClick={(e) => { e.stopPropagation(); logoutProfile(); }}
+                            >
+                              Logout
+                            </button>
+                          </div>
                         ) : (
                           <button
                             className="profile-delete-btn"

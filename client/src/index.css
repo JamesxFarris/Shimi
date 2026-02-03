@@ -2572,6 +2572,28 @@ body {
   font-weight: 600;
 }
 
+.profile-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.profile-logout-btn {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.profile-logout-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--text-primary);
+}
+
 .profile-delete-btn {
   background: transparent;
   border: none;
