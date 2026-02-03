@@ -425,7 +425,6 @@ function App() {
   const [degenModeSettings, setDegenModeSettings] = useState({
     enabled: false,
     minPrice: 15,
-    maxTimeMinutes: 5,
     requireStrongMomentum: true,
     maxBetMultiplier: 0.5
   })
@@ -1007,6 +1006,26 @@ function App() {
                       {autoBetEnabled ? 'Stop Auto-Bet' : 'Start Auto-Bet (15s)'}
                     </span>
                   </button>
+                  <button
+                    className={`action-btn degen-toggle ${degenModeSettings.enabled ? 'degen-active' : ''}`}
+                    onClick={async () => {
+                      const newEnabled = !degenModeSettings.enabled
+                      setDegenModeSettings(prev => ({ ...prev, enabled: newEnabled }))
+                      try {
+                        await authFetch(`${API_BASE}/api/settings/degen-mode`, {
+                          method: 'POST',
+                          body: JSON.stringify({ enabled: newEnabled })
+                        })
+                      } catch (err) {
+                        console.error('Error toggling degen mode:', err)
+                      }
+                    }}
+                  >
+                    <span className="action-icon">🔥</span>
+                    <span className="action-text">
+                      {degenModeSettings.enabled ? 'Degen ON' : 'Degen OFF'}
+                    </span>
+                  </button>
                 </div>
 
                 {/* Scan Status (visible when auto-bet is enabled) */}
@@ -1539,17 +1558,6 @@ function App() {
                         step="5"
                         value={degenModeSettings.minPrice}
                         onChange={(e) => updateDegenModeSettings('minPrice', parseInt(e.target.value) || 15)}
-                      />
-                    </div>
-                    <div className="settings-input-group">
-                      <label>Max time remaining (min)</label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="10"
-                        step="1"
-                        value={degenModeSettings.maxTimeMinutes}
-                        onChange={(e) => updateDegenModeSettings('maxTimeMinutes', parseInt(e.target.value) || 5)}
                       />
                     </div>
                     <div className="settings-input-group">

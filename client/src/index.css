@@ -898,6 +898,25 @@ body {
   box-shadow: 0 0 20px rgba(255, 51, 102, 0.3);
 }
 
+.action-btn.degen-toggle {
+  background: var(--bg-card);
+  border-color: rgba(255, 100, 50, 0.3);
+  color: rgba(255, 100, 50, 0.7);
+  min-width: 100px;
+}
+
+.action-btn.degen-toggle:hover {
+  border-color: #ff6432;
+  color: #ff6432;
+}
+
+.action-btn.degen-toggle.degen-active {
+  background: linear-gradient(135deg, #ff6432 0%, #ff4500 100%);
+  border-color: #ff6432;
+  color: white;
+  box-shadow: 0 0 20px rgba(255, 100, 50, 0.4);
+}
+
 .action-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;

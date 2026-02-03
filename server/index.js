@@ -3460,13 +3460,14 @@ function analyzeCryptoMarket(parsed) {
   const isSafe = edge > 0 && betPriceCents >= 40 && timeMinutes <= 8 && score >= 2;
 
   // Check if qualifies for degen-safe (low price but strong momentum)
+  // No hard time limit - momentum is the gatekeeper
+  // Betting early before Kalshi adjusts can capture better odds
   const degenSettings = config.degenMode;
   const hasStrongMomentum = momentum.aligned && momentum.strength >= 2;
   const isDegenSafe = degenSettings.enabled &&
     edge > 0 &&
     betPriceCents >= degenSettings.minPrice &&
     betPriceCents < 40 &&
-    timeMinutes <= degenSettings.maxTimeMinutes &&
     (!degenSettings.requireStrongMomentum || hasStrongMomentum);
 
   const isDegen = edge > 0 && !isSafe && !isDegenSafe; // Everything else with edge is manual only
