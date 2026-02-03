@@ -445,8 +445,7 @@ function App() {
   const [riskSettings, setRiskSettings] = useState({
     maxPerBet: 500,
     maxPerToken: 500,
-    maxPer15Min: 1000,
-    maxPerHourly: 1000
+    maxTotal: 1500
   })
   const [scaleInSettings, setScaleInSettings] = useState({
     enabled: true,
@@ -808,8 +807,7 @@ function App() {
       })
       const data = await res.json()
       if (data.success) {
-        // Total exposure = sum of timeframe limits
-        const totalMax = (data.riskLimits.maxPer15Min || 1000) + (data.riskLimits.maxPerHourly || 1000)
+        const totalMax = data.riskLimits.maxTotal || 1500
         setRisk(prev => ({
           ...prev,
           max: totalMax,
@@ -1620,7 +1618,7 @@ function App() {
                     </div>
                     <div className="settings-item">
                       <span className="settings-label">Max Exposure</span>
-                      <span className="settings-value">${(((riskSettings.maxPer15Min || 1000) + (riskSettings.maxPerHourly || 1000)) / 100).toFixed(2)}</span>
+                      <span className="settings-value">${((riskSettings.maxTotal || 1500) / 100).toFixed(2)}</span>
                     </div>
                     <div className="settings-item">
                       <span className="settings-label">Min Edge</span>
@@ -1661,20 +1659,13 @@ function App() {
                         min={1}
                         max={50}
                       />
-                      <h4 style={{ marginTop: '16px' }}>Timeframe Limits</h4>
+                      <h4 style={{ marginTop: '16px' }}>Total Exposure</h4>
                       <DollarStepper
-                        label="Max for 15-min markets"
-                        value={Math.round((riskSettings.maxPer15Min || 1000) / 100)}
-                        onChange={(v) => updateRiskSettings('maxPer15Min', v * 100)}
-                        min={1}
-                        max={50}
-                      />
-                      <DollarStepper
-                        label="Max for hourly markets"
-                        value={Math.round((riskSettings.maxPerHourly || 1000) / 100)}
-                        onChange={(v) => updateRiskSettings('maxPerHourly', v * 100)}
-                        min={1}
-                        max={50}
+                        label="Max Exposure"
+                        value={Math.round((riskSettings.maxTotal || 1500) / 100)}
+                        onChange={(v) => updateRiskSettings('maxTotal', v * 100)}
+                        min={5}
+                        max={100}
                       />
                     </div>
                   </div>
