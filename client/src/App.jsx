@@ -1530,6 +1530,59 @@ function App() {
                 />
               </div>
 
+              {/* Risk Card */}
+              <div className="risk-card">
+                <div className="risk-card-header">
+                  <span className="risk-card-title">Risk Exposure</span>
+                  <span className={`risk-card-status ${
+                    (risk.current / risk.max) > 0.9 ? 'danger' :
+                    (risk.current / risk.max) > 0.7 ? 'warning' : ''
+                  }`}>
+                    {(risk.current / risk.max) > 0.9 ? 'AT LIMIT' :
+                     (risk.current / risk.max) > 0.7 ? 'HIGH' : 'SAFE'}
+                  </span>
+                </div>
+                <div className="risk-exposure-bar">
+                  <div className="risk-exposure-label">
+                    <span>Current: ${risk.currentDollars || '0.00'}</span>
+                    <span>Max: ${risk.maxDollars || '15.00'}</span>
+                  </div>
+                  <div className="risk-exposure-track">
+                    <div
+                      className={`risk-exposure-fill ${
+                        (risk.current / risk.max) > 0.9 ? 'danger' :
+                        (risk.current / risk.max) > 0.7 ? 'warning' : ''
+                      }`}
+                      style={{ width: `${Math.min(100, (risk.current / risk.max) * 100)}%` }}
+                    />
+                  </div>
+                </div>
+                <div className="risk-tokens">
+                  <div className="risk-token">
+                    <span className="risk-token-name">BTC</span>
+                    <span className={`risk-token-value ${risk.byToken?.BTC >= (riskSettings.maxPerToken || 500) ? 'at-limit' : ''}`}>
+                      ${((risk.byToken?.BTC || 0) / 100).toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="risk-token">
+                    <span className="risk-token-name">ETH</span>
+                    <span className={`risk-token-value ${risk.byToken?.ETH >= (riskSettings.maxPerToken || 500) ? 'at-limit' : ''}`}>
+                      ${((risk.byToken?.ETH || 0) / 100).toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="risk-token">
+                    <span className="risk-token-name">SOL</span>
+                    <span className={`risk-token-value ${risk.byToken?.SOL >= (riskSettings.maxPerToken || 500) ? 'at-limit' : ''}`}>
+                      ${((risk.byToken?.SOL || 0) / 100).toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="risk-token">
+                    <span className="risk-token-name">Positions</span>
+                    <span className="risk-token-value">{risk.positionCount || 0}</span>
+                  </div>
+                </div>
+              </div>
+
               {/* Quick Actions */}
               <div className="quick-actions">
                 <h3 className="section-title">Quick Actions</h3>
