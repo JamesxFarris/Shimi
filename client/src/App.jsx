@@ -609,11 +609,13 @@ function App() {
         setBalance(data.newBalance)
         // Update risk if returned
         if (data.risk) {
-                    setRisk(data.risk)
+          setRisk(data.risk)
         }
+        const priceInfo = data.avgPrice ? ` @ ${data.avgPrice}¢` : ''
+        const fillInfo = data.filled ? ` (${data.filled} contract${data.filled > 1 ? 's' : ''})` : ''
         setBetStatus({
           type: 'success',
-          message: `Bet placed: ${opp.betSide} on ${opp.cryptoType || opp.assetType}${data.simulated ? ' (simulated)' : ''}`
+          message: `✓ Bought ${opp.betSide.toUpperCase()}${priceInfo}${fillInfo} on ${opp.cryptoType || opp.assetType}${data.simulated ? ' (simulated)' : ''}`
         })
         // Refresh opportunities after placing a bet
         fetchOpportunities()
@@ -622,9 +624,10 @@ function App() {
       }
     } catch (err) {
       if (err.name === 'AbortError') {
-        setBetStatus({ type: 'error', message: 'Request timed out' })
+        setBetStatus({ type: 'error', message: 'Request timed out - check History to see if bet went through' })
       } else {
-        setBetStatus({ type: 'error', message: err.message || 'Network error' })
+        console.error('Bet error:', err)
+        setBetStatus({ type: 'error', message: err.message || 'Network error - check History to verify' })
       }
     }
 
