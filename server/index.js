@@ -524,7 +524,7 @@ async function checkPendingSettlements() {
 
       // For simulated bets or if we can't get Kalshi data, check price
       if (bet.outcome === 'pending' && bet.strikePrice && bet.token) {
-        const currentPrice = cryptoPrices[bet.token]?.price || indexPrices[bet.token]?.price;
+        const currentPrice = cryptoPrices[bet.token]?.price;
         if (currentPrice && bet.expiryTime && new Date(bet.expiryTime) <= new Date()) {
           // Market should have settled - determine outcome from price
           const isAbove = currentPrice >= bet.strikePrice;
@@ -860,13 +860,6 @@ function scoreNewsUrgency(headline, body = '') {
     }
   }
 
-  // S&P 500 mentions
-  if (text.includes('s&p') || text.includes('sp500') || text.includes('s&p 500') ||
-      text.includes('stock market') || text.includes('wall street')) {
-    assetType = 'index';
-    mentionedTokens.push('SPX');
-  }
-
   return {
     score,
     direction,
@@ -1051,23 +1044,11 @@ fetchAllNews(); // Initial fetch
 // CRYPTO PRICE TRACKING - EXPANDED TOKENS
 // ============================================
 
-// All tokens we track - with price ranges for strike detection
+// Only tracking 15-minute BTC, ETH, SOL markets
 const TRACKED_TOKENS = {
   BTC: { name: 'Bitcoin', minPrice: 10000, maxPrice: 500000 },
   ETH: { name: 'Ethereum', minPrice: 100, maxPrice: 20000 },
-  SOL: { name: 'Solana', minPrice: 1, maxPrice: 1000 },
-  XRP: { name: 'XRP', minPrice: 0.1, maxPrice: 100 },
-  DOGE: { name: 'Dogecoin', minPrice: 0.01, maxPrice: 10 },
-  ADA: { name: 'Cardano', minPrice: 0.1, maxPrice: 50 },
-  AVAX: { name: 'Avalanche', minPrice: 1, maxPrice: 500 },
-  LINK: { name: 'Chainlink', minPrice: 1, maxPrice: 200 },
-  MATIC: { name: 'Polygon', minPrice: 0.1, maxPrice: 50 },
-  DOT: { name: 'Polkadot', minPrice: 1, maxPrice: 200 },
-  SHIB: { name: 'Shiba Inu', minPrice: 0.000001, maxPrice: 0.001 },
-  LTC: { name: 'Litecoin', minPrice: 10, maxPrice: 1000 },
-  UNI: { name: 'Uniswap', minPrice: 1, maxPrice: 100 },
-  ATOM: { name: 'Cosmos', minPrice: 1, maxPrice: 100 },
-  APT: { name: 'Aptos', minPrice: 1, maxPrice: 100 }
+  SOL: { name: 'Solana', minPrice: 1, maxPrice: 1000 }
 };
 
 // Price data storage
@@ -1078,16 +1059,12 @@ Object.keys(TRACKED_TOKENS).forEach(token => {
 
 // Binance symbol mapping (PRIMARY - fast)
 const BINANCE_SYMBOLS = {
-  BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', DOGE: 'DOGEUSDT',
-  ADA: 'ADAUSDT', AVAX: 'AVAXUSDT', LINK: 'LINKUSDT', MATIC: 'MATICUSDT',
-  DOT: 'DOTUSDT', SHIB: 'SHIBUSDT', LTC: 'LTCUSDT', UNI: 'UNIUSDT', ATOM: 'ATOMUSDT', APT: 'APTUSDT'
+  BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT'
 };
 
 // CoinGecko ID mapping (FALLBACK - slower but reliable)
 const COINGECKO_IDS = {
-  BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana', XRP: 'ripple', DOGE: 'dogecoin',
-  ADA: 'cardano', AVAX: 'avalanche-2', LINK: 'chainlink', MATIC: 'matic-network',
-  DOT: 'polkadot', SHIB: 'shiba-inu', LTC: 'litecoin', UNI: 'uniswap', ATOM: 'cosmos', APT: 'aptos'
+  BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana'
 };
 
 // Track which price source we're using
@@ -1974,84 +1951,6 @@ let priceInterval = setInterval(fetchCryptoPrices, 10000);
 fetchCryptoPrices();
 
 // ============================================
-// S&P 500 INDEX PRICE TRACKING
-// ============================================
-
-const indexPrices = {
-  SPX: { price: 0, timestamp: 0, history: [], volatility: 0.01 }
-};
-
-// Extended history for S&P 500
-const indexHistoryExtended = { SPX: [] };
-
-async function fetchIndexPrice() {
-  try {
-    // Yahoo Finance API (free, no key needed)
-    const url = 'https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1m&range=1d';
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0' }
-    });
-    const data = await res.json();
-
-    if (data.chart && data.chart.result && data.chart.result[0]) {
-      const result = data.chart.result[0];
-      const price = result.meta.regularMarketPrice;
-      const now = Date.now();
-
-      if (price && price > 0) {
-        indexPrices.SPX.price = price;
-        indexPrices.SPX.timestamp = now;
-
-        // Keep 60 price points for volatility calculation
-        indexPrices.SPX.history.push({ price, time: now });
-        if (indexPrices.SPX.history.length > 60) {
-          indexPrices.SPX.history.shift();
-        }
-
-        // Extended history (2 hours)
-        indexHistoryExtended.SPX.push({ price, time: now });
-        const twoHoursAgo = now - 2 * 60 * 60 * 1000;
-        indexHistoryExtended.SPX = indexHistoryExtended.SPX.filter(p => p.time > twoHoursAgo);
-
-        // Calculate volatility (S&P is much less volatile than crypto)
-        indexPrices.SPX.volatility = calculateIndexVolatility(indexPrices.SPX.history);
-
-        console.log(`📈 S&P 500: $${price.toFixed(2)} | Vol: ${(indexPrices.SPX.volatility * 100).toFixed(2)}%`);
-      }
-    }
-  } catch (error) {
-    console.error('Error fetching S&P 500 price:', error.message);
-  }
-}
-
-function calculateIndexVolatility(history) {
-  // Default S&P 500 15-minute volatility (much lower than crypto)
-  if (history.length < 10) return 0.005; // 0.5% default
-
-  const returns = [];
-  for (let i = 1; i < history.length; i++) {
-    const logReturn = Math.log(history[i].price / history[i-1].price);
-    returns.push(logReturn);
-  }
-
-  const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
-  const variance = returns.reduce((sum, r) => sum + Math.pow(r - mean, 2), 0) / returns.length;
-  const stdDev = Math.sqrt(variance);
-
-  // Scale to 15-minute equivalent
-  const avgInterval = (history[history.length - 1].time - history[0].time) / (history.length - 1);
-  const intervalsIn15Min = (15 * 60 * 1000) / avgInterval;
-  const vol15min = stdDev * Math.sqrt(intervalsIn15Min);
-
-  // Clamp to reasonable range for S&P (0.1% to 3%)
-  return Math.max(0.001, Math.min(0.03, vol15min));
-}
-
-// Start S&P 500 price tracking (every 15 seconds - don't spam Yahoo)
-let indexPriceInterval = setInterval(fetchIndexPrice, 15000);
-fetchIndexPrice();
-
-// ============================================
 // RISK MANAGEMENT
 // ============================================
 
@@ -2178,8 +2077,6 @@ function getTokenFromTicker(ticker) {
   // Match patterns like KXBTC, KXETH, KXSOL, etc.
   const match = ticker.match(/KX([A-Z]+)/);
   if (match) return match[1];
-  // Also check for SPX (S&P 500)
-  if (ticker.includes('INX') || ticker.includes('SPX')) return 'SPX';
   return null;
 }
 
@@ -2363,42 +2260,11 @@ async function fetchCryptoMarkets() {
   }
 
   try {
-    // Fetch crypto markets directly by series ticker instead of filtering 1000+ markets
-    // This ensures we get the 15-minute crypto markets that would otherwise be buried
+    // ONLY fetch 15-minute BTC, ETH, SOL markets
     const cryptoSeries = [
-      // HOURLY markets (separate risk pool)
-      'KXBTC1H',    // Bitcoin hourly up/down
-      'KXETH1H',    // Ethereum hourly up/down
-      'KXSOL1H',    // Solana hourly up/down
-
-      // 15-minute markets (short term, high frequency)
       'KXBTC15M',   // Bitcoin 15-minute up/down
       'KXETH15M',   // Ethereum 15-minute up/down
       'KXSOL15M',   // Solana 15-minute up/down
-
-      // Daily above/below markets
-      'KXBTCD',     // Bitcoin above/below
-      'KXETHD',     // Ethereum above/below
-      'KXSOLD',     // Solana above/below
-      'KXXRPD',     // XRP above/below
-      'KXDOGED',    // Doge above/below
-      'KXLTCD',     // Litecoin above/below
-      'KXLINKD',    // Chainlink above/below
-      'KXAVAXD',    // Avalanche above/below
-      'KXDOTD',     // Polkadot above/below
-      'KXSHIBAD',   // Shiba above/below
-
-      // Range/min/max markets (look for mispricings)
-      'KXBTCMAXD',  // BTC max daily
-      'KXBTC',      // Bitcoin range
-      'KXETH',      // Ethereum range
-      'KXSOL',      // Solana range
-      'KXXRP',      // XRP range
-
-      // Monthly directional
-      'KXBTCMAXM',  // BTC max monthly
-      'KXETHMAXM',  // ETH max monthly
-      'KXSOLMAXM',  // SOL max monthly
     ];
 
     const allMarkets = [];
@@ -2417,42 +2283,21 @@ async function fetchCryptoMarkets() {
     const results = await Promise.all(fetches);
     results.forEach(markets => allMarkets.push(...markets));
 
-    // Also try the general crypto filter as backup
-    try {
-      const data = await kalshiRequest('GET', '/markets?limit=1000&status=open');
-      const markets = data.markets || [];
-
-      markets.forEach(m => {
-        const ticker = (m.ticker || '').toUpperCase();
-        const title = (m.title || '').toUpperCase();
-
-        // Check if already added
-        if (allMarkets.some(existing => existing.ticker === m.ticker)) return;
-
-        // Check if it's a crypto market
-        let isCrypto = false;
-        for (const [token, cfg] of Object.entries(TRACKED_TOKENS)) {
-          if (ticker.includes(token) || title.includes(token) || title.includes(cfg.name.toUpperCase())) {
-            isCrypto = true;
-            break;
-          }
-        }
-
-        if (isCrypto) allMarkets.push(m);
-      });
-    } catch (e) {
-      console.log('Backup market fetch failed:', e.message);
-    }
-
-    // Filter for short-term markets (within 4 hours, more than 30 seconds remaining)
+    // Filter for valid 15-minute markets (15 min = 900000ms, allow up to 20 minutes for timing)
     const cryptoMarkets = allMarkets.filter(m => {
+      const ticker = (m.ticker || '').toUpperCase();
       const closeTime = m.close_time ? new Date(m.close_time).getTime() : null;
       const timeRemaining = closeTime ? closeTime - now : null;
-      const isShortTerm = timeRemaining && timeRemaining > 30000 && timeRemaining < 4 * 60 * 60 * 1000;
-      return isShortTerm;
+
+      // Only include 15-minute markets
+      if (!ticker.includes('15M')) return false;
+
+      // Ensure market is open and has reasonable time remaining (30s to 20min)
+      const isValid = timeRemaining && timeRemaining > 30000 && timeRemaining < 20 * 60 * 1000;
+      return isValid;
     });
 
-    console.log(`📊 Fetched ${allMarkets.length} crypto markets, ${cryptoMarkets.length} short-term`);
+    console.log(`📊 Fetched ${allMarkets.length} markets, ${cryptoMarkets.length} valid 15-minute BTC/ETH/SOL`);
 
     marketCache.data = cryptoMarkets;
     marketCache.lastFetch = now;
@@ -2462,256 +2307,6 @@ async function fetchCryptoMarkets() {
     console.error('Error fetching markets:', error.message);
     return [];
   }
-}
-
-// ============================================
-// S&P 500 INDEX MARKET FETCHING
-// ============================================
-
-const indexMarketCache = { data: null, lastFetch: 0, ttl: 30000 };
-
-async function fetchIndexMarkets() {
-  const now = Date.now();
-
-  if (indexMarketCache.data && (now - indexMarketCache.lastFetch) < indexMarketCache.ttl) {
-    return indexMarketCache.data;
-  }
-
-  try {
-    // S&P 500 market series on Kalshi
-    const indexSeries = [
-      'KXINX',      // S&P 500 daily range
-      'KXINXU',     // S&P 500 above/below
-      'KXINXD',     // S&P 500 daily direction
-    ];
-
-    const allMarkets = [];
-
-    // Fetch each index series in parallel
-    const fetches = indexSeries.map(async (series) => {
-      try {
-        const data = await kalshiRequest('GET', `/markets?limit=100&status=open&series_ticker=${series}`);
-        return data.markets || [];
-      } catch (e) {
-        console.log(`No markets for ${series}`);
-        return [];
-      }
-    });
-
-    const results = await Promise.all(fetches);
-    results.forEach(markets => allMarkets.push(...markets));
-
-    // Filter for markets closing within reasonable time (today)
-    const indexMarkets = allMarkets.filter(m => {
-      const closeTime = m.close_time ? new Date(m.close_time).getTime() : null;
-      const timeRemaining = closeTime ? closeTime - now : null;
-      // S&P markets settle at end of day, so allow up to 8 hours
-      const isValidTime = timeRemaining && timeRemaining > 60000 && timeRemaining < 8 * 60 * 60 * 1000;
-      return isValidTime;
-    });
-
-    console.log(`📊 Fetched ${allMarkets.length} index markets, ${indexMarkets.length} valid`);
-
-    indexMarketCache.data = indexMarkets;
-    indexMarketCache.lastFetch = now;
-
-    return indexMarkets;
-  } catch (error) {
-    console.error('Error fetching index markets:', error.message);
-    return [];
-  }
-}
-
-// Parse S&P 500 market data
-function parseIndexMarket(market) {
-  const ticker = (market.ticker || '').toUpperCase();
-  const title = (market.title || '').toLowerCase();
-
-  // Extract strike price from title
-  // Example titles: "S&P 500 above 6,000?", "S&P 500 to close between 5,950 and 6,000?"
-  let strikePrice = null;
-  const priceMatches = title.match(/[\d,]+(?:\.\d+)?/g);
-  if (priceMatches) {
-    for (const match of priceMatches) {
-      const price = parseFloat(match.replace(/,/g, ''));
-      // S&P 500 range: 3000-8000
-      if (price >= 3000 && price <= 8000) {
-        strikePrice = price;
-        break;
-      }
-    }
-  }
-
-  // Determine market type
-  let marketType = null;
-  if (title.includes('above') || title.includes('higher') || title.includes('or more') || title.includes('at least')) {
-    marketType = 'above';
-  } else if (title.includes('below') || title.includes('lower') || title.includes('or less') || title.includes('under')) {
-    marketType = 'below';
-  } else if (title.includes('between')) {
-    marketType = 'between';
-  }
-
-  // Time remaining
-  const closeTime = market.close_time ? new Date(market.close_time).getTime() : null;
-  const timeRemaining = closeTime ? closeTime - Date.now() : null;
-  const timeRemainingMinutes = timeRemaining ? timeRemaining / (60 * 1000) : null;
-
-  // Prices (Kalshi returns in cents)
-  const yesAsk = (parseFloat(market.yes_ask) || 0) / 100;
-  const noAsk = (parseFloat(market.no_ask) || 0) / 100;
-
-  return {
-    ticker: market.ticker,
-    title: market.title,
-    assetType: 'SPX',
-    strikePrice,
-    marketType,
-    closeTime: market.close_time,
-    timeRemaining,
-    timeRemainingMinutes,
-    yesAsk,
-    noAsk,
-    volume: parseInt(market.volume) || 0
-  };
-}
-
-// Analyze S&P 500 market for betting opportunity
-function analyzeIndexMarket(parsed) {
-  if (!parsed.strikePrice || !parsed.marketType || parsed.marketType === 'between') {
-    return null;
-  }
-
-  const priceData = indexPrices.SPX;
-  if (!priceData || !priceData.price) {
-    return null;
-  }
-
-  const currentPrice = priceData.price;
-  const volatility = priceData.volatility;
-  const timeMinutes = parsed.timeRemainingMinutes || 60;
-
-  // Calculate how far price is from strike
-  const pctFromStrike = ((currentPrice - parsed.strikePrice) / parsed.strikePrice) * 100;
-
-  // Get time-of-day factor for S&P 500
-  const timeOfDay = getTimeOfDayFactor();
-
-  // Adjust volatility based on time of day
-  const adjustedVolatility = volatility * timeOfDay.factor;
-
-  // Simple probability model for S&P 500
-  // Use z-score based on volatility
-  const timeHours = timeMinutes / 60;
-  const expectedMove = currentPrice * adjustedVolatility * Math.sqrt(timeHours / 4); // 4-hour normalized vol
-  const zScore = (parsed.strikePrice - currentPrice) / expectedMove;
-
-  // Convert z-score to probability using normal CDF
-  const probBelow = normalCDF(zScore);
-  const probAbove = 1 - probBelow;
-
-  // Calculate multi-timeframe momentum
-  const allHistory = [...(indexHistoryExtended.SPX || []), ...(priceData.history || [])];
-  const momentum = calculateMomentumMultiTimeframe(allHistory);
-
-  // Determine win probabilities based on market type
-  let probYesWins, probNoWins;
-  if (parsed.marketType === 'above') {
-    probYesWins = probAbove;
-    probNoWins = probBelow;
-  } else {
-    probYesWins = probBelow;
-    probNoWins = probAbove;
-  }
-
-  // Adjust for momentum
-  if (momentum.aligned) {
-    const momentumBoost = parseFloat(momentum.strength) / 100 * 0.5; // Up to 5% boost
-    if (momentum.direction === 'bullish') {
-      probYesWins = Math.min(0.95, probYesWins + momentumBoost);
-      probNoWins = Math.max(0.05, probNoWins - momentumBoost);
-    } else if (momentum.direction === 'bearish') {
-      probNoWins = Math.min(0.95, probNoWins + momentumBoost);
-      probYesWins = Math.max(0.05, probYesWins - momentumBoost);
-    }
-  }
-
-  // Market implied probabilities
-  const marketProbYes = parsed.yesAsk;
-  const marketProbNo = parsed.noAsk;
-
-  // Calculate edge
-  let yesEdge = (probYesWins - marketProbYes) * 100;
-  let noEdge = (probNoWins - marketProbNo) * 100;
-
-  // Find best bet (highest win probability with positive edge)
-  let bestBet = null;
-  const yesValid = parsed.yesAsk > 0 && parsed.yesAsk < 0.98 && yesEdge > 0.5;
-  const noValid = parsed.noAsk > 0 && parsed.noAsk < 0.98 && noEdge > 0.5;
-
-  if (yesValid && noValid) {
-    if (probYesWins >= probNoWins) {
-      bestBet = { side: 'YES', edge: yesEdge, prob: probYesWins, price: parsed.yesAsk };
-    } else {
-      bestBet = { side: 'NO', edge: noEdge, prob: probNoWins, price: parsed.noAsk };
-    }
-  } else if (yesValid) {
-    bestBet = { side: 'YES', edge: yesEdge, prob: probYesWins, price: parsed.yesAsk };
-  } else if (noValid) {
-    bestBet = { side: 'NO', edge: noEdge, prob: probNoWins, price: parsed.noAsk };
-  }
-
-  // No valid bet found - log why for high-priced markets
-  if (!bestBet) {
-    const maxPrice = Math.max(parsed.yesAsk || 0, parsed.noAsk || 0);
-    if (maxPrice > 0.75) {
-      console.log(`   ⚠️ Skipped SPX market: YES@${Math.round((parsed.yesAsk||0)*100)}¢ NO@${Math.round((parsed.noAsk||0)*100)}¢ | Our prob: ${(probYesWins*100).toFixed(0)}% | Need >${Math.round(maxPrice*100)}% to bet`);
-    }
-    return null;
-  }
-
-  const isHighProb = bestBet.prob >= 0.60;
-  const isSafeBet = bestBet.prob >= 0.70;
-
-  const priceCents = Math.round(bestBet.price * 100);
-  const contractsFor1Dollar = Math.floor(100 / priceCents);
-  const totalCostCents = contractsFor1Dollar * priceCents;
-  const feeCents = calculateKalshiFee(contractsFor1Dollar, bestBet.price);
-  const profitIfWinCents = contractsFor1Dollar * 100 - totalCostCents - feeCents;
-
-  // Build reason string
-  const momentumDesc = momentum.direction === 'bullish' ? '📈' : momentum.direction === 'bearish' ? '📉' : '➡️';
-
-  return {
-    ...parsed,
-    marketCategory: 'index',
-    assetType: 'SPX',
-    assetName: 'S&P 500',
-    currentPrice,
-    volatility: (volatility * 100).toFixed(2) + '%',
-    adjustedVolatility: (adjustedVolatility * 100).toFixed(2) + '%',
-    pctFromStrike: pctFromStrike.toFixed(2),
-    zScore: zScore.toFixed(2),
-    winProbability: (bestBet.prob * 100).toFixed(1),
-    edge: bestBet.edge,
-    betSide: bestBet.side,
-    betPrice: bestBet.price,
-    betPriceCents: priceCents,
-    contractsFor1Dollar,
-    feeCents,
-    profitIfWin: profitIfWinCents, // After fees
-    betReason: `${momentumDesc} S&P ${pctFromStrike > 0 ? 'above' : 'below'} by ${Math.abs(pctFromStrike).toFixed(1)}%`,
-    isObviousBet: isSafeBet,
-    isHighProb,
-    timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining),
-    // Enhanced data
-    momentum: momentum.direction,
-    momentumStrength: momentum.aligned ? 'strong' : 'weak',
-    momentumData: momentum,
-    timeOfDay: timeOfDay,
-    confidence: (isSafeBet ? 85 : isHighProb ? 70 : 55) + '%',
-    dataPoints: allHistory.length
-  };
 }
 
 // Parse market to extract token, strike price, and determine both sides
@@ -2830,9 +2425,39 @@ function analyzeCryptoMarket(parsed) {
   const marketProbYes = parsed.yesAsk;
   const marketProbNo = parsed.noAsk;
 
-  // Calculate edge for BOTH sides
-  const yesEdge = (probYesWins - marketProbYes) * 100;
-  const noEdge = (probNoWins - marketProbNo) * 100;
+  // ============================================
+  // MARKET DISAGREEMENT PENALTY
+  // ============================================
+  // If the market strongly disagrees with our model (cheap bets = market says unlikely),
+  // we should be skeptical. The market often has information we don't.
+  //
+  // Example: If we say 80% but market price is 20¢, the market disagrees by 60%!
+  // Apply a penalty that shrinks our probability toward the market's view.
+
+  const yesDisagreement = Math.abs(probYesWins - marketProbYes);
+  const noDisagreement = Math.abs(probNoWins - marketProbNo);
+
+  // For cheap bets (under 35¢), apply stronger skepticism
+  // The market is usually right about unlikely events
+  let adjustedProbYesWins = probYesWins;
+  let adjustedProbNoWins = probNoWins;
+
+  if (marketProbYes < 0.35 && yesDisagreement > 0.40) {
+    // We think YES is likely but market thinks it's cheap - be skeptical
+    // Shrink our probability 30% toward market's view
+    adjustedProbYesWins = probYesWins * 0.7 + marketProbYes * 0.3;
+    console.log(`   ⚠️ Market disagreement on YES: Our ${(probYesWins*100).toFixed(0)}% vs Market ${(marketProbYes*100).toFixed(0)}% → Adjusted to ${(adjustedProbYesWins*100).toFixed(0)}%`);
+  }
+
+  if (marketProbNo < 0.35 && noDisagreement > 0.40) {
+    // We think NO is likely but market thinks it's cheap - be skeptical
+    adjustedProbNoWins = probNoWins * 0.7 + marketProbNo * 0.3;
+    console.log(`   ⚠️ Market disagreement on NO: Our ${(probNoWins*100).toFixed(0)}% vs Market ${(marketProbNo*100).toFixed(0)}% → Adjusted to ${(adjustedProbNoWins*100).toFixed(0)}%`);
+  }
+
+  // Use adjusted probabilities for edge calculation
+  const yesEdge = (adjustedProbYesWins - marketProbYes) * 100;
+  const noEdge = (adjustedProbNoWins - marketProbNo) * 100;
 
   // Build analysis description
   const momentumDesc = prediction.momentum.direction === 'up' ? '📈 UP' :
@@ -2842,16 +2467,20 @@ function analyzeCryptoMarket(parsed) {
   // ============================================
   // SAFETY-FIRST BET SELECTION
   // ============================================
-  // Strategy: Pick the side with HIGHEST WIN PROBABILITY
-  // Only requirement: must have SOME positive edge (>0.5%)
-  // We don't care about profit size - we want SAFE wins
+  // Strategy: FAVOR HIGH-PRICED BETS (60¢+) with short time left
+  // These are safer because: 1) Market agrees with us, 2) Less time for volatility
+  // The algorithm was doing better on 80¢ bets with less time left!
 
   let bestBet = null;
 
-  // Evaluate YES side
-  const yesValid = parsed.yesAsk > 0 && parsed.yesAsk < 0.98 && yesEdge > 0.5;
+  // Minimum price requirement: Favor bets where market agrees (higher price = higher market prob)
+  // A 60¢ bet means market thinks 60% likely - much safer than 20¢ "value" bets
+  const MIN_SAFE_PRICE = 0.40; // Minimum 40¢ (market agrees at least 40%)
+
+  // Evaluate YES side - require minimum price for "safe" bets
+  const yesValid = parsed.yesAsk >= MIN_SAFE_PRICE && parsed.yesAsk < 0.98 && yesEdge > 0.5;
   // Evaluate NO side
-  const noValid = parsed.noAsk > 0 && parsed.noAsk < 0.98 && noEdge > 0.5;
+  const noValid = parsed.noAsk >= MIN_SAFE_PRICE && parsed.noAsk < 0.98 && noEdge > 0.5;
 
   // Pick the side with HIGHER WIN PROBABILITY (safest bet)
   if (yesValid && noValid) {
@@ -3030,14 +2659,11 @@ app.get('/api/opportunities/all', async (req, res) => {
   try {
     const showAll = req.query.showAll === 'true';
 
-    // Fetch both market types in parallel
-    const [cryptoMarkets, indexMarkets] = await Promise.all([
-      fetchCryptoMarkets(),
-      fetchIndexMarkets()
-    ]);
+    // Fetch 15-minute crypto markets only (BTC, ETH, SOL)
+    const cryptoMarkets = await fetchCryptoMarkets();
 
     // Analyze crypto opportunities
-    const cryptoOpps = cryptoMarkets
+    const allAnalyzed = cryptoMarkets
       .map(m => {
         const analyzed = analyzeCryptoMarket(parseMarket(m));
         if (analyzed) analyzed.marketCategory = 'crypto';
@@ -3054,23 +2680,6 @@ app.get('/api/opportunities/all', async (req, res) => {
         }
         return m;
       });
-
-    // Analyze index opportunities
-    const indexOpps = indexMarkets
-      .map(m => analyzeIndexMarket(parseIndexMarket(m)))
-      .filter(m => m !== null)
-      .map(m => {
-        const winProb = parseFloat(m.winProbability) || 0;
-        m.isRecommended = m.edge >= 0.5 && winProb >= 50;
-        if (!m.isRecommended) {
-          if (m.edge < 0.5) m.filterReason = `No edge (${m.edge.toFixed(1)}%)`;
-          else if (winProb < 50) m.filterReason = `Low prob (${winProb.toFixed(0)}%)`;
-        }
-        return m;
-      });
-
-    // Combine all analyzed markets
-    const allAnalyzed = [...cryptoOpps, ...indexOpps];
 
     // Filter to recommended only (unless showAll=true)
     const allOpportunities = showAll
@@ -3092,10 +2701,9 @@ app.get('/api/opportunities/all', async (req, res) => {
     // Get current risk info by type
     const riskByType = getRiskByType();
 
-    // Price display
+    // Price display (BTC, ETH, SOL only)
     const priceDisplay = {
-      crypto: {},
-      index: { SPX: indexPrices.SPX.price }
+      crypto: {}
     };
     for (const token of Object.keys(cryptoPrices)) {
       if (cryptoPrices[token].price > 0) {
@@ -3228,157 +2836,199 @@ app.get('/api/risk', async (req, res) => {
   }
 });
 
-// Get risk settings
+// Get risk settings - PER-USER
 app.get('/api/settings/risk', (req, res) => {
+  const userConfig = req.userState?.config || DEFAULT_CONFIG;
   res.json({
     success: true,
-    riskLimits: config.riskLimits
+    riskLimits: userConfig.riskLimits
   });
 });
 
-// Update risk settings
+// Update risk settings - PER-USER
 app.post('/api/settings/risk', (req, res) => {
   const { hourly, other, maxPerToken, maxPerBet, maxTotal } = req.body;
+
+  // Use per-user config
+  const userConfig = req.userState?.config;
+  if (!userConfig) {
+    return res.status(401).json({ success: false, error: 'Must be logged in to update settings' });
+  }
+
+  // Ensure riskLimits structure exists
+  if (!userConfig.riskLimits) {
+    userConfig.riskLimits = JSON.parse(JSON.stringify(DEFAULT_CONFIG.riskLimits));
+  }
+  if (!userConfig.riskLimits.hourly) {
+    userConfig.riskLimits.hourly = { maxPerBet: 500, maxTotal: 500 };
+  }
+  if (!userConfig.riskLimits.other) {
+    userConfig.riskLimits.other = { maxPerBet: 500, maxTotal: 500 };
+  }
 
   // Support BOTH nested (hourly/other) and flat (maxPerBet/maxTotal) structures
   // Flat structure from simplified UI
   if (maxPerBet !== undefined) {
     const val = Math.max(10, Math.min(10000, parseInt(maxPerBet) || 200));
-    config.riskLimits.maxPerBet = val; // Top-level for client reads
-    config.riskLimits.hourly.maxPerBet = val;
-    config.riskLimits.other.maxPerBet = val;
+    userConfig.riskLimits.maxPerBet = val; // Top-level for client reads
+    userConfig.riskLimits.hourly.maxPerBet = val;
+    userConfig.riskLimits.other.maxPerBet = val;
   }
   if (maxTotal !== undefined) {
     const val = Math.max(100, Math.min(100000, parseInt(maxTotal) || 1500));
-    config.riskLimits.hourly.maxTotal = val;
-    config.riskLimits.other.maxTotal = val;
+    userConfig.riskLimits.hourly.maxTotal = val;
+    userConfig.riskLimits.other.maxTotal = val;
     // Also set a unified maxTotal for easy access
-    config.riskLimits.maxTotal = val;
+    userConfig.riskLimits.maxTotal = val;
   }
 
   // Nested structure (legacy support)
   if (hourly) {
     if (hourly.maxPerBet !== undefined) {
-      config.riskLimits.hourly.maxPerBet = Math.max(10, Math.min(10000, parseInt(hourly.maxPerBet) || 200));
+      userConfig.riskLimits.hourly.maxPerBet = Math.max(10, Math.min(10000, parseInt(hourly.maxPerBet) || 200));
     }
     if (hourly.maxTotal !== undefined) {
-      config.riskLimits.hourly.maxTotal = Math.max(100, Math.min(100000, parseInt(hourly.maxTotal) || 500));
+      userConfig.riskLimits.hourly.maxTotal = Math.max(100, Math.min(100000, parseInt(hourly.maxTotal) || 500));
     }
   }
 
   if (other) {
     if (other.maxPerBet !== undefined) {
-      config.riskLimits.other.maxPerBet = Math.max(10, Math.min(10000, parseInt(other.maxPerBet) || 200));
+      userConfig.riskLimits.other.maxPerBet = Math.max(10, Math.min(10000, parseInt(other.maxPerBet) || 200));
     }
     if (other.maxTotal !== undefined) {
-      config.riskLimits.other.maxTotal = Math.max(100, Math.min(100000, parseInt(other.maxTotal) || 1000));
+      userConfig.riskLimits.other.maxTotal = Math.max(100, Math.min(100000, parseInt(other.maxTotal) || 1000));
     }
   }
 
   // Max per token (e.g., max $5 on all SOL markets combined)
   if (maxPerToken !== undefined) {
-    config.riskLimits.maxPerToken = Math.max(100, Math.min(50000, parseInt(maxPerToken) || 500));
+    userConfig.riskLimits.maxPerToken = Math.max(100, Math.min(50000, parseInt(maxPerToken) || 500));
   }
 
   // Create unified maxTotal for response if not set
-  if (!config.riskLimits.maxTotal) {
-    config.riskLimits.maxTotal = Math.max(config.riskLimits.hourly.maxTotal, config.riskLimits.other.maxTotal);
+  if (!userConfig.riskLimits.maxTotal) {
+    userConfig.riskLimits.maxTotal = Math.max(userConfig.riskLimits.hourly.maxTotal, userConfig.riskLimits.other.maxTotal);
   }
 
-  console.log(`⚙️ Risk settings updated:`, JSON.stringify(config.riskLimits));
+  console.log(`⚙️ Risk settings updated for user ${req.userId}:`, JSON.stringify(userConfig.riskLimits));
 
-  // Save to active profile
-  saveToActiveProfile();
+  // Save to per-user state file
+  saveUserState(req.userId);
 
   res.json({
     success: true,
     riskLimits: {
-      ...config.riskLimits,
-      maxTotal: config.riskLimits.maxTotal || config.riskLimits.hourly.maxTotal
+      ...userConfig.riskLimits,
+      maxTotal: userConfig.riskLimits.maxTotal || userConfig.riskLimits.hourly.maxTotal
     },
     message: 'Risk settings updated'
   });
 });
 
-// Get scale-in settings
+// Get scale-in settings - PER-USER
 app.get('/api/settings/scale-in', (req, res) => {
+  const userConfig = req.userState?.config || DEFAULT_CONFIG;
   res.json({
     success: true,
-    scaleIn: config.scaleIn
+    scaleIn: userConfig.scaleIn
   });
 });
 
-// Update scale-in settings
+// Update scale-in settings - PER-USER
 app.post('/api/settings/scale-in', (req, res) => {
   const { enabled, minProbabilityIncrease, maxBetsPerMarket, minTimeBetweenBets } = req.body;
 
-  if (enabled !== undefined) {
-    config.scaleIn.enabled = !!enabled;
-  }
-  if (minProbabilityIncrease !== undefined) {
-    config.scaleIn.minProbabilityIncrease = Math.max(5, Math.min(50, parseInt(minProbabilityIncrease) || 15));
-  }
-  if (maxBetsPerMarket !== undefined) {
-    config.scaleIn.maxBetsPerMarket = Math.max(1, Math.min(10, parseInt(maxBetsPerMarket) || 3));
-  }
-  if (minTimeBetweenBets !== undefined) {
-    config.scaleIn.minTimeBetweenBets = Math.max(30000, Math.min(600000, parseInt(minTimeBetweenBets) || 60000));
+  const userConfig = req.userState?.config;
+  if (!userConfig) {
+    return res.status(401).json({ success: false, error: 'Must be logged in to update settings' });
   }
 
-  console.log(`⚙️ Scale-in settings updated:`, JSON.stringify(config.scaleIn));
+  if (!userConfig.scaleIn) {
+    userConfig.scaleIn = JSON.parse(JSON.stringify(DEFAULT_CONFIG.scaleIn));
+  }
+
+  if (enabled !== undefined) {
+    userConfig.scaleIn.enabled = !!enabled;
+  }
+  if (minProbabilityIncrease !== undefined) {
+    userConfig.scaleIn.minProbabilityIncrease = Math.max(5, Math.min(50, parseInt(minProbabilityIncrease) || 15));
+  }
+  if (maxBetsPerMarket !== undefined) {
+    userConfig.scaleIn.maxBetsPerMarket = Math.max(1, Math.min(10, parseInt(maxBetsPerMarket) || 3));
+  }
+  if (minTimeBetweenBets !== undefined) {
+    userConfig.scaleIn.minTimeBetweenBets = Math.max(30000, Math.min(600000, parseInt(minTimeBetweenBets) || 60000));
+  }
+
+  console.log(`⚙️ Scale-in settings updated for user ${req.userId}:`, JSON.stringify(userConfig.scaleIn));
+  saveUserState(req.userId);
 
   res.json({
     success: true,
-    scaleIn: config.scaleIn,
+    scaleIn: userConfig.scaleIn,
     message: 'Scale-in settings updated'
   });
 });
 
-// Get degen mode settings
+// Get degen mode settings - PER-USER
 app.get('/api/settings/degen-mode', (req, res) => {
+  const userConfig = req.userState?.config || DEFAULT_CONFIG;
   res.json({
     success: true,
-    degenMode: config.degenMode
+    degenMode: userConfig.degenMode
   });
 });
 
-// Update degen mode settings
+// Update degen mode settings - PER-USER
 app.post('/api/settings/degen-mode', (req, res) => {
   const { enabled, minPrice, maxPrice, requireStrongMomentum } = req.body;
 
-  if (!config.degenMode) {
-    config.degenMode = { enabled: false, minPrice: 15, maxPrice: 39, requireStrongMomentum: true };
+  const userConfig = req.userState?.config;
+  if (!userConfig) {
+    return res.status(401).json({ success: false, error: 'Must be logged in to update settings' });
   }
 
-  if (enabled !== undefined) config.degenMode.enabled = !!enabled;
-  if (minPrice !== undefined) config.degenMode.minPrice = Math.max(5, Math.min(39, parseInt(minPrice) || 15));
-  if (maxPrice !== undefined) config.degenMode.maxPrice = Math.max(20, Math.min(50, parseInt(maxPrice) || 39));
-  if (requireStrongMomentum !== undefined) config.degenMode.requireStrongMomentum = !!requireStrongMomentum;
+  if (!userConfig.degenMode) {
+    userConfig.degenMode = { enabled: false, minPrice: 15, maxPrice: 39, requireStrongMomentum: true };
+  }
 
-  console.log(`🔥 Degen mode ${config.degenMode.enabled ? 'ENABLED' : 'disabled'}`);
+  if (enabled !== undefined) userConfig.degenMode.enabled = !!enabled;
+  if (minPrice !== undefined) userConfig.degenMode.minPrice = Math.max(5, Math.min(39, parseInt(minPrice) || 15));
+  if (maxPrice !== undefined) userConfig.degenMode.maxPrice = Math.max(20, Math.min(50, parseInt(maxPrice) || 39));
+  if (requireStrongMomentum !== undefined) userConfig.degenMode.requireStrongMomentum = !!requireStrongMomentum;
+
+  console.log(`🔥 Degen mode ${userConfig.degenMode.enabled ? 'ENABLED' : 'disabled'} for user ${req.userId}`);
+  saveUserState(req.userId);
 
   res.json({
     success: true,
-    degenMode: config.degenMode,
-    message: `Degen mode ${config.degenMode.enabled ? 'enabled' : 'disabled'}`
+    degenMode: userConfig.degenMode,
+    message: `Degen mode ${userConfig.degenMode.enabled ? 'enabled' : 'disabled'}`
   });
 });
 
-// Get aggressive mode settings
+// Get aggressive mode settings - PER-USER
 app.get('/api/settings/aggressive-mode', (req, res) => {
+  const userConfig = req.userState?.config || DEFAULT_CONFIG;
   res.json({
     success: true,
-    aggressiveMode: config.aggressiveMode
+    aggressiveMode: userConfig.aggressiveMode
   });
 });
 
-// Update aggressive mode settings (toggle conservative vs aggressive)
+// Update aggressive mode settings (toggle conservative vs aggressive) - PER-USER
 app.post('/api/settings/aggressive-mode', (req, res) => {
   const { enabled, minPrice, minDistanceFromStrike, allowNightTrading, minConfidenceScore } = req.body;
 
+  const userConfig = req.userState?.config;
+  if (!userConfig) {
+    return res.status(401).json({ success: false, error: 'Must be logged in to update settings' });
+  }
+
   // Initialize if not exists
-  if (!config.aggressiveMode) {
-    config.aggressiveMode = {
+  if (!userConfig.aggressiveMode) {
+    userConfig.aggressiveMode = {
       enabled: false,  // Default to CONSERVATIVE
       minPrice: 26,
       minDistanceFromStrike: 0.05,
@@ -3387,18 +3037,19 @@ app.post('/api/settings/aggressive-mode', (req, res) => {
     };
   }
 
-  if (enabled !== undefined) config.aggressiveMode.enabled = !!enabled;
-  if (minPrice !== undefined) config.aggressiveMode.minPrice = Math.max(15, Math.min(50, parseInt(minPrice) || 26));
-  if (minDistanceFromStrike !== undefined) config.aggressiveMode.minDistanceFromStrike = Math.max(0.01, Math.min(0.5, parseFloat(minDistanceFromStrike) || 0.05));
-  if (allowNightTrading !== undefined) config.aggressiveMode.allowNightTrading = !!allowNightTrading;
-  if (minConfidenceScore !== undefined) config.aggressiveMode.minConfidenceScore = Math.max(0, Math.min(5, parseInt(minConfidenceScore) || 1));
+  if (enabled !== undefined) userConfig.aggressiveMode.enabled = !!enabled;
+  if (minPrice !== undefined) userConfig.aggressiveMode.minPrice = Math.max(15, Math.min(50, parseInt(minPrice) || 26));
+  if (minDistanceFromStrike !== undefined) userConfig.aggressiveMode.minDistanceFromStrike = Math.max(0.01, Math.min(0.5, parseFloat(minDistanceFromStrike) || 0.05));
+  if (allowNightTrading !== undefined) userConfig.aggressiveMode.allowNightTrading = !!allowNightTrading;
+  if (minConfidenceScore !== undefined) userConfig.aggressiveMode.minConfidenceScore = Math.max(0, Math.min(5, parseInt(minConfidenceScore) || 1));
 
-  const mode = config.aggressiveMode.enabled ? 'AGGRESSIVE' : 'CONSERVATIVE';
-  console.log(`⚡ Trading mode: ${mode}`, JSON.stringify(config.aggressiveMode));
+  const mode = userConfig.aggressiveMode.enabled ? 'AGGRESSIVE' : 'CONSERVATIVE';
+  console.log(`⚡ Trading mode: ${mode} for user ${req.userId}`, JSON.stringify(userConfig.aggressiveMode));
+  saveUserState(req.userId);
 
   res.json({
     success: true,
-    aggressiveMode: config.aggressiveMode,
+    aggressiveMode: userConfig.aggressiveMode,
     mode: mode,
     message: `Trading mode set to ${mode}`
   });
@@ -3408,17 +3059,23 @@ app.post('/api/settings/aggressive-mode', (req, res) => {
 // PROFILE ENDPOINTS
 // ============================================
 
-// Get all profiles
+// Get all profiles - FILTERED BY USER
 app.get('/api/profiles', (req, res) => {
-  const profileList = Object.entries(profiles).map(([id, p]) => ({
-    id,
-    name: p.name,
-    hasCredentials: !!(p.kalshiApiKeyId && p.kalshiPrivateKey),
-    hasPin: !!p.pin,
-    isActive: id === activeProfileId,
-    lastActive: p.lastActive,
-    createdAt: p.createdAt
-  }));
+  // Filter profiles to only show those belonging to the current user
+  const profileList = Object.entries(profiles)
+    .filter(([id, p]) => {
+      // Only show profiles that belong to this user (or have no owner for legacy migration)
+      return p.userId === req.userId || (!p.userId && req.userId);
+    })
+    .map(([id, p]) => ({
+      id,
+      name: p.name,
+      hasCredentials: !!(p.kalshiApiKeyId && p.kalshiPrivateKey),
+      hasPin: !!p.pin,
+      isActive: id === activeProfileId,
+      lastActive: p.lastActive,
+      createdAt: p.createdAt
+    }));
 
   res.json({
     success: true,
@@ -3427,7 +3084,7 @@ app.get('/api/profiles', (req, res) => {
   });
 });
 
-// Create new profile
+// Create new profile - ASSOCIATED WITH USER
 app.post('/api/profiles', (req, res) => {
   const { name, pin } = req.body;
 
@@ -3435,17 +3092,22 @@ app.post('/api/profiles', (req, res) => {
     return res.status(400).json({ success: false, error: 'Name must be at least 2 characters' });
   }
 
+  if (!req.userId) {
+    return res.status(401).json({ success: false, error: 'Must be logged in to create a profile' });
+  }
+
   const id = `profile_${Date.now()}`;
   profiles[id] = {
     name,
     pin: pin || null,
+    userId: req.userId,  // Associate profile with the logged-in user
     kalshiApiKeyId: null,
     kalshiPrivateKey: null,
     settings: {
-      riskLimits: { ...config.riskLimits },
-      scaleIn: { ...config.scaleIn },
-      degenMode: { ...config.degenMode },
-      aggressiveMode: { ...config.aggressiveMode }
+      riskLimits: { ...DEFAULT_CONFIG.riskLimits },
+      scaleIn: { ...DEFAULT_CONFIG.scaleIn },
+      degenMode: { ...DEFAULT_CONFIG.degenMode },
+      aggressiveMode: { ...DEFAULT_CONFIG.aggressiveMode }
     },
     betHistory: [],
     createdAt: new Date().toISOString(),
@@ -3471,6 +3133,11 @@ app.post('/api/profiles/:id/switch', async (req, res) => {
   }
 
   const profile = profiles[id];
+
+  // Verify user owns this profile (or it's a legacy unowned profile)
+  if (profile.userId && profile.userId !== req.userId) {
+    return res.status(403).json({ success: false, error: 'Access denied - this profile belongs to another user' });
+  }
 
   // Check PIN if profile has one
   if (profile.pin) {
@@ -3594,6 +3261,11 @@ app.delete('/api/profiles/:id', (req, res) => {
   }
 
   const profile = profiles[id];
+
+  // Verify user owns this profile
+  if (profile.userId && profile.userId !== req.userId) {
+    return res.status(403).json({ success: false, error: 'Access denied - this profile belongs to another user' });
+  }
 
   // Require PIN to delete if profile has one
   if (profile.pin && profile.pin !== pin) {
@@ -3746,21 +3418,12 @@ app.post('/api/bet', async (req, res) => {
 
     // Force fresh market data by clearing cache
     marketCache.lastFetch = 0;
-    indexMarketCache.lastFetch = 0;
 
-    // Search both crypto and index markets
-    const [cryptoMarkets, indexMarkets] = await Promise.all([
-      fetchCryptoMarkets(),
-      fetchIndexMarkets()
-    ]);
+    // Search crypto markets only (BTC, ETH, SOL)
+    const cryptoMarkets = await fetchCryptoMarkets();
 
     let market = cryptoMarkets.find(m => m.ticker === ticker);
     let marketType = 'crypto';
-
-    if (!market) {
-      market = indexMarkets.find(m => m.ticker === ticker);
-      marketType = 'index';
-    }
 
     if (!market) {
       return res.status(404).json({ success: false, error: `Market ${ticker} not found or has expired` });
@@ -4005,11 +3668,8 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       }
     }
 
-    // Fetch both crypto and index markets
-    const [cryptoMarkets, indexMarkets] = await Promise.all([
-      fetchCryptoMarkets(),
-      fetchIndexMarkets()
-    ]);
+    // Fetch crypto markets only (BTC, ETH, SOL 15-minute markets)
+    const cryptoMarkets = await fetchCryptoMarkets();
     const now = Date.now();
 
     // Clean up old bets from tracking (older than 30 min)
@@ -4020,19 +3680,12 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     }
 
     // Analyze crypto opportunities
-    const cryptoOpps = cryptoMarkets
+    const opportunities = cryptoMarkets
       .map(m => {
         const analyzed = analyzeCryptoMarket(parseMarket(m));
         if (analyzed) analyzed.marketCategory = 'crypto';
         return analyzed;
-      });
-
-    // Analyze index opportunities
-    const indexOpps = indexMarkets
-      .map(m => analyzeIndexMarket(parseIndexMarket(m)));
-
-    // Combine and filter
-    const opportunities = [...cryptoOpps, ...indexOpps]
+      })
       .filter(m => {
         if (m === null) return false;
         // REQUIRE 60%+ WIN PROBABILITY for auto-betting
@@ -4053,7 +3706,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       // SORT BY WIN PROBABILITY (safest bets first)
       .sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
 
-    const totalScanned = cryptoMarkets.length + indexMarkets.length;
+    const totalScanned = cryptoMarkets.length;
 
     if (opportunities.length === 0) {
       return res.json({
@@ -4352,13 +4005,9 @@ async function runAutoBet(userId = null) {
 
     // Force fresh market data
     marketCache.lastFetch = 0;
-    indexMarketCache.lastFetch = 0;
 
-    // Fetch both crypto and index markets
-    const [cryptoMarkets, indexMarkets] = await Promise.all([
-      fetchCryptoMarkets(),
-      fetchIndexMarkets()
-    ]);
+    // Fetch crypto markets only (BTC, ETH, SOL 15-minute markets)
+    const cryptoMarkets = await fetchCryptoMarkets();
     const now = Date.now();
 
     // Clean up old bets (remove bets older than 30 minutes)
@@ -4368,23 +4017,17 @@ async function runAutoBet(userId = null) {
       }
     }
 
-    console.log(`📊 Fetched: ${cryptoMarkets.length} crypto, ${indexMarkets.length} index markets`);
+    console.log(`📊 Fetched: ${cryptoMarkets.length} crypto markets (BTC, ETH, SOL)`);
     console.log(`   Recent bets tracking: ${recentBets.size} markets`);
 
     // Analyze crypto opportunities
-    const cryptoOpps = cryptoMarkets
+    const allOpps = cryptoMarkets
       .map(m => {
         const analyzed = analyzeCryptoMarket(parseMarket(m));
         if (analyzed) analyzed.marketCategory = 'crypto';
         return analyzed;
-      });
-
-    // Analyze index opportunities
-    const indexOpps = indexMarkets
-      .map(m => analyzeIndexMarket(parseIndexMarket(m)));
-
-    // Count before filtering
-    const allOpps = [...cryptoOpps, ...indexOpps].filter(m => m !== null);
+      })
+      .filter(m => m !== null);
     const withEdge = allOpps.filter(m => m.edge > 0);
     const above50 = allOpps.filter(m => parseFloat(m.winProbability) >= 50);
     const above60 = allOpps.filter(m => parseFloat(m.winProbability) >= 60);
@@ -4423,9 +4066,8 @@ async function runAutoBet(userId = null) {
     // Log trading mode
     console.log(`   ⚡ Mode: ${isAggressive ? 'AGGRESSIVE' : 'CONSERVATIVE'} | Min price: ${minPrice}¢ | Night: always allowed`);
 
-    const opportunities = [...cryptoOpps, ...indexOpps]
+    const opportunities = allOpps
       .filter(m => {
-        if (m === null) return false;
 
         // DATA-DRIVEN: Night trading (0-5 AM) has 43.1% win rate
         if (isNightTime && !allowNight) {
@@ -4455,14 +4097,37 @@ async function runAutoBet(userId = null) {
         }
         return true;
       })
-      // DATA-DRIVEN: Prefer NO bets (70.6% win rate vs YES 53.1%)
-      // Sort by: 1) NO bets first, 2) then by win probability
+      // DATA-DRIVEN: Prefer HIGH-PRICED bets with SHORT TIME LEFT
+      // User observed: "algorithm was doing better on 80¢ bets with less time left"
+      // High price = market agrees with us, Short time = less volatility risk
       .sort((a, b) => {
-        // Bonus for NO bets based on data analysis
-        const aBonus = (a.betSide || '').toUpperCase() === 'NO' ? 5 : 0;
-        const bBonus = (b.betSide || '').toUpperCase() === 'NO' ? 5 : 0;
-        const aScore = parseFloat(a.winProbability) + aBonus;
-        const bScore = parseFloat(b.winProbability) + bBonus;
+        // Score components:
+        // 1) Win probability (base)
+        // 2) Price bonus: Higher price = safer (market agrees)
+        // 3) Time bonus: Less time remaining = safer
+        // 4) NO bet bonus (from data analysis)
+
+        const aProb = parseFloat(a.winProbability) || 0;
+        const bProb = parseFloat(b.winProbability) || 0;
+
+        // Price bonus: 60¢+ gets bonus, 80¢+ gets bigger bonus
+        const aPriceCents = a.betPriceCents || 0;
+        const bPriceCents = b.betPriceCents || 0;
+        const aPriceBonus = aPriceCents >= 80 ? 8 : aPriceCents >= 60 ? 4 : 0;
+        const bPriceBonus = bPriceCents >= 80 ? 8 : bPriceCents >= 60 ? 4 : 0;
+
+        // Time bonus: Under 5 min left = safer
+        const aTimeMin = a.timeRemainingMinutes || 15;
+        const bTimeMin = b.timeRemainingMinutes || 15;
+        const aTimeBonus = aTimeMin <= 5 ? 5 : aTimeMin <= 8 ? 2 : 0;
+        const bTimeBonus = bTimeMin <= 5 ? 5 : bTimeMin <= 8 ? 2 : 0;
+
+        // NO bet bonus (from data analysis: 70.6% win rate vs YES 53.1%)
+        const aNoBonus = (a.betSide || '').toUpperCase() === 'NO' ? 3 : 0;
+        const bNoBonus = (b.betSide || '').toUpperCase() === 'NO' ? 3 : 0;
+
+        const aScore = aProb + aPriceBonus + aTimeBonus + aNoBonus;
+        const bScore = bProb + bPriceBonus + bTimeBonus + bNoBonus;
         return bScore - aScore;
       });
 
@@ -4805,12 +4470,22 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
   }
 });
 
-// Get auto-bet scan status
+// Get auto-bet scan status - also restore interval if needed
 app.get('/api/auto-bet/status', (req, res) => {
   const userConfig = req.userState?.config || config;
+
+  // CRITICAL FIX: If user has auto-bet enabled but no interval running, restart it
+  // This handles server restarts and page refreshes
+  if (req.userId && userConfig.autoBetEnabled && !userAutoBetIntervals.has(req.userId)) {
+    console.log(`🔄 Restoring auto-bet interval for user ${req.userId}`);
+    runAutoBet(req.userId);
+    userAutoBetIntervals.set(req.userId, setInterval(() => runAutoBet(req.userId), 10000));
+  }
+
   res.json({
     success: true,
     autoBetEnabled: userConfig.autoBetEnabled,
+    intervalRunning: req.userId ? userAutoBetIntervals.has(req.userId) : false,
     ...lastScanStatus
   });
 });

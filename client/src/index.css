@@ -54,13 +54,48 @@
   --font-body: 'Rajdhani', sans-serif;
   --font-mono: 'Share Tech Mono', monospace;
 
-  /* Sizing */
+  /* Sizing - Base scale for responsive sizing */
+  --base-scale: 1;
   --sidebar-width: 180px;
   --header-height: 42px;
   --ticker-height: 32px;
   --radius-sm: 3px;
   --radius-md: 6px;
   --radius-lg: 8px;
+
+  /* Base font sizes (scaled) */
+  --font-size-xs: calc(10px * var(--base-scale));
+  --font-size-sm: calc(12px * var(--base-scale));
+  --font-size-base: calc(14px * var(--base-scale));
+  --font-size-md: calc(16px * var(--base-scale));
+  --font-size-lg: calc(18px * var(--base-scale));
+  --font-size-xl: calc(22px * var(--base-scale));
+  --font-size-2xl: calc(28px * var(--base-scale));
+}
+
+/* 1440p+ displays - scale up by 15% */
+@media (min-width: 2560px) {
+  :root {
+    --base-scale: 1.15;
+    --sidebar-width: 210px;
+    --header-height: 50px;
+  }
+}
+
+/* 4K displays - scale up by 30% */
+@media (min-width: 3840px) {
+  :root {
+    --base-scale: 1.3;
+    --sidebar-width: 240px;
+    --header-height: 56px;
+  }
+}
+
+/* 1440p height detection (common for 1440p monitors) */
+@media (min-height: 1440px) {
+  :root {
+    --base-scale: 1.12;
+  }
 }
 
 /* ============================================
@@ -74,6 +109,7 @@ body {
   min-height: 100vh;
   line-height: 1.5;
   font-weight: 500;
+  font-size: var(--font-size-base);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -4176,6 +4212,119 @@ body {
 .opp-card.index-market:hover {
   border-color: var(--neon-yellow);
   box-shadow: 0 0 20px rgba(255, 238, 0, 0.15);
+}
+
+/* ============================================
+   Risk Card Component
+   ============================================ */
+
+.risk-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: calc(16px * var(--base-scale));
+  margin-bottom: calc(16px * var(--base-scale));
+}
+
+.risk-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: calc(12px * var(--base-scale));
+}
+
+.risk-card-title {
+  font-family: var(--font-display);
+  font-size: var(--font-size-sm);
+  color: var(--neon-cyan);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.risk-card-status {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(0, 255, 136, 0.15);
+  color: var(--accent-green);
+  border: 1px solid rgba(0, 255, 136, 0.3);
+}
+
+.risk-card-status.warning {
+  background: rgba(255, 238, 0, 0.15);
+  color: var(--neon-yellow);
+  border-color: rgba(255, 238, 0, 0.3);
+}
+
+.risk-card-status.danger {
+  background: rgba(255, 51, 102, 0.15);
+  color: var(--accent-red);
+  border-color: rgba(255, 51, 102, 0.3);
+}
+
+.risk-exposure-bar {
+  margin-bottom: calc(12px * var(--base-scale));
+}
+
+.risk-exposure-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.risk-exposure-track {
+  height: 8px;
+  background: var(--bg-elevated);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.risk-exposure-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-green), var(--neon-cyan));
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.risk-exposure-fill.warning {
+  background: linear-gradient(90deg, var(--neon-yellow), var(--neon-orange));
+}
+
+.risk-exposure-fill.danger {
+  background: linear-gradient(90deg, var(--accent-red), var(--neon-magenta));
+}
+
+.risk-tokens {
+  display: flex;
+  gap: calc(8px * var(--base-scale));
+  flex-wrap: wrap;
+}
+
+.risk-token {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+}
+
+.risk-token-name {
+  font-family: var(--font-display);
+  color: var(--text-secondary);
+}
+
+.risk-token-value {
+  font-family: var(--font-mono);
+  color: var(--neon-cyan);
+}
+
+.risk-token-value.at-limit {
+  color: var(--accent-red);
 }
 
 @media (max-width: 768px) {
