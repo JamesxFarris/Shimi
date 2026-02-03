@@ -241,7 +241,7 @@ function saveSettings() {
       savedAt: new Date().toISOString()
     };
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
-    console.log(`💾 Saved settings: $${config.riskLimits.maxTotal / 100} max exposure, degen=${config.degenMode.enabled}`);
+    console.log(`💾 Saved settings: $${(config.riskLimits.maxPer15Min + config.riskLimits.maxPerHourly) / 100} max exposure, degen=${config.degenMode.enabled}`);
   } catch (err) {
     console.log('Could not save settings:', err.message);
   }
@@ -2841,11 +2841,11 @@ function getCurrentRiskFromPortfolio() {
 }
 
 function canPlaceBet(betCostCents) {
-  return (getCurrentExposure() + betCostCents) <= config.riskLimits.maxTotal;
+  return (getCurrentExposure() + betCostCents) <= getMaxTotalRisk();
 }
 
 function getRemainingRiskBudget() {
-  return Math.max(0, config.riskLimits.maxTotal - getCurrentExposure());
+  return Math.max(0, getMaxTotalRisk() - getCurrentExposure());
 }
 
 // Get total remaining budget (for display)
@@ -4539,7 +4539,7 @@ app.post('/api/bet', async (req, res) => {
     if (TARGET_BET_CENTS < priceCents) {
       return res.status(400).json({
         success: false,
-        error: `Risk limit reached for ${poolType} markets. Only $${(remainingBudget/100).toFixed(2)} remaining of $${(poolMax/100).toFixed(2)} max.`
+        error: `Risk limit reached. Only $${(remainingBudget/100).toFixed(2)} remaining.`
       });
     }
 
@@ -5347,41 +5347,36 @@ async function runAutoBet() {
     const betResults = [];
 
     // Process each opportunity (already sorted by EV)
-    // AUTO-BET places: safe bets + degen-safe bets (when degen mode enabled)
+    // AUTO-BET places: safe bets + degen bets (when degen mode enabled)
     const safeOpportunities = opportunities.filter(o => o.isSafe);
-    const degenSafeOpportunities = opportunities.filter(o => o.isDegenSafe);
-    const degenOpportunities = opportunities.filter(o => o.isDegen);
+    const degenOpportunities = opportunities.filter(o => o.isDegen || o.isDegenSafe);
 
-    // Combine safe and degen-safe for auto-betting
-    const autoBetOpportunities = [...safeOpportunities, ...degenSafeOpportunities];
+    // When degen mode is enabled, include ALL degen opportunities (not just degen-safe)
+    // They'll get smaller bet sizes via the multiplier
+    let autoBetOpportunities = [...safeOpportunities];
 
-    if (degenOpportunities.length > 0) {
-      console.log(`   🎲 ${degenOpportunities.length} DEGEN bets (manual only - doesn't meet criteria)`);
-    }
-
-    if (degenSafeOpportunities.length > 0) {
-      console.log(`   🔥 ${degenSafeOpportunities.length} DEGEN-SAFE bets (low price + strong momentum - AUTO enabled)`);
-    }
-
-    if (autoBetOpportunities.length === 0 && opportunities.length > 0) {
-      console.log('   📊 Only manual DEGEN bets available');
-      lastScanStatus.blockedReason = 'degen_only';
-      console.log('========================================\n');
-      return;
+    if (config.degenMode.enabled && degenOpportunities.length > 0) {
+      // Mark all degen opportunities for smaller bet sizing
+      degenOpportunities.forEach(o => o.isDegenBet = true);
+      autoBetOpportunities = [...safeOpportunities, ...degenOpportunities];
+      console.log(`   🔥 DEGEN MODE: Including ${degenOpportunities.length} high-risk bets (smaller size)`);
+    } else if (degenOpportunities.length > 0) {
+      console.log(`   🎲 ${degenOpportunities.length} DEGEN bets skipped (enable degen mode to auto-bet these)`);
     }
 
     if (autoBetOpportunities.length === 0) {
-      console.log('   📊 No opportunities with positive edge');
-      lastScanStatus.blockedReason = 'no_edge';
+      const reason = opportunities.length > 0 ? 'degen_only' : 'no_edge';
+      console.log(`   📊 ${opportunities.length > 0 ? 'Only degen bets available (enable degen mode)' : 'No opportunities with positive edge'}`);
+      lastScanStatus.blockedReason = reason;
       console.log('========================================\n');
       return;
     }
 
-    console.log(`   ✅ ${safeOpportunities.length} SAFE + ${degenSafeOpportunities.length} DEGEN-SAFE = ${autoBetOpportunities.length} auto-bets`);
+    console.log(`   ✅ ${safeOpportunities.length} SAFE + ${config.degenMode.enabled ? degenOpportunities.length : 0} DEGEN = ${autoBetOpportunities.length} auto-bets`);
 
     for (const opp of autoBetOpportunities) {
       const tokenName = getTokenFromTicker(opp.ticker) || opp.assetType || opp.cryptoType || 'token';
-      const betType = opp.isDegenSafe ? '🔥 DEGEN-SAFE' : '✅ SAFE';
+      const betType = opp.isSafe ? '✅ SAFE' : '🔥 DEGEN';
       console.log(`   🔄 Processing ${betType}: ${tokenName} ${opp.betSide} @ ${opp.betPriceCents}¢ (edge +${parseFloat(opp.edge).toFixed(1)}%)`);
 
       const priceCents = Math.round(opp.betPrice * 100);
@@ -5421,10 +5416,10 @@ async function runAutoBet() {
       const actualBankroll = Math.max(config.bankroll, portfolio.balance || 0);
       let maxBetCents = Math.min(getMaxPerBet(), remainingBudget, remainingTokenBudget, remainingTimeframeBudget);
 
-      // Apply degen mode bet multiplier (bet smaller on risky low-price bets)
-      if (opp.isDegenSafe) {
+      // Apply degen mode bet multiplier (bet smaller on risky bets)
+      if (opp.isDegenBet || opp.isDegenSafe || opp.isDegen) {
         maxBetCents = Math.floor(maxBetCents * config.degenMode.maxBetMultiplier);
-        console.log(`      Degen multiplier: ${config.degenMode.maxBetMultiplier}x → max $${(maxBetCents/100).toFixed(2)}`);
+        console.log(`      🔥 Degen bet: ${config.degenMode.maxBetMultiplier}x multiplier → max $${(maxBetCents/100).toFixed(2)}`);
       }
 
       const kellyBetSize = calculateKellyBet(winProb, priceCents, actualBankroll, maxBetCents);
@@ -6726,7 +6721,7 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
     if (savedSettings.minEdge !== undefined) {
       config.minEdge = savedSettings.minEdge;
     }
-    console.log(`⚙️ Risk limits: $${config.riskLimits.maxPerBet/100}/bet, $${config.riskLimits.maxTotal/100} max exposure`);
+    console.log(`⚙️ Risk limits: $${config.riskLimits.maxPerBet/100}/bet, $${(config.riskLimits.maxPer15Min + config.riskLimits.maxPerHourly)/100} max exposure`);
     console.log(`🔥 Degen mode: ${config.degenMode.enabled ? 'ENABLED' : 'disabled'}`);
   }
 
