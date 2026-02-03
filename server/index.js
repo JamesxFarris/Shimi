@@ -166,12 +166,20 @@ const SETTINGS_FILE = path.join(__dirname, 'settings.json');
 // AUTO-BET STATE PERSISTENCE
 // ============================================
 // Save/restore auto-bet state so it survives server restarts
+// Now uses JSONBin (via performanceData) for persistence on Render
 
 function loadAutoBetState() {
+  // First check if it's in performanceData (loaded from JSONBin)
+  if (performanceData.autoBetState) {
+    console.log(`🔄 Loaded auto-bet state from cloud: ${performanceData.autoBetState.enabled ? 'ENABLED' : 'disabled'}`);
+    return performanceData.autoBetState;
+  }
+
+  // Fallback to local file (for local development)
   try {
     if (fs.existsSync(STATE_FILE)) {
       const data = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-      console.log(`🔄 Loaded auto-bet state: ${data.enabled ? 'ENABLED' : 'disabled'}`);
+      console.log(`🔄 Loaded auto-bet state from file: ${data.enabled ? 'ENABLED' : 'disabled'}`);
       return data;
     }
   } catch (err) {
@@ -181,17 +189,24 @@ function loadAutoBetState() {
 }
 
 function saveAutoBetState(enabled, intervalSeconds = 15) {
+  const state = {
+    enabled,
+    intervalSeconds,
+    savedAt: new Date().toISOString()
+  };
+
+  // Save to performanceData (which syncs to JSONBin)
+  performanceData.autoBetState = state;
+  savePerformanceData(); // This will sync to JSONBin
+
+  // Also save locally as backup
   try {
-    const state = {
-      enabled,
-      intervalSeconds,
-      savedAt: new Date().toISOString()
-    };
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
-    console.log(`💾 Saved auto-bet state: ${enabled ? 'ENABLED' : 'disabled'}`);
   } catch (err) {
-    console.log('Could not save auto-bet state:', err.message);
+    // Ignore - Render filesystem is read-only
   }
+
+  console.log(`💾 Saved auto-bet state: ${enabled ? 'ENABLED' : 'disabled'} (syncing to cloud)`);
 }
 
 // ============================================
