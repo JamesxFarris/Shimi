@@ -6025,15 +6025,33 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
   console.log(`💰 Min edge: ${config.minEdge}% | Max bet: ${config.maxBetPercent}%`);
   console.log(`📈 Performance tracking: ${performanceData.bets.length} historical bets loaded`);
 
-  // JSONBin status
+  // JSONBin status - detailed logging
+  console.log(`☁️ JSONBin Config Check:`);
+  console.log(`   JSONBIN_API_KEY: ${JSONBIN_API_KEY ? '✓ SET (' + JSONBIN_API_KEY.substring(0, 10) + '...)' : '✗ NOT SET'}`);
+  console.log(`   JSONBIN_BIN_ID: ${JSONBIN_BIN_ID ? '✓ SET (' + JSONBIN_BIN_ID + ')' : '✗ NOT SET'}`);
+
   if (JSONBIN_API_KEY && JSONBIN_BIN_ID) {
-    console.log(`☁️ JSONBin: CONFIGURED (data will persist across deploys)`);
+    console.log(`☁️ JSONBin: CONFIGURED - data will persist across deploys`);
+    // Verify we can reach JSONBin
+    try {
+      const testRes = await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}/latest`, {
+        headers: { 'X-Access-Key': JSONBIN_API_KEY }
+      });
+      if (testRes.ok) {
+        const testData = await testRes.json();
+        console.log(`   ✓ Connection verified - ${testData.record?.bets?.length || 0} bets in cloud`);
+      } else {
+        console.log(`   ✗ Connection failed: ${testRes.status} ${testRes.statusText}`);
+      }
+    } catch (err) {
+      console.log(`   ✗ Connection error: ${err.message}`);
+    }
   } else if (JSONBIN_API_KEY) {
-    console.log(`☁️ JSONBin: API key set, waiting for first bet to create bin...`);
-    console.log(`   ⚠️ After first bet, check logs for JSONBIN_BIN_ID and add to env vars`);
+    console.log(`☁️ JSONBin: API key set but NO BIN ID - need to create bin or set JSONBIN_BIN_ID`);
+    console.log(`   Call POST /api/jsonbin-create to create a new bin`);
   } else {
     console.log(`⚠️ JSONBin: NOT CONFIGURED - performance data will be LOST on redeploy!`);
-    console.log(`   Set JSONBIN_API_KEY in Render environment variables (free at jsonbin.io)`);
+    console.log(`   Set JSONBIN_API_KEY and JSONBIN_BIN_ID in Render environment variables`);
   }
 
   // Auto-load Kalshi credentials from environment
