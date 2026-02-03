@@ -1590,9 +1590,61 @@ body {
   color: var(--text-dim);
 }
 
+/* Bet Action Row (qty selector + button) */
+.bet-action-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  margin-top: 8px;
+}
+
+.qty-selector {
+  display: flex;
+  align-items: center;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.qty-btn {
+  width: 32px;
+  height: 100%;
+  border: none;
+  background: var(--bg-dark);
+  color: var(--text-secondary);
+  font-size: 18px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.qty-btn:hover {
+  background: var(--neon-green);
+  color: var(--bg-dark);
+}
+
+.qty-input {
+  width: 40px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+  -moz-appearance: textfield;
+}
+
+.qty-input::-webkit-outer-spin-button,
+.qty-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 /* Bet Button */
 .bet-btn {
-  width: 100%;
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1607,7 +1659,6 @@ body {
   cursor: pointer;
   transition: all 0.2s;
   min-height: 56px;
-  margin-top: 8px;
 }
 
 .bet-btn.yes {

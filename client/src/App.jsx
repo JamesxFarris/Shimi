@@ -124,6 +124,7 @@ const ASSET_CONFIG = {
 
 // Opportunity Card - Larger stacked design
 const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
+  const [qty, setQty] = useState(1)
   const assetType = opp.assetType || opp.cryptoType || 'Unknown'
   const config = ASSET_CONFIG[assetType] || { color: '#888', name: assetType, icon: '?' }
   const isIndex = opp.marketCategory === 'index'
@@ -133,6 +134,7 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
   const isSafe = opp.isSafe === true
   const isDegenSafe = opp.isDegenSafe === true
   const pctFromStrike = parseFloat(opp.pctFromStrike) || 0
+  const showQtySelector = isDegen && !isLocked && !notRecommended
 
   return (
     <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''} ${notRecommended ? 'no-edge' : ''} ${isLocked ? 'locked' : ''} ${isDegen ? 'degen' : ''} ${isSafe ? 'safe' : ''} ${isDegenSafe ? 'degen-safe' : ''}`}>
@@ -217,13 +219,29 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
       </div>
 
       {/* Action Button */}
-      <button
-        className={`bet-btn ${isPlacing ? 'loading' : ''} ${opp.betSide?.toLowerCase()} ${notRecommended ? 'disabled-no-edge' : ''}`}
-        onClick={() => onBet(opp)}
-        disabled={isPlacing || notRecommended || isLocked}
-      >
-        {isPlacing ? 'Placing...' : isLocked ? (opp.filterReason || 'No signal') : notRecommended ? `${opp.filterReason}` : `BET ${opp.betSide} @ ${opp.betPriceCents || Math.round(opp.betPrice * 100)}¢`}
-      </button>
+      <div className="bet-action-row">
+        {showQtySelector && (
+          <div className="qty-selector">
+            <button className="qty-btn" onClick={() => setQty(Math.max(1, qty - 1))}>−</button>
+            <input
+              type="number"
+              className="qty-input"
+              value={qty}
+              onChange={(e) => setQty(Math.max(1, parseInt(e.target.value) || 1))}
+              min="1"
+              max="99"
+            />
+            <button className="qty-btn" onClick={() => setQty(Math.min(99, qty + 1))}>+</button>
+          </div>
+        )}
+        <button
+          className={`bet-btn ${isPlacing ? 'loading' : ''} ${opp.betSide?.toLowerCase()} ${notRecommended ? 'disabled-no-edge' : ''}`}
+          onClick={() => onBet(opp, qty)}
+          disabled={isPlacing || notRecommended || isLocked}
+        >
+          {isPlacing ? 'Placing...' : isLocked ? (opp.filterReason || 'No signal') : notRecommended ? `${opp.filterReason}` : `BET ${opp.betSide} @ ${opp.betPriceCents || Math.round(opp.betPrice * 100)}¢`}
+        </button>
+      </div>
     </div>
   )
 })
@@ -596,7 +614,7 @@ function App() {
   }, [autoBetEnabled, fetchScanStatus])
 
   // Place a bet
-  const placeBet = async (opp) => {
+  const placeBet = async (opp, qty = 1) => {
     if (placingBet) return // Prevent double-clicks
 
     setPlacingBet(opp.ticker)
@@ -611,7 +629,8 @@ function App() {
         body: JSON.stringify({
           ticker: opp.ticker,
           side: opp.betSide,
-          expectedPrice: opp.betPriceCents || Math.round(opp.betPrice * 100)
+          expectedPrice: opp.betPriceCents || Math.round(opp.betPrice * 100),
+          count: qty
         }),
         signal: controller.signal
       })

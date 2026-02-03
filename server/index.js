@@ -4534,7 +4534,7 @@ app.get('/api/reddit/sentiment', async (req, res) => {
 // Place a bet
 app.post('/api/bet', async (req, res) => {
   try {
-    const { ticker, side, expectedPrice } = req.body;
+    const { ticker, side, expectedPrice, count: requestedCount } = req.body;
 
     if (!ticker || !side) {
       return res.status(400).json({ success: false, error: 'ticker and side required' });
@@ -4604,13 +4604,13 @@ app.post('/api/bet', async (req, res) => {
       });
     }
 
-    // Manual bets always buy exactly 1 contract
-    const count = 1;
+    // Use requested count (default 1 for manual bets)
+    const count = Math.max(1, Math.min(99, parseInt(requestedCount) || 1));
 
-    if (count < 1) {
+    if (count * priceCents > getRemainingRiskBudget()) {
       return res.status(400).json({
         success: false,
-        error: `Contract price too high (${priceCents}¢). Max price: 99¢`
+        error: `Insufficient budget. Need $${((count * priceCents)/100).toFixed(2)}, have $${(getRemainingRiskBudget()/100).toFixed(2)}`
       });
     }
 

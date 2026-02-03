@@ -21,7 +21,8 @@
       "WebFetch(domain:kalshi.com)",
       "WebFetch(domain:help.kalshi.com)",
       "Bash($5.50 total\" for multi-bets\n\nExample: If 5 markets have 5%+ edge, we now bet on all 5\ninstead of ignoring 4 good opportunities.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
-      "WebFetch(domain:shimi.onrender.com)"
+      "WebFetch(domain:shimi.onrender.com)",
+      "Bash(git pull:*)"
     ]
   }
 }
