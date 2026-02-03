@@ -1652,15 +1652,13 @@ function App() {
                 {/* Degen Mode Settings */}
                 <div className="settings-card degen-card">
                   <h3 className="settings-card-title">🔥 Degen Mode</h3>
-                  <p className="settings-description">Allow low-probability bets (15-39¢) when momentum is strong. Higher risk, higher reward.</p>
+                  <p className="settings-description">Low-probability bets (15-39¢) with strong momentum. Toggle on/off from the home page button.</p>
                   <div className="scale-in-settings">
                     <div className="settings-input-group">
-                      <label>Enabled</label>
-                      <input
-                        type="checkbox"
-                        checked={degenModeSettings.enabled}
-                        onChange={(e) => updateDegenModeSettings('enabled', e.target.checked)}
-                      />
+                      <label>Status</label>
+                      <span className={`degen-status ${degenModeSettings.enabled ? 'active' : ''}`}>
+                        {degenModeSettings.enabled ? '🔥 Active' : 'Inactive'}
+                      </span>
                     </div>
                     <div className="settings-input-group">
                       <label>Min contract price (¢)</label>

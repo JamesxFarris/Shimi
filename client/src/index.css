@@ -2248,6 +2248,21 @@ body {
   content: '';
 }
 
+.degen-status {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(100, 100, 100, 0.2);
+  color: var(--text-muted);
+}
+
+.degen-status.active {
+  background: rgba(255, 100, 50, 0.2);
+  color: #ff6432;
+}
+
 .settings-card-title {
   font-family: var(--font-display);
   font-size: 14px;
