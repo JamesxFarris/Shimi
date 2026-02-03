@@ -27,10 +27,10 @@ app.use(express.json());
 const KALSHI_API_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
 
 // ============================================
-// CONFIGURATION
+// CONFIGURATION - Default template for new users
 // ============================================
 
-let config = {
+const DEFAULT_CONFIG = {
   apiKeyId: null,
   privateKey: null,
   isAuthenticated: false,
@@ -81,7 +81,115 @@ let config = {
 };
 
 // ============================================
-// PROFILES SYSTEM
+// PER-USER STATE MANAGEMENT
+// ============================================
+const USER_DATA_DIR = path.join(__dirname, 'userData');
+
+// Ensure userData directory exists
+if (!fs.existsSync(USER_DATA_DIR)) {
+  fs.mkdirSync(USER_DATA_DIR, { recursive: true });
+}
+
+// In-memory cache of user states
+const userStates = new Map();
+
+// Auto-bet intervals per user
+const userAutoBetIntervals = new Map();
+
+// Get or create user state
+function getUserState(userId) {
+  if (!userId) {
+    // Return a default read-only state for unauthenticated requests
+    return {
+      config: { ...DEFAULT_CONFIG },
+      betHistory: [],
+      portfolio: { balance: 0, positions: [] }
+    };
+  }
+
+  if (!userStates.has(userId)) {
+    // Try to load from disk
+    const userFile = path.join(USER_DATA_DIR, `${userId}.json`);
+    if (fs.existsSync(userFile)) {
+      try {
+        const data = JSON.parse(fs.readFileSync(userFile, 'utf8'));
+        userStates.set(userId, {
+          config: { ...DEFAULT_CONFIG, ...data.config },
+          betHistory: data.betHistory || [],
+          portfolio: data.portfolio || { balance: 0, positions: [] }
+        });
+        console.log(`📂 Loaded state for user ${userId}`);
+      } catch (err) {
+        console.error(`Error loading user state for ${userId}:`, err);
+        userStates.set(userId, createDefaultUserState());
+      }
+    } else {
+      // New user - create default state
+      userStates.set(userId, createDefaultUserState());
+      console.log(`🆕 Created new state for user ${userId}`);
+    }
+  }
+  return userStates.get(userId);
+}
+
+// Create default user state
+function createDefaultUserState() {
+  return {
+    config: JSON.parse(JSON.stringify(DEFAULT_CONFIG)), // Deep clone
+    betHistory: [],
+    portfolio: { balance: 0, positions: [] }
+  };
+}
+
+// Save user state to disk
+function saveUserState(userId) {
+  if (!userId) return;
+  const state = userStates.get(userId);
+  if (!state) return;
+
+  const userFile = path.join(USER_DATA_DIR, `${userId}.json`);
+  try {
+    fs.writeFileSync(userFile, JSON.stringify({
+      config: state.config,
+      betHistory: state.betHistory,
+      portfolio: state.portfolio
+    }, null, 2));
+  } catch (err) {
+    console.error(`Error saving user state for ${userId}:`, err);
+  }
+}
+
+// Middleware to extract user from JWT token
+function extractUser(req, res, next) {
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.replace('Bearer ', '');
+
+  if (token) {
+    const userId = auth.verifyToken(token);
+    if (userId) {
+      req.userId = userId;
+      req.userState = getUserState(userId);
+    }
+  }
+
+  // If no valid token, use empty/default state
+  if (!req.userState) {
+    req.userState = getUserState(null);
+  }
+
+  next();
+}
+
+// Apply extractUser middleware to all routes
+app.use(extractUser);
+
+// Legacy compatibility - point global config to a getter (for code that still uses it)
+let config = DEFAULT_CONFIG;
+let betHistory = [];
+let portfolio = { balance: 0, positions: [] };
+
+// ============================================
+// PROFILES SYSTEM (DEPRECATED - kept for migration)
 // ============================================
 const PROFILES_FILE = path.join(__dirname, 'profiles.json');
 let profiles = {};
@@ -176,10 +284,6 @@ function saveToActiveProfile() {
     saveProfiles();
   }
 }
-
-// Initialize state BEFORE loading profiles (profiles use these)
-let betHistory = [];
-let portfolio = { balance: 0, positions: [] };
 
 // Load profiles on startup (but DON'T auto-login - user must select profile)
 loadProfiles();
@@ -2190,7 +2294,9 @@ function signRequest(method, path, timestamp) {
   }
 }
 
-async function kalshiRequest(method, endpoint, body = null) {
+// User-aware Kalshi API request - uses provided config or falls back to global
+async function kalshiRequest(method, endpoint, body = null, userConfig = null) {
+  const cfg = userConfig || config; // Use user-specific config if provided
   const timestamp = Date.now().toString();
   const path = `/trade-api/v2${endpoint}`;
 
@@ -2200,9 +2306,9 @@ async function kalshiRequest(method, endpoint, body = null) {
     'User-Agent': 'Shimi/1.0'
   };
 
-  if (config.isAuthenticated && config.apiKeyId && config.privateKey) {
-    const signature = signRequest(method, path, timestamp);
-    headers['KALSHI-ACCESS-KEY'] = config.apiKeyId;
+  if (cfg.isAuthenticated && cfg.apiKeyId && cfg.privateKey) {
+    const signature = signRequestWithConfig(method, path, timestamp, cfg);
+    headers['KALSHI-ACCESS-KEY'] = cfg.apiKeyId;
     headers['KALSHI-ACCESS-TIMESTAMP'] = timestamp;
     headers['KALSHI-ACCESS-SIGNATURE'] = signature;
   }
@@ -2220,6 +2326,27 @@ async function kalshiRequest(method, endpoint, body = null) {
   }
 
   return response.json();
+}
+
+// Sign request with specific config
+function signRequestWithConfig(method, path, timestamp, cfg) {
+  const message = timestamp + method + path;
+  try {
+    const privateKeyObj = crypto.createPrivateKey({
+      key: cfg.privateKey,
+      format: 'pem',
+      type: 'pkcs8'
+    });
+    const signature = crypto.sign('RSA-SHA256', Buffer.from(message), {
+      key: privateKeyObj,
+      padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+      saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST
+    });
+    return signature.toString('base64');
+  } catch (err) {
+    console.error('Signature error:', err.message);
+    return '';
+  }
 }
 
 // ============================================
@@ -2950,11 +3077,13 @@ app.get('/api/opportunities/all', async (req, res) => {
       ? allAnalyzed.sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability))
       : allAnalyzed.filter(m => m.isRecommended).sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
 
-    // Refresh positions before calculating risk
-    if (config.isAuthenticated) {
+    // Refresh positions before calculating risk (user-specific)
+    const userConfig = req.userState?.config || config;
+    const userPortfolio = req.userState?.portfolio || portfolio;
+    if (userConfig.isAuthenticated) {
       try {
-        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
-        portfolio.positions = posData.market_positions || posData.positions || [];
+        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
+        userPortfolio.positions = posData.market_positions || posData.positions || [];
       } catch (e) {
         console.log('Could not refresh positions:', e.message);
       }
@@ -4175,9 +4304,16 @@ let lastScanStatus = {
   blockedReasons: [] // Track why bets weren't placed
 };
 
-async function runAutoBet() {
+async function runAutoBet(userId = null) {
   try {
+    // Get user-specific state if userId provided
+    const userState = userId ? getUserState(userId) : null;
+    const userConfig = userState?.config || config;
+    const userPortfolio = userState?.portfolio || portfolio;
+    const userBetHistory = userState?.betHistory || betHistory;
+
     console.log('\n🤖 ========== AUTO-BET SCAN ==========');
+    if (userId) console.log(`   User: ${userId}`);
 
     // Reset scan status
     lastScanStatus = {
@@ -4192,13 +4328,13 @@ async function runAutoBet() {
     };
 
     // CRITICAL: Refresh positions from Kalshi FIRST to get accurate risk
-    if (config.isAuthenticated) {
+    if (userConfig.isAuthenticated) {
       try {
-        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
-        portfolio.positions = posData.market_positions || posData.positions || [];
-        console.log(`📊 Refreshed positions: ${portfolio.positions.length} open positions from Kalshi`);
-        if (portfolio.positions.length > 0) {
-          portfolio.positions.forEach(p => {
+        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
+        userPortfolio.positions = posData.market_positions || posData.positions || [];
+        console.log(`📊 Refreshed positions: ${userPortfolio.positions.length} open positions from Kalshi`);
+        if (userPortfolio.positions.length > 0) {
+          userPortfolio.positions.forEach(p => {
             const token = getTokenFromTicker(p.ticker);
             console.log(`   Position: ${p.ticker} (${token}) | contracts=${p.position} | avg_price=${p.average_price} | market_exposure=${p.market_exposure}`);
           });
@@ -4619,21 +4755,41 @@ async function runAutoBet() {
 app.post('/api/crypto/auto-bet/toggle', (req, res) => {
   const { enabled, intervalSeconds = 10 } = req.body; // Check every 10 seconds for faster reaction
 
-  if (enabled && !config.autoBetEnabled) {
-    config.autoBetEnabled = true;
-    saveToActiveProfile(); // Persist auto-bet state
+  // Require authentication for auto-bet
+  if (!req.userId) {
+    return res.status(401).json({ success: false, error: 'Please login first' });
+  }
 
-    runAutoBet();
-    autoBetInterval = setInterval(runAutoBet, intervalSeconds * 1000);
+  const userConfig = req.userState.config;
+
+  if (enabled && !userConfig.autoBetEnabled) {
+    userConfig.autoBetEnabled = true;
+    saveUserState(req.userId);
+
+    // For now, auto-bet still uses the user's state through the middleware
+    // TODO: Implement per-user auto-bet intervals
+    runAutoBet(req.userId);
+
+    // Store interval per user
+    if (userAutoBetIntervals.has(req.userId)) {
+      clearInterval(userAutoBetIntervals.get(req.userId));
+    }
+    userAutoBetIntervals.set(req.userId, setInterval(() => runAutoBet(req.userId), intervalSeconds * 1000));
 
     res.json({
       success: true,
       message: `Auto-betting enabled (every ${intervalSeconds}s)`,
       autoBetEnabled: true
     });
-  } else if (!enabled && config.autoBetEnabled) {
-    config.autoBetEnabled = false;
-    saveToActiveProfile(); // Persist auto-bet state
+  } else if (!enabled && userConfig.autoBetEnabled) {
+    userConfig.autoBetEnabled = false;
+    saveUserState(req.userId);
+
+    // Clear user's auto-bet interval
+    if (userAutoBetIntervals.has(req.userId)) {
+      clearInterval(userAutoBetIntervals.get(req.userId));
+      userAutoBetIntervals.delete(req.userId);
+    }
     if (autoBetInterval) {
       clearInterval(autoBetInterval);
       autoBetInterval = null;
@@ -4643,17 +4799,18 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
   } else {
     res.json({
       success: true,
-      message: `Auto-betting ${config.autoBetEnabled ? 'running' : 'stopped'}`,
-      autoBetEnabled: config.autoBetEnabled
+      message: `Auto-betting ${userConfig.autoBetEnabled ? 'running' : 'stopped'}`,
+      autoBetEnabled: userConfig.autoBetEnabled
     });
   }
 });
 
 // Get auto-bet scan status
 app.get('/api/auto-bet/status', (req, res) => {
+  const userConfig = req.userState?.config || config;
   res.json({
     success: true,
-    autoBetEnabled: config.autoBetEnabled,
+    autoBetEnabled: userConfig.autoBetEnabled,
     ...lastScanStatus
   });
 });
@@ -4777,35 +4934,37 @@ app.post('/api/auth/configure', async (req, res) => {
       return res.status(400).json({ success: false, error: 'apiKeyId and privateKey required' });
     }
 
-    // Require active profile to save credentials
-    if (!activeProfileId || !profiles[activeProfileId]) {
-      return res.status(400).json({ success: false, error: 'Please select a profile first' });
+    // Require authenticated user
+    if (!req.userId) {
+      return res.status(401).json({ success: false, error: 'Please login first' });
     }
 
-    config.apiKeyId = apiKeyId.trim();
-    config.privateKey = privateKey.trim();
-    config.isAuthenticated = true;
+    const userState = req.userState;
+    const userConfig = userState.config;
+
+    userConfig.apiKeyId = apiKeyId.trim();
+    userConfig.privateKey = privateKey.trim();
+    userConfig.isAuthenticated = true;
 
     try {
-      const balanceData = await kalshiRequest('GET', '/portfolio/balance');
-      portfolio.balance = balanceData.balance || 0;
-      config.bankroll = portfolio.balance;
+      // Test the credentials with user-specific config
+      const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
+      userState.portfolio.balance = balanceData.balance || 0;
+      userConfig.bankroll = userState.portfolio.balance;
 
-      // Save credentials to the active profile
-      profiles[activeProfileId].kalshiApiKeyId = config.apiKeyId;
-      profiles[activeProfileId].kalshiPrivateKey = config.privateKey;
-      saveProfiles();
-      console.log(`🔑 Saved Kalshi credentials to profile: ${profiles[activeProfileId].name}`);
+      // Save user state to disk
+      saveUserState(req.userId);
+      console.log(`🔑 Saved Kalshi credentials for user ${req.userId}`);
 
       res.json({
         success: true,
         message: 'Connected to Kalshi',
-        balance: portfolio.balance / 100
+        balance: userState.portfolio.balance / 100
       });
     } catch (authError) {
-      config.apiKeyId = null;
-      config.privateKey = null;
-      config.isAuthenticated = false;
+      userConfig.apiKeyId = null;
+      userConfig.privateKey = null;
+      userConfig.isAuthenticated = false;
       res.status(401).json({ success: false, error: 'Invalid credentials: ' + authError.message });
     }
   } catch (error) {
@@ -4814,20 +4973,26 @@ app.post('/api/auth/configure', async (req, res) => {
 });
 
 app.get('/api/auth/status', (req, res) => {
+  const userConfig = req.userState?.config || config;
   res.json({
-    isAuthenticated: config.isAuthenticated,
-    hasApiKey: !!config.apiKeyId
+    isAuthenticated: userConfig.isAuthenticated,
+    hasApiKey: !!userConfig.apiKeyId,
+    userId: req.userId || null
   });
 });
 
 app.get('/api/portfolio', async (req, res) => {
   try {
+    const userConfig = req.userState?.config || config;
+    const userPortfolio = req.userState?.portfolio || portfolio;
+    const userBetHistory = req.userState?.betHistory || betHistory;
+
     // If authenticated, fetch real data from Kalshi
-    if (config.isAuthenticated) {
+    if (userConfig.isAuthenticated) {
       // Fetch balance
-      const balanceData = await kalshiRequest('GET', '/portfolio/balance');
-      portfolio.balance = balanceData.balance || 0;
-      config.bankroll = portfolio.balance;
+      const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
+      userPortfolio.balance = balanceData.balance || 0;
+      userConfig.bankroll = userPortfolio.balance;
 
       // Fetch recent fills (completed trades) - last 20
       let realBetHistory = [];
@@ -4878,7 +5043,7 @@ app.get('/api/portfolio', async (req, res) => {
         // Fetch all market data in parallel
         const marketPromises = uniqueTickers.map(async (ticker) => {
           try {
-            const data = await kalshiRequest('GET', `/markets/${ticker}`);
+            const data = await kalshiRequest('GET', `/markets/${ticker}`, null, userConfig);
             if (data.market) {
               return {
                 ticker,
@@ -4953,12 +5118,12 @@ app.get('/api/portfolio', async (req, res) => {
 
       } catch (fillError) {
         console.error('Error fetching fills:', fillError.message);
-        realBetHistory = betHistory.slice(0, 20);
+        realBetHistory = userBetHistory.slice(0, 20);
       }
 
       // Merge with in-memory history
       const combinedHistory = [...realBetHistory];
-      betHistory.forEach(memBet => {
+      userBetHistory.forEach(memBet => {
         if (!combinedHistory.some(b => b.orderId === memBet.orderId || b.id === memBet.id)) {
           combinedHistory.push(memBet);
         }
@@ -4973,10 +5138,13 @@ app.get('/api/portfolio', async (req, res) => {
       const wins = settled.filter(b => b.outcome === 'won').length;
       const losses = settled.filter(b => b.outcome === 'lost').length;
 
+      // Save updated state
+      if (req.userId) saveUserState(req.userId);
+
       res.json({
         success: true,
         simulated: false,
-        balance: portfolio.balance / 100,
+        balance: userPortfolio.balance / 100,
         betHistory: combinedHistory.slice(0, 20),
         stats: {
           totalBets: settled.length,
@@ -4991,18 +5159,20 @@ app.get('/api/portfolio', async (req, res) => {
       res.json({
         success: true,
         simulated: true,
-        balance: config.bankroll / 100,
-        betHistory: betHistory.slice(0, 20),
+        balance: userConfig.bankroll / 100,
+        betHistory: userBetHistory.slice(0, 20),
         stats: { totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 }
       });
     }
   } catch (error) {
     console.error('Portfolio error:', error.message);
+    const userConfig = req.userState?.config || config;
+    const userBetHistory = req.userState?.betHistory || betHistory;
     res.json({
       success: true,
-      simulated: !config.isAuthenticated,
-      balance: config.bankroll / 100,
-      betHistory: betHistory.slice(0, 20),
+      simulated: !userConfig.isAuthenticated,
+      balance: userConfig.bankroll / 100,
+      betHistory: userBetHistory.slice(0, 20),
       stats: { totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 },
       error: error.message
     });
@@ -5010,13 +5180,14 @@ app.get('/api/portfolio', async (req, res) => {
 });
 
 app.get('/api/settings', (req, res) => {
+  const userConfig = req.userState?.config || config;
   res.json({
     success: true,
     settings: {
-      bankroll: config.bankroll / 100,
-      minEdge: config.minEdge,
-      maxBetPercent: config.maxBetPercent,
-      autoBetEnabled: config.autoBetEnabled
+      bankroll: userConfig.bankroll / 100,
+      minEdge: userConfig.minEdge,
+      maxBetPercent: userConfig.maxBetPercent,
+      autoBetEnabled: userConfig.autoBetEnabled
     }
   });
 });
