@@ -598,21 +598,41 @@ function getProbBucket(prob) {
   return '85+';
 }
 
-// Recalculate summary statistics
+// Recalculate ALL summary statistics from bets array
 function recalculateSummary() {
-  const settled = performanceData.bets.filter(b => b.outcome !== 'pending');
-  if (settled.length === 0) return;
+  const bets = performanceData.bets || [];
+  const settled = bets.filter(b => b.outcome === 'won' || b.outcome === 'lost');
+  const pending = bets.filter(b => b.outcome === 'pending' || !b.outcome);
+  const wins = bets.filter(b => b.outcome === 'won');
+  const losses = bets.filter(b => b.outcome === 'lost');
+
+  // Recalculate totals from actual data
+  performanceData.summary.totalBets = bets.length;
+  performanceData.summary.wins = wins.length;
+  performanceData.summary.losses = losses.length;
+  performanceData.summary.pending = pending.length;
+
+  // Total wagered
+  performanceData.summary.totalWagered = bets.reduce((sum, b) => sum + (b.totalCost || 0), 0);
+
+  // Total profit (wins - losses)
+  const winProfit = wins.reduce((sum, b) => sum + (b.actualProfit || 0), 0);
+  const lossAmount = losses.reduce((sum, b) => sum + (b.totalCost || 0), 0);
+  performanceData.summary.totalProfit = winProfit - lossAmount;
 
   // Win rate
-  performanceData.summary.winRate = (performanceData.summary.wins / settled.length) * 100;
+  performanceData.summary.winRate = settled.length > 0
+    ? (wins.length / settled.length) * 100
+    : 0;
 
   // Average predicted probability
-  performanceData.summary.avgPredictedProb =
-    settled.reduce((sum, b) => sum + b.predictedProb, 0) / settled.length;
+  performanceData.summary.avgPredictedProb = settled.length > 0
+    ? settled.reduce((sum, b) => sum + (b.predictedProb || 50), 0) / settled.length
+    : 0;
 
   // Calculate calibration (predicted vs actual win rates by bucket)
   const calibration = {};
-  for (const [bucket, data] of Object.entries(performanceData.byProbBucket)) {
+  for (const [bucket, data] of Object.entries(performanceData.byProbBucket || {})) {
     if (data.bets > 0) {
       calibration[bucket] = {
         predicted: getBucketMidpoint(bucket),
@@ -623,6 +643,8 @@ function recalculateSummary() {
     }
   }
   performanceData.summary.calibration = calibration;
+
+  console.log(`📊 Recalculated: ${bets.length} total, ${wins.length} wins, ${losses.length} losses, ${pending.length} pending`);
 }
 
 // Get midpoint of a bucket for calibration
