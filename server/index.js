@@ -80,7 +80,13 @@ app.use(express.json());
 // Apply auth to all /api routes EXCEPT auth endpoints and health check
 app.use('/api', (req, res, next) => {
   // Skip auth for these paths
-  const publicPaths = ['/api/auth/login', '/api/auth/status', '/api/health'];
+  const publicPaths = [
+    '/api/auth/login',
+    '/api/auth/status',
+    '/api/health',
+    '/api/jsonbin-status',
+    '/api/jsonbin-create'
+  ];
   if (publicPaths.includes(req.path)) {
     return next();
   }
