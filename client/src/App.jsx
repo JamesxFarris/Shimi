@@ -195,9 +195,9 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
         </div>
 
         {/* Edge */}
-        <div className="stat-row edge">
+        <div className={`stat-row edge ${opp.edge >= 0 ? 'positive' : 'negative'}`}>
           <span className="stat-label">Your Edge</span>
-          <span className="stat-value">{opp.edge > 0 ? '+' : ''}{formatPercent(opp.edge || 0)}%</span>
+          <span className="stat-value">{opp.edge >= 0 ? '+' : ''}{formatPercent(opp.edge || 0)}%</span>
         </div>
 
         {/* Price vs Strike */}
@@ -1011,9 +1011,9 @@ function App() {
                 />
                 <StatsCard
                   title="Edge"
-                  value={`+${avgEdge.toFixed(1)}%`}
+                  value={`${avgEdge >= 0 ? '+' : ''}${avgEdge.toFixed(1)}%`}
                   icon="◐"
-                  color="#00f0ff"
+                  color={avgEdge >= 0 ? "#00f0ff" : "#ff4466"}
                 />
                 <StatsCard
                   title="Bets"

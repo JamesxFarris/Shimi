@@ -1502,14 +1502,23 @@ body {
   font-size: 24px;
 }
 
-/* Edge - Green highlight */
-.stat-row.edge {
+/* Edge - Dynamic color based on positive/negative */
+.stat-row.edge.positive {
   background: rgba(0, 255, 136, 0.08);
   border-color: rgba(0, 255, 136, 0.2);
 }
 
-.stat-row.edge .stat-value {
+.stat-row.edge.positive .stat-value {
   color: var(--neon-green);
+}
+
+.stat-row.edge.negative {
+  background: rgba(255, 68, 102, 0.08);
+  border-color: rgba(255, 68, 102, 0.2);
+}
+
+.stat-row.edge.negative .stat-value {
+  color: #ff4466;
 }
 
 /* Distance from Strike */
