@@ -3546,9 +3546,15 @@ function analyzeCryptoMarket(parsed) {
     maxTimeForSafe = hasStrongMomentum ? 12 : hasAlignedMomentum ? 10 : hasMomentum ? 8 : 6;
   }
 
-  const isSafe = edge > 0 && betPriceCents >= 40 && timeMinutes <= maxTimeForSafe && score >= 2;
+  let isSafe = edge > 0 && betPriceCents >= 40 && timeMinutes <= maxTimeForSafe && score >= 2;
 
-  // Check if qualifies for degen-safe (low price but strong momentum)
+  // CRITICAL: Block bets where momentum is actively against us with significant time left
+  // This prevents NO bets when price is trending UP (and vice versa)
+  // With 4+ minutes, opposing momentum can easily push price past strike
+  if (momentumHurts && momentum.strength >= 0.01 && timeMinutes > 4) {
+    isSafe = false;  // Don't auto-bet against momentum with 4+ min left
+  }
+
   // Check if qualifies for degen-safe (low price but strong momentum)
   // No hard time limit - momentum is the gatekeeper
   // Betting early before Kalshi adjusts can capture better odds
@@ -4973,8 +4979,8 @@ async function runAutoBet() {
       // SORT BY PROFIT SCORE (best risk-adjusted bets first)
       .sort((a, b) => b.evScore - a.evScore);
 
-    const highEdgeCount = opportunities.filter(o => parseFloat(o.edge) >= MIN_EDGE).length;
-    console.log(`   Final: ${opportunities.length} opportunities (${highEdgeCount} with ${MIN_EDGE}%+ edge)`);
+    const highEdgeCount = opportunities.filter(o => parseFloat(o.edge) >= AUTO_BET_MIN_EDGE).length;
+    console.log(`   Final: ${opportunities.length} opportunities (${highEdgeCount} with ${AUTO_BET_MIN_EDGE}%+ edge)`);
 
     // Show top opportunities
     if (opportunities.length > 0) {
@@ -4987,10 +4993,10 @@ async function runAutoBet() {
     // Show markets close to threshold
     const nearThreshold = allOpps.filter(m => {
       const edge = m.edge || 0;
-      return edge > 0 && edge < MIN_EDGE;
+      return edge > 0 && edge < AUTO_BET_MIN_EDGE;
     });
     if (nearThreshold.length > 0) {
-      console.log(`   📈 ${nearThreshold.length} markets with small edge (0-${MIN_EDGE}%):`);
+      console.log(`   📈 ${nearThreshold.length} markets with small edge (0-${AUTO_BET_MIN_EDGE}%):`);
       nearThreshold.slice(0, 3).forEach(m => {
         console.log(`      - ${m.title}: ${m.winProbability}% | Edge: +${parseFloat(m.edge || 0).toFixed(1)}%`);
       });
@@ -5005,8 +5011,8 @@ async function runAutoBet() {
       if (closest) {
         const winProb = parseFloat(closest.winProbability) || 0;
         let reason = '';
-        if (closest.edge < MIN_EDGE) {
-          reason = `Edge too low: ${parseFloat(closest.edge || 0).toFixed(1)}% (need ${MIN_EDGE}%+)`;
+        if (closest.edge < AUTO_BET_MIN_EDGE) {
+          reason = `Edge too low: ${parseFloat(closest.edge || 0).toFixed(1)}% (need ${AUTO_BET_MIN_EDGE}%+)`;
         } else if (winProb < MIN_PROB) {
           reason = `Prob too low: ${winProb}% (need ${MIN_PROB}%+)`;
         } else {
