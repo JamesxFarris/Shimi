@@ -4004,59 +4004,85 @@ app.get('/api/opportunities/all', async (req, res) => {
     // Combine all analyzed markets
     const allAnalyzed = [...cryptoOpps, ...indexOpps];
 
-    // ALWAYS include BTC, ETH, SOL - mark as "locked" if no edge
+    // ALWAYS include BTC, ETH, SOL - pick BEST strike per token+timeframe
+    // Hourly markets have multiple strike prices - we want the one with best edge
     const coreTokens = ['BTC', 'ETH', 'SOL'];
+    const timeframes = ['15min', 'hourly'];
     const coreMarkets = [];
 
     for (const token of coreTokens) {
-      // Find the best market for this token (prefer 15min)
-      const tokenMarket = cryptoOpps.find(m => m.cryptoType === token || m.assetType === token);
+      for (const timeframe of timeframes) {
+        // Find ALL markets for this token+timeframe
+        const tokenTimeframeMarkets = cryptoOpps.filter(m =>
+          (m.cryptoType === token || m.assetType === token) &&
+          (m.marketTimeframe === timeframe)
+        );
 
-      if (tokenMarket) {
-        // Market exists - mark as locked if not recommended
-        tokenMarket.isLocked = !tokenMarket.isRecommended;
-        tokenMarket.isCore = true;
-        coreMarkets.push(tokenMarket);
-      } else {
-        // No market found - create placeholder
-        const price = cryptoPrices[token]?.price || 0;
-        coreMarkets.push({
-          ticker: `KX${token}15M-PLACEHOLDER`,
-          title: `${token} price prediction`,
-          cryptoType: token,
-          assetType: token,
-          marketCategory: 'crypto',
-          currentPrice: price,
-          strikePrice: price,
-          timeRemaining: 0,
-          timeRemainingFormatted: 'Scanning...',
-          winProbability: 50,
-          edge: 0,
-          betSide: null,
-          isRecommended: false,
-          isLocked: true,
-          isCore: true,
-          isPlaceholder: true,
-          filterReason: 'No edge found'
-        });
+        if (tokenTimeframeMarkets.length > 0) {
+          // Pick the one with highest edge (best opportunity)
+          const bestMarket = tokenTimeframeMarkets.reduce((best, current) => {
+            const bestEdge = parseFloat(best.edge) || 0;
+            const currentEdge = parseFloat(current.edge) || 0;
+            return currentEdge > bestEdge ? current : best;
+          });
+
+          // Mark as locked if not recommended
+          bestMarket.isLocked = !bestMarket.isRecommended;
+          bestMarket.isCore = true;
+          coreMarkets.push(bestMarket);
+        } else if (timeframe === '15min') {
+          // Only create placeholder for 15min (don't clutter with hourly placeholders)
+          const price = cryptoPrices[token]?.price || 0;
+          coreMarkets.push({
+            ticker: `KX${token}15M-PLACEHOLDER`,
+            title: `${token} 15-min prediction`,
+            cryptoType: token,
+            assetType: token,
+            marketCategory: 'crypto',
+            marketTimeframe: '15min',
+            currentPrice: price,
+            strikePrice: price,
+            timeRemaining: 0,
+            timeRemainingFormatted: 'Scanning...',
+            winProbability: 50,
+            edge: 0,
+            betSide: null,
+            isRecommended: false,
+            isLocked: true,
+            isCore: true,
+            isPlaceholder: true,
+            filterReason: 'No signal'
+          });
+        }
+        // Skip hourly placeholder if no markets - don't want empty hourly cards
       }
     }
 
-    // Filter to recommended only (unless showAll=true), but always include core markets
-    const recommendedOpps = allAnalyzed.filter(m => m.isRecommended);
-    const nonCoreRecommended = recommendedOpps.filter(m => !coreTokens.includes(m.cryptoType) && !coreTokens.includes(m.assetType));
+    // Filter to recommended only, exclude markets already in coreMarkets
+    const coreMarketTickers = new Set(coreMarkets.map(m => m.ticker));
+    const recommendedOpps = allAnalyzed.filter(m => m.isRecommended && !coreMarketTickers.has(m.ticker));
 
-    // Core markets first (BTC, ETH, SOL), then other recommended
+    // Exclude core tokens entirely (we already have best strike for each)
+    const nonCoreRecommended = recommendedOpps.filter(m =>
+      !coreTokens.includes(m.cryptoType) && !coreTokens.includes(m.assetType)
+    );
+
+    // Core markets first (BTC, ETH, SOL - both 15min and hourly), then other recommended
     const allOpportunities = [...coreMarkets, ...nonCoreRecommended]
       .sort((a, b) => {
         // Core markets first
         if (a.isCore && !b.isCore) return -1;
         if (!a.isCore && b.isCore) return 1;
+        // Then by timeframe (15min before hourly for same token)
+        if (a.isCore && b.isCore && a.cryptoType === b.cryptoType) {
+          if (a.marketTimeframe === '15min' && b.marketTimeframe === 'hourly') return -1;
+          if (a.marketTimeframe === 'hourly' && b.marketTimeframe === '15min') return 1;
+        }
         // Then by recommended status
         if (a.isRecommended && !b.isRecommended) return -1;
         if (!a.isRecommended && b.isRecommended) return 1;
-        // Then by probability
-        return parseFloat(b.winProbability) - parseFloat(a.winProbability);
+        // Then by edge
+        return parseFloat(b.edge || 0) - parseFloat(a.edge || 0);
       });
 
     // Refresh positions before calculating risk
