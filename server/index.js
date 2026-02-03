@@ -3697,9 +3697,9 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     if (opportunities.length === 0) {
       return res.json({
         success: true,
-        message: 'No opportunities with 60%+ win probability found. Waiting...',
+        message: 'Scanning 3 markets (BTC, ETH, SOL) - no auto-bet opportunities yet',
         bet: null,
-        scanned: totalScanned
+        scanned: 3  // Always 3 markets (BTC, ETH, SOL 15-min)
       });
     }
 
@@ -4021,7 +4021,9 @@ async function runAutoBet(userId = null) {
     console.log(`   Analyzed: ${allOpps.length} valid | ${withEdge.length} with edge | ${above50.length} >50% | ${above60.length} >60%`);
 
     // Update scan status with analysis results
-    lastScanStatus.marketsScanned = allOpps.length;
+    // Always show 3 markets (BTC, ETH, SOL) since we track all 3, even if some don't have active windows
+    lastScanStatus.marketsScanned = 3;
+    lastScanStatus.activeMarkets = allOpps.length;  // Actual active markets right now
     lastScanStatus.marketsWithEdge = withEdge.length;
 
     // Show probability distribution for debugging
@@ -4146,7 +4148,7 @@ async function runAutoBet(userId = null) {
 
       // Update status with reason
       lastScanStatus.status = 'no_opportunities';
-      lastScanStatus.statusMessage = `No opportunities meet criteria (need 60%+ win prob, ${minPrice}¢+ price)`;
+      lastScanStatus.statusMessage = `Scanning 3 markets (BTC, ETH, SOL) - waiting for opportunity`;
       if (approaching.length > 0) {
         lastScanStatus.blockedReasons.push(`${approaching.length} markets at 55-59% (need 60%+)`);
       }
