@@ -133,11 +133,12 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
   const isDegen = opp.isDegen === true
   const isSafe = opp.isSafe === true
   const isDegenSafe = opp.isDegenSafe === true
+  const isStale = opp.isStale === true
   const pctFromStrike = parseFloat(opp.pctFromStrike) || 0
-  const showQtySelector = isDegen && !isLocked && !notRecommended
+  const showQtySelector = isDegen && !isLocked && !notRecommended && !isStale
 
   return (
-    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''} ${notRecommended ? 'no-edge' : ''} ${isLocked ? 'locked' : ''} ${isDegen ? 'degen' : ''} ${isSafe ? 'safe' : ''} ${isDegenSafe ? 'degen-safe' : ''} ${isPlacing ? 'placing' : ''}`}>
+    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''} ${notRecommended ? 'no-edge' : ''} ${isLocked ? 'locked' : ''} ${isDegen ? 'degen' : ''} ${isSafe ? 'safe' : ''} ${isDegenSafe ? 'degen-safe' : ''} ${isStale ? 'stale' : ''} ${isPlacing ? 'placing' : ''}`}>
       {/* Loading overlay when placing bet */}
       {isPlacing && (
         <div className="placing-overlay">
@@ -546,13 +547,27 @@ function App() {
 
   // Fetch opportunities (now uses unified endpoint for all market types)
   // Always fetch ALL markets to show cards even without edge
+  // IMPORTANT: Don't clear cards when API returns empty - keep last known markets visible
   const fetchOpportunities = useCallback(async () => {
     try {
       const res = await authFetch(`${API_BASE}/api/opportunities/all?showAll=true`)
       const data = await res.json()
 
       if (data.success) {
-        setOpportunities(data.opportunities || [])
+        // Only update opportunities if we got actual markets back
+        // This prevents cards from disappearing between 15-min cycles
+        const newOpps = data.opportunities || []
+        if (newOpps.length > 0) {
+          setOpportunities(newOpps)
+        } else if (opportunities.length > 0) {
+          // API returned empty but we have existing - mark them as stale/expired
+          setOpportunities(prev => prev.map(opp => ({
+            ...opp,
+            isRecommended: false,
+            filterReason: 'Market expired - waiting for next cycle',
+            isStale: true
+          })))
+        }
         if (data.stats) setMarketStats(data.stats)
         // Update risk info
         if (data.risk) {
@@ -570,7 +585,7 @@ function App() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [opportunities.length])
 
   // Fetch portfolio
   const fetchPortfolio = useCallback(async () => {
@@ -1484,7 +1499,7 @@ function App() {
                   </h3>
                 </div>
 
-                {loading ? (
+                {loading && opportunities.length === 0 ? (
                   <div className="loading-state">
                     <div className="spinner"></div>
                     <p>Scanning crypto markets...</p>
@@ -1492,12 +1507,8 @@ function App() {
                 ) : opportunities.length === 0 ? (
                   <div className="empty-state">
                     <span className="empty-icon">🔍</span>
-                    <h3>No opportunities with edge found</h3>
-                    <p>
-                      {marketStats.totalAnalyzed > 0
-                        ? `Analyzed ${marketStats.totalAnalyzed} markets: ${marketStats.filteredNoEdge} have no edge (price too high)`
-                        : 'Waiting for price mispricings...'}
-                    </p>
+                    <h3>Waiting for markets</h3>
+                    <p>No active markets found - waiting for next 15-minute cycle...</p>
                   </div>
                 ) : (
                   <div className="opportunities-wrapper">
