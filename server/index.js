@@ -3449,21 +3449,30 @@ function analyzeCryptoMarket(parsed) {
   // SAFE: Auto-bet will place these. Requirements:
   //   - Positive edge
   //   - Price >= 40¢ (not a long shot)
-  //   - Time <= 8 minutes (don't bet too early - too much can change)
+  //   - Time limit based on momentum (stronger momentum = can bet earlier)
   //   - Medium+ confidence (score >= 2)
-  // DEGEN-SAFE: Auto-bet when degen mode enabled. Requirements:
-  //   - Positive edge
-  //   - Price 15-39¢ (long shot territory)
-  //   - Time <= 5 minutes (momentum matters most near expiry)
-  //   - Strong momentum (all timeframes aligned in bet direction)
+  // DEGEN-SAFE: Auto-bet when degen mode enabled (see below)
   // DEGEN: Manual only - too risky for auto
-  const isSafe = edge > 0 && betPriceCents >= 40 && timeMinutes <= 8 && score >= 2;
 
+  // Momentum-based time limit: strong momentum allows earlier bets
+  const hasMomentum = momentum.direction !== 'neutral';
+  const hasAlignedMomentum = momentum.aligned && momentum.strength >= 1;
+  const hasStrongMomentum = momentum.aligned && momentum.strength >= 2;
+
+  // Time limits based on momentum strength:
+  // - Strong aligned momentum → bet up to 12 min early (catch mispricing before adjustment)
+  // - Some aligned momentum → bet up to 10 min early
+  // - Any momentum → bet up to 8 min early
+  // - No momentum → only bet in final 5 min (less time for reversal)
+  const maxTimeForSafe = hasStrongMomentum ? 12 : hasAlignedMomentum ? 10 : hasMomentum ? 8 : 5;
+
+  const isSafe = edge > 0 && betPriceCents >= 40 && timeMinutes <= maxTimeForSafe && score >= 2;
+
+  // Check if qualifies for degen-safe (low price but strong momentum)
   // Check if qualifies for degen-safe (low price but strong momentum)
   // No hard time limit - momentum is the gatekeeper
   // Betting early before Kalshi adjusts can capture better odds
   const degenSettings = config.degenMode;
-  const hasStrongMomentum = momentum.aligned && momentum.strength >= 2;
   const isDegenSafe = degenSettings.enabled &&
     edge > 0 &&
     betPriceCents >= degenSettings.minPrice &&
@@ -4232,20 +4241,28 @@ app.post('/api/bet', async (req, res) => {
       });
     }
 
-    // Real bet - check orderbook for liquidity first
+    // Real bet - check orderbook for liquidity, try opposite side if needed
     let bestAsk = priceCents;
+    let finalSide = side.toLowerCase();
     try {
       const orderbook = await kalshiRequest('GET', `/markets/${ticker}/orderbook`);
-      const sideKey = side.toLowerCase();
-      const asks = sideKey === 'yes' ? orderbook.yes : orderbook.no;
-      if (!asks || asks.length === 0 || !asks[0] || asks[0][1] === 0) {
-        return res.status(400).json({
-          success: false,
-          error: `No liquidity available for ${side.toUpperCase()} side. The orderbook is empty.`
-        });
+      const asks = finalSide === 'yes' ? orderbook.yes : orderbook.no;
+      if (asks && asks.length > 0 && asks[0] && asks[0][1] > 0) {
+        bestAsk = asks[0][0];
+        console.log(`Orderbook check: Best ${finalSide} ask = ${bestAsk}¢, qty = ${asks[0][1]}`);
+      } else {
+        // No liquidity on preferred side - try opposite
+        const oppositeSide = finalSide === 'yes' ? 'no' : 'yes';
+        const oppositeAsks = oppositeSide === 'yes' ? orderbook.yes : orderbook.no;
+        if (oppositeAsks && oppositeAsks.length > 0 && oppositeAsks[0] && oppositeAsks[0][1] > 0) {
+          bestAsk = oppositeAsks[0][0];
+          finalSide = oppositeSide;
+          console.log(`Flipped to ${finalSide.toUpperCase()} side: ${bestAsk}¢, qty = ${oppositeAsks[0][1]}`);
+        } else {
+          // Both sides empty - try anyway, Kalshi may have hidden liquidity
+          console.log(`Orderbook appears empty, proceeding anyway with market price`);
+        }
       }
-      bestAsk = asks[0][0];
-      console.log(`Orderbook check: Best ${side} ask = ${bestAsk}¢, qty = ${asks[0][1]}`);
     } catch (obErr) {
       console.log(`Orderbook fetch failed: ${obErr.message}, using market price`);
     }
@@ -4256,19 +4273,20 @@ app.post('/api/bet', async (req, res) => {
     const orderRequest = {
       ticker,
       action: 'buy',
-      side: side.toLowerCase(),
+      side: finalSide,
       type: 'limit',
       count
     };
 
-    // Add the appropriate price field based on side
-    if (side.toLowerCase() === 'yes') {
+    // Add the appropriate price field based on final side (may have flipped)
+    if (finalSide === 'yes') {
       orderRequest.yes_price = fillPrice;
     } else {
       orderRequest.no_price = fillPrice;
     }
 
-    console.log(`Placing order (ask: ${priceCents}¢, bid: ${fillPrice}¢, using: ${fillPrice}¢):`, JSON.stringify(orderRequest));
+    const flippedNote = finalSide !== side.toLowerCase() ? ` (flipped from ${side})` : '';
+    console.log(`Placing order${flippedNote} (ask: ${priceCents}¢, bid: ${fillPrice}¢):`, JSON.stringify(orderRequest));
 
     try {
       const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
