@@ -5464,9 +5464,22 @@ async function runAutoBet() {
     for (const opp of autoBetOpportunities) {
       const tokenName = getTokenFromTicker(opp.ticker) || opp.assetType || opp.cryptoType || 'token';
       const betType = opp.isSafe ? '✅ SAFE' : '🔥 DEGEN';
-      console.log(`   🔄 Processing ${betType}: ${tokenName} ${opp.betSide} @ ${opp.betPriceCents}¢ (edge +${parseFloat(opp.edge).toFixed(1)}%)`);
-
       const priceCents = Math.round(opp.betPrice * 100);
+
+      // HARD SAFETY CHECK: Never bet below 35¢ unless degen mode is on
+      const MIN_SAFE_PRICE = 35;
+      if (priceCents < MIN_SAFE_PRICE && !config.degenMode.enabled) {
+        console.log(`   ⛔ BLOCKED: ${tokenName} @ ${priceCents}¢ - below ${MIN_SAFE_PRICE}¢ min (degen mode OFF)`);
+        continue;
+      }
+
+      // Even with degen mode, respect the degen minPrice
+      if (priceCents < (config.degenMode.minPrice || 15)) {
+        console.log(`   ⛔ BLOCKED: ${tokenName} @ ${priceCents}¢ - below ${config.degenMode.minPrice || 15}¢ degen minimum`);
+        continue;
+      }
+
+      console.log(`   🔄 Processing ${betType}: ${tokenName} ${opp.betSide} @ ${priceCents}¢ (edge +${parseFloat(opp.edge).toFixed(1)}%)`);
 
       // Check if we've hit overall limits - must afford at least 1 contract
       if (getTotalRemainingBudget() < priceCents) {
