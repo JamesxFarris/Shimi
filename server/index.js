@@ -88,7 +88,8 @@ app.use('/api', (req, res, next) => {
     '/jsonbin-create',
     '/jsonbin-sync',
     '/ml-model',
-    '/import-fills'
+    '/import-fills',
+    '/reset-tracking'
   ];
   if (publicPaths.includes(req.path)) {
     return next();
@@ -5536,23 +5537,57 @@ app.post('/api/import-fills', async (req, res) => {
   }
 
   try {
-    // Fetch recent fills from Kalshi
-    const fillsData = await kalshiRequest('GET', '/portfolio/fills?limit=100');
-    const fills = fillsData.fills || [];
+    // Fetch ALL fills using pagination
+    let allFills = [];
+    let cursor = null;
+    let pages = 0;
+    const maxPages = 20; // Safety limit
 
-    if (fills.length === 0) {
+    do {
+      const url = cursor
+        ? `/portfolio/fills?limit=100&cursor=${cursor}`
+        : '/portfolio/fills?limit=100';
+      const fillsData = await kalshiRequest('GET', url);
+      const fills = fillsData.fills || [];
+      allFills = allFills.concat(fills);
+      cursor = fillsData.cursor;
+      pages++;
+    } while (cursor && pages < maxPages);
+
+    console.log(`📊 Fetched ${allFills.length} total fills from Kalshi (${pages} pages)`);
+
+    if (allFills.length === 0) {
       return res.json({ success: true, imported: 0, message: 'No fills found' });
+    }
+
+    // Get unique tickers to check settlement status
+    const uniqueTickers = [...new Set(allFills.map(f => f.ticker))];
+    const marketResults = {};
+
+    // Fetch market results in batches
+    for (const ticker of uniqueTickers) {
+      try {
+        const marketData = await kalshiRequest('GET', `/markets/${ticker}`);
+        if (marketData.market) {
+          marketResults[ticker] = {
+            result: marketData.market.result, // 'yes' or 'no' or null
+            settled: !!marketData.market.result,
+            title: marketData.market.title
+          };
+        }
+      } catch (e) {
+        // Market may have been removed
+      }
     }
 
     let imported = 0;
     let skipped = 0;
+    let settled = 0;
 
-    for (const fill of fills) {
-      // Skip if already tracked
-      const existingBet = performanceData.bets.find(b =>
-        b.ticker === fill.ticker &&
-        Math.abs(new Date(b.timestamp).getTime() - new Date(fill.created_time).getTime()) < 60000
-      );
+    for (const fill of allFills) {
+      // Skip if already tracked (by trade_id)
+      const tradeId = fill.trade_id || fill.fill_id;
+      const existingBet = performanceData.bets.find(b => b.id === tradeId);
       if (existingBet) {
         skipped++;
         continue;
@@ -5567,29 +5602,62 @@ app.post('/api/import-fills', async (req, res) => {
       // For NO bets, price is 100 - yes_price
       const actualPrice = side === 'no' ? (100 - priceCents) : priceCents;
       const totalCost = count * actualPrice;
-
       const token = getTokenFromTicker(fill.ticker);
+      const marketInfo = marketResults[fill.ticker] || {};
 
-      trackBet({
-        id: fill.trade_id || fill.fill_id || Date.now().toString() + imported,
+      // Determine outcome if market settled
+      let outcome = 'pending';
+      let actualProfit = null;
+      if (marketInfo.settled && marketInfo.result) {
+        const won = (side === marketInfo.result);
+        outcome = won ? 'won' : 'lost';
+        actualProfit = won ? (count * 100 - totalCost) : 0; // Win pays $1 per contract
+        settled++;
+      }
+
+      // Create bet record directly (bypass trackBet to set outcome)
+      const bet = {
+        id: tradeId,
+        timestamp: fill.created_time || new Date().toISOString(),
         ticker: fill.ticker,
-        title: fill.ticker,
+        title: marketInfo.title || fill.ticker,
+        token,
         side,
-        count,
+        contracts: count,
         price: actualPrice,
         totalCost,
-        token,
-        predictedProb: actualPrice, // Use market price as proxy
+        predictedProb: actualPrice,
         marketPrice: actualPrice,
-        strikePrice: 0, // Unknown
-        currentPrice: 0, // Unknown
+        edge: 0,
+        strikePrice: 0,
+        currentPriceAtBet: 0,
         expiryTime: null,
         marketType: fill.ticker?.includes('15M') ? '15min' : fill.ticker?.includes('1H') ? 'hourly' : 'daily',
-        timestamp: fill.created_time
-      });
+        outcome,
+        settlementPrice: null,
+        actualProfit,
+        settledAt: outcome !== 'pending' ? new Date().toISOString() : null
+      };
+
+      performanceData.bets.push(bet);
+      performanceData.summary.totalBets++;
+      performanceData.summary.totalWagered += totalCost;
+
+      if (outcome === 'won') {
+        performanceData.summary.wins++;
+        performanceData.summary.totalProfit += actualProfit;
+      } else if (outcome === 'lost') {
+        performanceData.summary.losses++;
+        performanceData.summary.totalProfit -= totalCost;
+      } else {
+        performanceData.summary.pending++;
+      }
 
       imported++;
     }
+
+    // Recalculate summary
+    recalculateSummary();
 
     // Force save to JSONBin
     await saveToJsonBin();
@@ -5598,12 +5666,54 @@ app.post('/api/import-fills', async (req, res) => {
       success: true,
       imported,
       skipped,
+      settled,
       totalBets: performanceData.bets.length,
-      message: `Imported ${imported} fills, skipped ${skipped} duplicates`
+      wins: performanceData.summary.wins,
+      losses: performanceData.summary.losses,
+      pending: performanceData.summary.pending,
+      profitCents: performanceData.summary.totalProfit,
+      profitDollars: (performanceData.summary.totalProfit / 100).toFixed(2),
+      message: `Imported ${imported} fills (${settled} settled, ${imported - settled} pending)`
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
+});
+
+// Reset tracking data (use carefully!)
+app.post('/api/reset-tracking', async (req, res) => {
+  performanceData = {
+    bets: [],
+    summary: {
+      totalBets: 0,
+      wins: 0,
+      losses: 0,
+      pending: 0,
+      totalWagered: 0,
+      totalProfit: 0,
+      winRate: 0,
+      avgPredictedProb: 0,
+      avgActualWinRate: 0,
+      calibration: {}
+    },
+    byToken: {},
+    byProbBucket: {},
+    byMarketType: {},
+    lastUpdated: null
+  };
+
+  // Reset ML model too
+  mlModel.trainedOn = 0;
+  mlModel.performance.predictions = [];
+  mlModel.performance.accuracy = 0;
+  for (const key of Object.keys(mlModel.weights)) {
+    mlModel.weights[key] = 0;
+  }
+
+  await saveToJsonBin();
+  saveMLModel();
+
+  res.json({ success: true, message: 'Tracking data and ML model reset' });
 });
 
 // ML Model status endpoint
