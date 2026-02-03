@@ -185,35 +185,17 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
   const isIndex = opp.marketCategory === 'index'
   const notRecommended = opp.isRecommended === false
   const isLocked = opp.isLocked === true
-  const isDegen = opp.isDegen === true
   const isSafe = opp.isSafe === true
-  const isDegenSafe = opp.isDegenSafe === true
   const isStale = opp.isStale === true
   const pctFromStrike = parseFloat(opp.pctFromStrike) || 0
-  const showQtySelector = isDegen && !isLocked && !notRecommended && !isStale
 
   return (
-    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''} ${notRecommended ? 'no-edge' : ''} ${isLocked ? 'locked' : ''} ${isDegen ? 'degen' : ''} ${isSafe ? 'safe' : ''} ${isDegenSafe ? 'degen-safe' : ''} ${isStale ? 'stale' : ''} ${isPlacing ? 'placing' : ''}`}>
+    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''} ${notRecommended ? 'no-edge' : ''} ${isLocked ? 'locked' : ''} ${isSafe ? 'safe' : ''} ${isStale ? 'stale' : ''} ${isPlacing ? 'placing' : ''}`}>
       {/* Loading overlay when placing bet */}
       {isPlacing && (
         <div className="placing-overlay">
           <div className="placing-spinner"></div>
           <span className="placing-text">Placing bet...</span>
-        </div>
-      )}
-      {/* DEGEN badge (manual only) */}
-      {isDegen && !isLocked && (
-        <div className="degen-badge">
-          <span className="degen-icon">🎲</span>
-          <span className="degen-text">MANUAL</span>
-        </div>
-      )}
-
-      {/* DEGEN-SAFE badge (auto-enabled when degen mode on) */}
-      {isDegenSafe && !isLocked && (
-        <div className="degen-safe-badge">
-          <span className="degen-safe-icon">🔥</span>
-          <span className="degen-safe-text">AUTO</span>
         </div>
       )}
 
@@ -291,20 +273,6 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
 
       {/* Action Button */}
       <div className="bet-action-row">
-        {showQtySelector && (
-          <div className="qty-selector">
-            <button className="qty-btn" onClick={() => setQty(Math.max(1, qty - 1))}>−</button>
-            <input
-              type="number"
-              className="qty-input"
-              value={qty}
-              onChange={(e) => setQty(Math.max(1, parseInt(e.target.value) || 1))}
-              min="1"
-              max="99"
-            />
-            <button className="qty-btn" onClick={() => setQty(Math.min(99, qty + 1))}>+</button>
-          </div>
-        )}
         <button
           className={`bet-btn ${isPlacing ? 'loading' : ''} ${opp.betSide?.toLowerCase()} ${notRecommended ? 'disabled-no-edge' : ''}`}
           onClick={() => onBet(opp, qty)}
@@ -584,12 +552,6 @@ function App() {
     maxBetsPerMarket: 3,
     minTimeBetweenBets: 60000
   })
-  const [degenModeSettings, setDegenModeSettings] = useState({
-    enabled: false,
-    minPrice: 15,
-    requireStrongMomentum: true,
-    maxBetMultiplier: 0.5
-  })
   const [aggressiveMode, setAggressiveMode] = useState({
     enabled: false,  // Default to CONSERVATIVE
     minPrice: 26,
@@ -599,7 +561,6 @@ function App() {
   })
   const [settingsSaved, setSettingsSaved] = useState(false)
   const [settingsSaving, setSettingsSaving] = useState(false)
-  const [degenSettingsSaved, setDegenSettingsSaved] = useState(false)
   const [marketFilter, setMarketFilter] = useState('all') // 'all', 'crypto', 'index'
   const [marketStats, setMarketStats] = useState({ totalAnalyzed: 0, recommended: 0, filteredNoEdge: 0, filteredLowProb: 0 })
   // Performance tracking
@@ -924,7 +885,6 @@ function App() {
     fetchPortfolio()
     fetchPerformance()  // Fetch performance stats on load
     fetchAutoBetStatus()  // Get current auto-bet state
-    fetchDegenModeStatus()  // Get current degen mode state
     fetchAggressiveMode()   // Get current aggressive/conservative mode
     fetchRiskSettings()     // Get saved risk settings
     checkAuth()
@@ -1108,19 +1068,6 @@ function App() {
     }
   }
 
-  // Fetch degen mode status from server
-  const fetchDegenModeStatus = async () => {
-    try {
-      const res = await authFetch(`${API_BASE}/api/settings/degen-mode`)
-      const data = await res.json()
-      if (data.success && data.degenMode) {
-        setDegenModeSettings(data.degenMode)
-      }
-    } catch (err) {
-      console.error('Error fetching degen mode status:', err)
-    }
-  }
-
   // Fetch aggressive mode settings
   const fetchAggressiveMode = async () => {
     try {
@@ -1247,33 +1194,6 @@ function App() {
       }
     } catch (err) {
       console.error('Error saving scale-in settings:', err)
-    }
-  }
-
-  // Update local degen mode settings state
-  const updateDegenModeSettings = (field, value) => {
-    setDegenSettingsSaved(false)
-    setDegenModeSettings(prev => ({
-      ...prev,
-      [field]: value
-    }))
-  }
-
-  // Save degen mode settings to server
-  const saveDegenModeSettings = async () => {
-    try {
-      const res = await authFetch(`${API_BASE}/api/settings/degen-mode`, {
-        method: 'POST',
-        body: JSON.stringify(degenModeSettings)
-      })
-      const data = await res.json()
-      if (data.success) {
-        setDegenModeSettings(data.degenMode)
-        setDegenSettingsSaved(true)
-        setTimeout(() => setDegenSettingsSaved(false), 3000)
-      }
-    } catch (err) {
-      console.error('Error saving degen mode settings:', err)
     }
   }
 
@@ -1604,26 +1524,6 @@ function App() {
                     <span className="action-icon">{autoBetEnabled ? '⏹' : '▶'}</span>
                     <span className="action-text">
                       {autoBetEnabled ? 'Stop Auto-Bet' : 'Start Auto-Bet (15s)'}
-                    </span>
-                  </button>
-                  <button
-                    className={`action-btn degen-toggle ${degenModeSettings.enabled ? 'degen-active' : ''}`}
-                    onClick={async () => {
-                      const newEnabled = !degenModeSettings.enabled
-                      setDegenModeSettings(prev => ({ ...prev, enabled: newEnabled }))
-                      try {
-                        await authFetch(`${API_BASE}/api/settings/degen-mode`, {
-                          method: 'POST',
-                          body: JSON.stringify({ enabled: newEnabled })
-                        })
-                      } catch (err) {
-                        console.error('Error toggling degen mode:', err)
-                      }
-                    }}
-                  >
-                    <span className="action-icon">🔥</span>
-                    <span className="action-text">
-                      {degenModeSettings.enabled ? 'Degen ON' : 'Degen OFF'}
                     </span>
                   </button>
                 </div>
@@ -2338,53 +2238,6 @@ function App() {
                       <span className="stat-value">+2 confidence (70.6% vs 53.1% win rate)</span>
                     </div>
                   </div>
-                </div>
-
-                {/* Degen Mode Settings */}
-                <div className="settings-card degen-card">
-                  <h3 className="settings-card-title">🔥 Degen Mode</h3>
-                  <p className="settings-description">Low-probability bets (15-39¢) with strong momentum. Toggle on/off from the home page button.</p>
-                  <div className="scale-in-settings">
-                    <div className="settings-input-group">
-                      <label>Status</label>
-                      <span className={`degen-status ${degenModeSettings.enabled ? 'active' : ''}`}>
-                        {degenModeSettings.enabled ? '🔥 Active' : 'Inactive'}
-                      </span>
-                    </div>
-                    <div className="settings-input-group">
-                      <label>Min contract price (¢)</label>
-                      <input
-                        type="number"
-                        min="5"
-                        max="35"
-                        step="5"
-                        value={degenModeSettings.minPrice}
-                        onChange={(e) => updateDegenModeSettings('minPrice', parseInt(e.target.value) || 15)}
-                      />
-                    </div>
-                    <div className="settings-input-group">
-                      <label>Require strong momentum</label>
-                      <input
-                        type="checkbox"
-                        checked={degenModeSettings.requireStrongMomentum}
-                        onChange={(e) => updateDegenModeSettings('requireStrongMomentum', e.target.checked)}
-                      />
-                    </div>
-                    <div className="settings-input-group">
-                      <label>Bet size multiplier</label>
-                      <input
-                        type="number"
-                        min="0.1"
-                        max="1"
-                        step="0.1"
-                        value={degenModeSettings.maxBetMultiplier}
-                        onChange={(e) => updateDegenModeSettings('maxBetMultiplier', parseFloat(e.target.value) || 0.5)}
-                      />
-                    </div>
-                  </div>
-                  <button className={`save-settings-btn ${degenSettingsSaved ? 'saved' : ''}`} onClick={saveDegenModeSettings}>
-                    {degenSettingsSaved ? '✓ Saved' : 'Save Degen Settings'}
-                  </button>
                 </div>
 
                 {/* How It Works */}
