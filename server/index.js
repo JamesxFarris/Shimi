@@ -60,15 +60,6 @@ const DEFAULT_CONFIG = {
     maxBetsPerMarket: 3,         // Maximum times to bet on same market
     minTimeBetweenBets: 60000    // At least 1 minute between bets on same market
   },
-  // Degen mode: allow low-probability bets with strong momentum
-  degenMode: {
-    enabled: false,
-    minPrice: 15,
-    maxPrice: 39,
-    requireStrongMomentum: true,
-    maxTimeMinutes: 5,
-    maxBetMultiplier: 0.5
-  },
   // Aggressive vs Conservative mode toggle
   // Based on 474-bet analysis: NO bets win 70.6%, YES only 53.1%
   aggressiveMode: {
@@ -246,9 +237,6 @@ function restoreActiveProfile() {
       if (profile.settings.scaleIn) {
         config.scaleIn = { ...config.scaleIn, ...profile.settings.scaleIn };
       }
-      if (profile.settings.degenMode) {
-        config.degenMode = { ...config.degenMode, ...profile.settings.degenMode };
-      }
       if (profile.settings.aggressiveMode) {
         config.aggressiveMode = { ...config.aggressiveMode, ...profile.settings.aggressiveMode };
       }
@@ -275,7 +263,6 @@ function saveToActiveProfile() {
     profile.settings = {
       riskLimits: config.riskLimits,
       scaleIn: config.scaleIn,
-      degenMode: config.degenMode,
       aggressiveMode: config.aggressiveMode,
       autoBetEnabled: config.autoBetEnabled
     };
@@ -2971,43 +2958,6 @@ app.post('/api/settings/scale-in', (req, res) => {
   });
 });
 
-// Get degen mode settings - PER-USER
-app.get('/api/settings/degen-mode', (req, res) => {
-  const userConfig = req.userState?.config || DEFAULT_CONFIG;
-  res.json({
-    success: true,
-    degenMode: userConfig.degenMode
-  });
-});
-
-// Update degen mode settings - PER-USER
-app.post('/api/settings/degen-mode', (req, res) => {
-  const { enabled, minPrice, maxPrice, requireStrongMomentum } = req.body;
-
-  const userConfig = req.userState?.config;
-  if (!userConfig) {
-    return res.status(401).json({ success: false, error: 'Must be logged in to update settings' });
-  }
-
-  if (!userConfig.degenMode) {
-    userConfig.degenMode = { enabled: false, minPrice: 15, maxPrice: 39, requireStrongMomentum: true };
-  }
-
-  if (enabled !== undefined) userConfig.degenMode.enabled = !!enabled;
-  if (minPrice !== undefined) userConfig.degenMode.minPrice = Math.max(5, Math.min(39, parseInt(minPrice) || 15));
-  if (maxPrice !== undefined) userConfig.degenMode.maxPrice = Math.max(20, Math.min(50, parseInt(maxPrice) || 39));
-  if (requireStrongMomentum !== undefined) userConfig.degenMode.requireStrongMomentum = !!requireStrongMomentum;
-
-  console.log(`🔥 Degen mode ${userConfig.degenMode.enabled ? 'ENABLED' : 'disabled'} for user ${req.userId}`);
-  saveUserState(req.userId);
-
-  res.json({
-    success: true,
-    degenMode: userConfig.degenMode,
-    message: `Degen mode ${userConfig.degenMode.enabled ? 'enabled' : 'disabled'}`
-  });
-});
-
 // Get aggressive mode settings - PER-USER
 app.get('/api/settings/aggressive-mode', (req, res) => {
   const userConfig = req.userState?.config || DEFAULT_CONFIG;
@@ -3106,7 +3056,6 @@ app.post('/api/profiles', (req, res) => {
     settings: {
       riskLimits: { ...DEFAULT_CONFIG.riskLimits },
       scaleIn: { ...DEFAULT_CONFIG.scaleIn },
-      degenMode: { ...DEFAULT_CONFIG.degenMode },
       aggressiveMode: { ...DEFAULT_CONFIG.aggressiveMode }
     },
     betHistory: [],
@@ -3181,7 +3130,6 @@ app.post('/api/profiles/:id/switch', async (req, res) => {
   if (profile.settings) {
     if (profile.settings.riskLimits) config.riskLimits = { ...config.riskLimits, ...profile.settings.riskLimits };
     if (profile.settings.scaleIn) config.scaleIn = { ...config.scaleIn, ...profile.settings.scaleIn };
-    if (profile.settings.degenMode) config.degenMode = { ...config.degenMode, ...profile.settings.degenMode };
     if (profile.settings.aggressiveMode) config.aggressiveMode = { ...config.aggressiveMode, ...profile.settings.aggressiveMode };
   }
 
