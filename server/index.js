@@ -1303,7 +1303,7 @@ function shouldAllowScaleIn(ticker, currentProbability) {
 
 // Edge requirements - lower for "obvious" high-probability bets
 // Strategy: Safe growth from $10 → $100 by taking high-probability bets
-const AUTO_BET_MIN_EDGE = 3;      // 3% edge for auto (lower for safe bets)
+const AUTO_BET_MIN_EDGE = 2;      // 2% edge for auto (lowered for more volume)
 const MANUAL_BET_MIN_EDGE = 2;    // 2% edge for manual
 const OBVIOUS_BET_MIN_EDGE = 1;   // 1% edge OK if probability is >90% (free money)
 
@@ -3746,14 +3746,15 @@ function analyzeCryptoMarket(parsed) {
   if (betPriceCents >= 60) {
     // High price = high probability = betting on stability
     // These are safe earlier because we're betting price STAYS, not MOVES
-    maxTimeForSafe = 12 * timeMultiplier;
+    maxTimeForSafe = 15 * timeMultiplier;  // Increased from 12
   } else {
-    // Mid price (40-59¢) = use momentum-based limits
-    const baseTime = hasStrongMomentum ? 12 : hasAlignedMomentum ? 10 : hasMomentum ? 8 : 6;
+    // Mid price (35-59¢) = use momentum-based limits (loosened for more volume)
+    const baseTime = hasStrongMomentum ? 15 : hasAlignedMomentum ? 12 : hasMomentum ? 10 : 8;
     maxTimeForSafe = baseTime * timeMultiplier;
   }
 
-  let isSafe = edge > 0 && betPriceCents >= 40 && timeMinutes <= maxTimeForSafe && score >= 2;
+  // Loosened: 35¢+ (was 40¢), score >= 1 (was 2)
+  let isSafe = edge > 0 && betPriceCents >= 35 && timeMinutes <= maxTimeForSafe && score >= 1;
 
   // CRITICAL: Block bets where momentum is actively against us with significant time left
   // This prevents NO bets when price is trending UP (and vice versa)
@@ -4767,9 +4768,9 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     const opportunities = [...cryptoOpps, ...indexOpps]
       .filter(m => {
         if (m === null) return false;
-        // REQUIRE 60%+ WIN PROBABILITY for auto-betting
+        // REQUIRE 55%+ WIN PROBABILITY for auto-betting (lowered from 60% for more volume)
         const winProb = parseFloat(m.winProbability) || 0;
-        if (winProb < 60) return false;
+        if (winProb < 55) return false;
 
         // Check if we already bet on this market
         if (recentBets.has(m.ticker)) {
@@ -4790,7 +4791,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     if (opportunities.length === 0) {
       return res.json({
         success: true,
-        message: 'No opportunities with 60%+ win probability found. Waiting...',
+        message: 'No opportunities with 55%+ win probability found. Waiting...',
         bet: null,
         scanned: totalScanned
       });
