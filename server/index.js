@@ -1767,7 +1767,8 @@ let binanceFailCount = 0;
 async function fetchBinancePrices() {
   try {
     const symbols = Object.values(BINANCE_SYMBOLS);
-    const res = await fetch(`https://api.binance.com/api/v3/ticker/price`);
+    // Use Binance.US for US-based users (api.binance.com blocks US IPs)
+    const res = await fetch(`https://api.binance.us/api/v3/ticker/price`);
 
     if (!res.ok) {
       throw new Error(`Binance API error: ${res.status}`);
