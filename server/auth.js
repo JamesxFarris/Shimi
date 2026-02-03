@@ -3,10 +3,43 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import fs from 'fs';
 import crypto from 'crypto';
+import path from 'path';
 
-// JWT secret - generate a random one if not set in environment
-const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
+const JWT_SECRET_FILE = path.join(path.dirname(new URL(import.meta.url).pathname), 'jwt_secret.txt');
 const JWT_EXPIRY = '7d'; // Tokens expire in 7 days
+
+// Load or generate JWT secret - persists across server restarts
+function getOrCreateJwtSecret() {
+  // Check environment variable first
+  if (process.env.JWT_SECRET) {
+    return process.env.JWT_SECRET;
+  }
+
+  // Try to load from file
+  if (fs.existsSync(JWT_SECRET_FILE)) {
+    try {
+      const secret = fs.readFileSync(JWT_SECRET_FILE, 'utf8').trim();
+      if (secret.length >= 32) {
+        console.log('🔐 Loaded JWT secret from file');
+        return secret;
+      }
+    } catch (err) {
+      console.error('Error reading JWT secret file:', err);
+    }
+  }
+
+  // Generate new secret and save to file
+  const newSecret = crypto.randomBytes(64).toString('hex');
+  try {
+    fs.writeFileSync(JWT_SECRET_FILE, newSecret);
+    console.log('🔐 Generated and saved new JWT secret');
+  } catch (err) {
+    console.error('Could not save JWT secret to file:', err);
+  }
+  return newSecret;
+}
+
+const JWT_SECRET = getOrCreateJwtSecret();
 
 const USERS_FILE = './users.json';
 

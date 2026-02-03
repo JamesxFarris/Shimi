@@ -2668,10 +2668,48 @@ app.get('/api/opportunities/all', async (req, res) => {
         return m;
       });
 
-    // Filter to recommended only (unless showAll=true)
+    // ALWAYS SHOW 3 CARDS - one for each token (BTC, ETH, SOL)
+    // Create placeholder cards for tokens without active markets
+    const tokenSlots = ['BTC', 'ETH', 'SOL'].map(token => {
+      // Find the best opportunity for this token
+      const tokenOpps = allAnalyzed.filter(m => m.assetType === token || m.cryptoType === token);
+
+      if (tokenOpps.length > 0) {
+        // Sort by win probability and take the best one
+        tokenOpps.sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
+        const best = tokenOpps[0];
+        best.hasActiveMarket = true;
+        return best;
+      } else {
+        // No active market - create a placeholder card
+        const currentPrice = cryptoPrices[token]?.price || 0;
+        return {
+          assetType: token,
+          cryptoType: token,
+          hasActiveMarket: false,
+          isPlaceholder: true,
+          isRecommended: false,
+          filterReason: 'Waiting for next market',
+          currentPrice: currentPrice,
+          title: `${token} 15-Minute Up/Down`,
+          winProbability: '--',
+          edge: 0,
+          betSide: '--',
+          betPrice: 0,
+          betPriceCents: 0,
+          marketCategory: 'crypto'
+        };
+      }
+    });
+
+    // Filter to recommended only (unless showAll=true), but always include placeholders
     const allOpportunities = showAll
-      ? allAnalyzed.sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability))
-      : allAnalyzed.filter(m => m.isRecommended).sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
+      ? tokenSlots.sort((a, b) => {
+          if (a.isPlaceholder && !b.isPlaceholder) return 1;
+          if (!a.isPlaceholder && b.isPlaceholder) return -1;
+          return parseFloat(b.winProbability || 0) - parseFloat(a.winProbability || 0);
+        })
+      : tokenSlots; // Always show all 3 slots
 
     // Refresh positions before calculating risk (user-specific)
     const userConfig = req.userState?.config || config;
@@ -2699,22 +2737,22 @@ app.get('/api/opportunities/all', async (req, res) => {
     }
 
     // Calculate filter statistics
-    const recommended = allAnalyzed.filter(m => m.isRecommended);
-    const noEdge = allAnalyzed.filter(m => !m.isRecommended && m.edge < 0.5);
-    const lowProb = allAnalyzed.filter(m => !m.isRecommended && m.edge >= 0.5);
+    const activeMarkets = tokenSlots.filter(m => m.hasActiveMarket);
+    const recommended = activeMarkets.filter(m => m.isRecommended);
+    const noEdge = activeMarkets.filter(m => !m.isRecommended && m.edge < 0.5);
+    const lowProb = activeMarkets.filter(m => !m.isRecommended && m.edge >= 0.5);
 
     res.json({
       success: true,
       count: allOpportunities.length,
       showingAll: showAll,
       stats: {
-        totalAnalyzed: allAnalyzed.length,
+        totalAnalyzed: activeMarkets.length,
         recommended: recommended.length,
         filteredNoEdge: noEdge.length,
         filteredLowProb: lowProb.length
       },
-      cryptoCount: cryptoOpps.filter(m => m.isRecommended).length,
-      indexCount: indexOpps.filter(m => m.isRecommended).length,
+      activeMarkets: activeMarkets.length,
       prices: priceDisplay,
       risk: {
         // Total risk
