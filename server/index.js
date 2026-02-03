@@ -4872,11 +4872,18 @@ async function runAutoBet() {
       });
     }
 
-    // Combine and filter - EDGE-BASED FILTERING
-    // Edge is what determines profitability, not raw probability!
-    // A 46% probability at 14¢ has great expected value
-    const MIN_EDGE = 1;        // 1% minimum edge - VERY aggressive
-    const MIN_PROB = 0;        // REMOVED - edge is all that matters
+    // Combine and filter - SMART EDGE FILTERING
+    // Required edge scales with risk:
+    // - High price bets (60¢+) are safer, need less edge
+    // - Mid price bets (40-59¢) need moderate edge
+    // - Low price bets (<40¢) are risky, need more edge
+    function getMinEdgeForPrice(price) {
+      if (price >= 70) return 2;   // Very safe, 2% edge OK
+      if (price >= 60) return 3;   // Safe, 3% edge
+      if (price >= 50) return 4;   // Balanced, 4% edge
+      if (price >= 40) return 5;   // Riskier, 5% edge
+      return 7;                     // Low price = high risk, need 7%+ edge
+    }
 
     // Log ALL markets for debugging
     console.log(`   🔍 Market breakdown:`);
@@ -4900,12 +4907,14 @@ async function runAutoBet() {
 
         const winProb = parseFloat(m.winProbability) || 0;
         const edge = m.edge || 0;
+        const priceCents = m.betPriceCents || 50;
 
-        // Primary filter: ANY positive edge
-        if (edge < MIN_EDGE) return false;
-
-        // Secondary filter: must be better than coin flip
-        if (winProb < MIN_PROB) return false;
+        // Smart edge filter: riskier bets need more edge
+        const minEdgeRequired = getMinEdgeForPrice(priceCents);
+        if (edge < minEdgeRequired) {
+          m.filterReason = `Edge ${edge.toFixed(1)}% < required ${minEdgeRequired}% for ${priceCents}¢ bet`;
+          return false;
+        }
 
         // Check if we already bet on this market
         if (recentBets.has(m.ticker)) {
@@ -4917,14 +4926,29 @@ async function runAutoBet() {
           }
         }
 
-        // Calculate expected value score for sorting
-        // EV = (prob * profit) - ((1-prob) * cost) normalized
-        // Simplified: edge * probability gives us a quality score
-        m.evScore = (edge / 100) * (winProb / 100) * 100;
+        // Calculate TRUE expected value and ROI for better ranking
+        // EV = (prob × profit_if_win) - ((1-prob) × cost_if_lose)
+        const prob = winProb / 100;
+        const price = priceCents;
+        const profitIfWin = 100 - price;  // Win pays $1, cost is price
+        const costIfLose = price;
+        const trueEV = (prob * profitIfWin) - ((1 - prob) * costIfLose);
+
+        // ROI = EV / cost (profit per dollar risked)
+        const roi = price > 0 ? (trueEV / price) * 100 : 0;
+
+        // Profit score combines:
+        // - ROI (higher = better return per dollar)
+        // - EV (absolute expected profit)
+        // - Confidence bonus (higher confidence = trust the edge more)
+        const confidenceMultiplier = m.isSafe ? 1.2 : m.isDegenSafe ? 1.0 : 0.8;
+        m.trueEV = trueEV;
+        m.roi = roi;
+        m.evScore = (trueEV * 0.4 + roi * 0.6) * confidenceMultiplier;
 
         return true;
       })
-      // SORT BY EXPECTED VALUE (best risk-adjusted bets first)
+      // SORT BY PROFIT SCORE (best risk-adjusted bets first)
       .sort((a, b) => b.evScore - a.evScore);
 
     const highEdgeCount = opportunities.filter(o => parseFloat(o.edge) >= MIN_EDGE).length;
