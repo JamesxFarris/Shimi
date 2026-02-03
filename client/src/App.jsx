@@ -394,6 +394,8 @@ function App() {
   const [balanceLoading, setBalanceLoading] = useState(true)
   const [betHistory, setBetHistory] = useState([])
   const [betStats, setBetStats] = useState({ totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 })
+  const [newBetsCount, setNewBetsCount] = useState(0)
+  const [lastSeenBetCount, setLastSeenBetCount] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [autoBetEnabled, setAutoBetEnabled] = useState(false)
@@ -525,9 +527,14 @@ function App() {
 
       if (data.success) {
         setBalance(data.balance || 0)
-        setBetHistory(data.betHistory || [])
+        const newHistory = data.betHistory || []
+        setBetHistory(newHistory)
         setBetStats(data.stats || { totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 })
         setIsAuthenticated(!data.simulated)
+        // Track new bets for notification badge
+        if (newHistory.length > lastSeenBetCount && tab !== 'history') {
+          setNewBetsCount(newHistory.length - lastSeenBetCount)
+        }
       }
     } catch (err) {
       console.error('Portfolio fetch error:', err)
@@ -643,6 +650,10 @@ function App() {
         // Update risk if returned
         if (data.risk) {
           setRisk(data.risk)
+        }
+        // Increment new bets badge if not on history tab
+        if (tab !== 'history') {
+          setNewBetsCount(prev => prev + 1)
         }
         const priceInfo = data.avgPrice ? ` @ ${data.avgPrice}¢` : ''
         const fillInfo = data.filled ? ` (${data.filled} contract${data.filled > 1 ? 's' : ''})` : ''
@@ -916,9 +927,15 @@ function App() {
             <span className="nav-icon">◈</span>
             <span className="nav-text">Dashboard</span>
           </button>
-          <button className={`nav-item ${tab === 'history' ? 'active' : ''}`} onClick={() => { setTab('history'); fetchPerformance(); }}>
+          <button className={`nav-item ${tab === 'history' ? 'active' : ''}`} onClick={() => {
+            setTab('history');
+            fetchPerformance();
+            setNewBetsCount(0);
+            setLastSeenBetCount(betHistory.length);
+          }}>
             <span className="nav-icon">◰</span>
             <span className="nav-text">History</span>
+            {newBetsCount > 0 && <span className="nav-badge">{newBetsCount}</span>}
           </button>
           <button className={`nav-item ${tab === 'performance' ? 'active' : ''}`} onClick={() => { setTab('performance'); fetchPerformance(); }}>
             <span className="nav-icon">📈</span>
