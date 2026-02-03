@@ -323,6 +323,38 @@ function savePerformanceData() {
   }
 }
 
+// Trim data to stay under JSONBin free tier limit (100KB)
+function trimDataForJsonBin(data) {
+  const MAX_SIZE_KB = 90; // Stay under 100KB limit with buffer
+  const MAX_BETS = 500;   // Hard cap on bets to keep
+
+  // Create a copy to trim
+  const trimmed = JSON.parse(JSON.stringify(data));
+
+  // First, limit bets array to most recent
+  if (trimmed.bets && trimmed.bets.length > MAX_BETS) {
+    // Sort by timestamp descending and keep newest
+    trimmed.bets.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    trimmed.bets = trimmed.bets.slice(0, MAX_BETS);
+    console.log(`☁️ Trimmed bets to ${MAX_BETS} most recent`);
+  }
+
+  // Check size and trim more if needed
+  let jsonStr = JSON.stringify(trimmed);
+  let sizeKB = jsonStr.length / 1024;
+
+  while (sizeKB > MAX_SIZE_KB && trimmed.bets.length > 50) {
+    // Remove oldest 10% of bets
+    const removeCount = Math.max(10, Math.floor(trimmed.bets.length * 0.1));
+    trimmed.bets = trimmed.bets.slice(0, trimmed.bets.length - removeCount);
+    jsonStr = JSON.stringify(trimmed);
+    sizeKB = jsonStr.length / 1024;
+    console.log(`☁️ Trimmed to ${trimmed.bets.length} bets (${sizeKB.toFixed(1)}KB)`);
+  }
+
+  return trimmed;
+}
+
 // Actual JSONBin save (debounced)
 async function saveToJsonBin() {
   if (!JSONBIN_API_KEY) {
@@ -331,6 +363,9 @@ async function saveToJsonBin() {
   }
 
   try {
+    // Trim data to stay under free tier limit
+    const dataToSave = trimDataForJsonBin(performanceData);
+
     if (JSONBIN_BIN_ID) {
       // Update existing bin
       const res = await fetch(`https://api.jsonbin.io/v3/b/${JSONBIN_BIN_ID}`, {
@@ -339,10 +374,10 @@ async function saveToJsonBin() {
           'Content-Type': 'application/json',
           'X-Access-Key': JSONBIN_API_KEY
         },
-        body: JSON.stringify(performanceData)
+        body: JSON.stringify(dataToSave)
       });
       if (res.ok) {
-        console.log(`☁️ Saved ${performanceData.bets.length} bets to JSONBin`);
+        console.log(`☁️ Saved ${dataToSave.bets?.length || 0} bets to JSONBin`);
         return { success: true, binId: JSONBIN_BIN_ID, action: 'updated' };
       } else {
         const errText = await res.text();
@@ -359,7 +394,7 @@ async function saveToJsonBin() {
           'X-Access-Key': JSONBIN_API_KEY,
           'X-Bin-Name': 'shimi-performance-data'
         },
-        body: JSON.stringify(performanceData)
+        body: JSON.stringify(dataToSave)
       });
       if (res.ok) {
         const json = await res.json();
