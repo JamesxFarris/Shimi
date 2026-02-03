@@ -4604,31 +4604,8 @@ app.post('/api/bet', async (req, res) => {
       });
     }
 
-    // Calculate bet size based on configurable limits
-    const remainingBudget = getRemainingRiskBudget();
-    const remainingTokenBudget = getRemainingTokenBudget(ticker, market.assetType);
-    const maxPerBet = getMaxPerBet();
-    const maxPerToken = getMaxPerToken();
-
-    // Take minimum of: max per bet, pool budget, and token budget
-    const TARGET_BET_CENTS = Math.min(maxPerBet, remainingBudget, remainingTokenBudget);
-
-    if (remainingTokenBudget < priceCents) {
-      const token = getTokenFromTicker(ticker) || market.assetType || 'token';
-      return res.status(400).json({
-        success: false,
-        error: `Token limit reached for ${token}. Only $${(remainingTokenBudget/100).toFixed(2)} remaining of $${(maxPerToken/100).toFixed(2)} max per token.`
-      });
-    }
-
-    if (TARGET_BET_CENTS < priceCents) {
-      return res.status(400).json({
-        success: false,
-        error: `Risk limit reached. Only $${(remainingBudget/100).toFixed(2)} remaining.`
-      });
-    }
-
-    const count = Math.floor(TARGET_BET_CENTS / priceCents);
+    // Manual bets always buy exactly 1 contract
+    const count = 1;
 
     if (count < 1) {
       return res.status(400).json({
