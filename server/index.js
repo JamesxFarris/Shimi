@@ -416,8 +416,27 @@ function trackBet(betInfo) {
     outcome: 'pending',  // 'won' | 'lost' | 'pending'
     settlementPrice: null,
     actualProfit: null,  // cents
-    settledAt: null
+    settledAt: null,
+
+    // ML features for training (extracted at bet time)
+    mlFeatures: null  // Will be populated below
   };
+
+  // Extract and store ML features for later training
+  try {
+    const priceData = token && typeof cryptoPrices !== 'undefined' ? cryptoPrices[token] : null;
+    bet.mlFeatures = extractMLFeatures({
+      ...betInfo,
+      token,
+      strikePrice,
+      currentPrice,
+      timeRemainingMinutes,
+      volatility,
+      betSide: betInfo.side
+    }, priceData);
+  } catch (err) {
+    console.log('Could not extract ML features:', err.message);
+  }
 
   performanceData.bets.push(bet);
   performanceData.summary.totalBets++;
@@ -425,7 +444,7 @@ function trackBet(betInfo) {
   performanceData.summary.totalWagered += bet.totalCost;
 
   savePerformanceData();
-  console.log(`📊 Tracked bet: ${bet.side} on ${bet.token} @ ${bet.price}¢ (${bet.predictedProb.toFixed(1)}% pred, ${bet.distanceFromStrikePct.toFixed(2)}% from strike)`);
+  console.log(`📊 Tracked bet: ${bet.side} on ${bet.token} @ ${bet.price}¢ (${bet.predictedProb.toFixed(1)}% pred, ${bet.distanceFromStrikePct?.toFixed(2) || '?'}% from strike)`);
 
   return bet;
 }
@@ -491,6 +510,13 @@ function settleBet(betId, outcome, settlementPrice, actualProfit) {
   // Recalculate summary stats
   recalculateSummary();
   savePerformanceData();
+
+  // Update ML model with this outcome
+  try {
+    updateMLModel(bet, outcome);
+  } catch (err) {
+    console.log('ML model update error:', err.message);
+  }
 
   console.log(`📊 Settled bet: ${bet.side} on ${bet.token} → ${outcome.toUpperCase()} (${actualProfit > 0 ? '+' : ''}${actualProfit}¢)`);
   return bet;
@@ -673,6 +699,286 @@ function getCalibrationScore() {
     }))
   };
 }
+
+// ============================================
+// ML LEARNING SYSTEM
+// ============================================
+// Online learning model that improves with each settled bet
+
+const ML_MODEL_FILE = path.join(__dirname, 'ml_model.json');
+
+// Feature weights - learned from outcomes
+let mlModel = {
+  version: 1,
+  trainedOn: 0,  // Number of settled bets used for training
+  lastUpdated: null,
+
+  // Feature weights (initialized to neutral, learned over time)
+  weights: {
+    // Distance from strike features
+    distanceFromStrike: 0,      // How far price is from target
+    distanceSquared: 0,         // Non-linear distance effect
+
+    // Time features
+    timeRemaining: 0,           // Minutes left
+    timeUrgency: 0,             // 1/timeRemaining (urgency increases as expiry nears)
+
+    // Momentum features
+    momentum1m: 0,              // 1-minute momentum
+    momentum5m: 0,              // 5-minute momentum
+    momentumAlignment: 0,       // Do short and long momentum agree?
+
+    // Volatility features
+    volatility: 0,              // Current volatility
+    volToDistance: 0,           // Volatility relative to distance from strike
+
+    // Market price features
+    marketImpliedProb: 0,       // What market thinks
+    priceDeviation: 0,          // Our prediction vs market
+
+    // Confidence features
+    signalStrength: 0,          // How strong is our signal
+
+    // Token-specific biases (learned)
+    tokenBTC: 0,
+    tokenETH: 0,
+    tokenSOL: 0,
+
+    // Time-of-day patterns
+    hourMorning: 0,             // 6am-12pm
+    hourAfternoon: 0,           // 12pm-6pm
+    hourEvening: 0,             // 6pm-12am
+    hourNight: 0,               // 12am-6am
+
+    // Side bias
+    sideYes: 0,
+    sideNo: 0
+  },
+
+  // Running statistics for normalization
+  featureStats: {},
+
+  // Learning rate (how fast to adapt)
+  learningRate: 0.1,
+
+  // Performance tracking
+  performance: {
+    predictions: [],  // Recent predictions vs outcomes
+    accuracy: 0,
+    avgAdjustment: 0
+  }
+};
+
+// Load ML model from file/JSONBin
+function loadMLModel() {
+  try {
+    if (fs.existsSync(ML_MODEL_FILE)) {
+      const data = fs.readFileSync(ML_MODEL_FILE, 'utf8');
+      mlModel = { ...mlModel, ...JSON.parse(data) };
+      console.log(`🧠 ML Model loaded: trained on ${mlModel.trainedOn} bets`);
+    }
+  } catch (err) {
+    console.log('Could not load ML model, using defaults');
+  }
+}
+
+// Save ML model
+function saveMLModel() {
+  try {
+    mlModel.lastUpdated = new Date().toISOString();
+    fs.writeFileSync(ML_MODEL_FILE, JSON.stringify(mlModel, null, 2));
+  } catch (err) {
+    // Ignore save errors on read-only filesystem
+  }
+}
+
+// Extract ML features from a bet opportunity
+function extractMLFeatures(opportunity, priceData) {
+  const now = new Date();
+  const hour = now.getHours();
+
+  const currentPrice = priceData?.price || opportunity.currentPrice || 0;
+  const strikePrice = opportunity.strikePrice || currentPrice;
+  const distanceFromStrike = strikePrice > 0 ? ((currentPrice - strikePrice) / strikePrice) * 100 : 0;
+  const timeRemaining = opportunity.timeRemainingMinutes || 15;
+  const volatility = priceData?.volatility || opportunity.volatility || 0.02;
+  const momentum = priceData?.momentum || opportunity.momentum || {};
+
+  return {
+    // Distance features
+    distanceFromStrike: distanceFromStrike,
+    distanceSquared: distanceFromStrike * distanceFromStrike * Math.sign(distanceFromStrike),
+    absDistance: Math.abs(distanceFromStrike),
+
+    // Time features
+    timeRemaining: timeRemaining,
+    timeUrgency: timeRemaining > 0 ? 1 / timeRemaining : 1,
+    isLastMinute: timeRemaining <= 2 ? 1 : 0,
+
+    // Momentum features
+    momentum1m: momentum.pct1m || 0,
+    momentum5m: momentum.pct5m || 0,
+    momentumAlignment: (momentum.pct1m || 0) * (momentum.pct5m || 0) > 0 ? 1 : -1,
+    momentumStrength: Math.abs(momentum.pct1m || 0) + Math.abs(momentum.pct5m || 0),
+
+    // Volatility features
+    volatility: volatility * 100,
+    volToDistance: Math.abs(distanceFromStrike) / (volatility * 100 + 0.01),
+
+    // Market features
+    marketImpliedProb: opportunity.marketPrice || opportunity.betPrice * 100 || 50,
+    priceDeviation: (opportunity.winProbability || 50) - (opportunity.marketPrice || 50),
+
+    // Signal strength
+    signalStrength: opportunity.confidence === 'high' ? 2 : opportunity.confidence === 'medium' ? 1 : 0,
+    edge: opportunity.edge || 0,
+
+    // Token indicators (one-hot)
+    tokenBTC: opportunity.token === 'BTC' || opportunity.assetType === 'BTC' ? 1 : 0,
+    tokenETH: opportunity.token === 'ETH' || opportunity.assetType === 'ETH' ? 1 : 0,
+    tokenSOL: opportunity.token === 'SOL' || opportunity.assetType === 'SOL' ? 1 : 0,
+
+    // Time-of-day indicators
+    hourMorning: hour >= 6 && hour < 12 ? 1 : 0,
+    hourAfternoon: hour >= 12 && hour < 18 ? 1 : 0,
+    hourEvening: hour >= 18 && hour < 24 ? 1 : 0,
+    hourNight: hour >= 0 && hour < 6 ? 1 : 0,
+
+    // Side indicators
+    sideYes: opportunity.betSide?.toLowerCase() === 'yes' ? 1 : 0,
+    sideNo: opportunity.betSide?.toLowerCase() === 'no' ? 1 : 0
+  };
+}
+
+// Calculate ML adjustment to probability
+function getMLAdjustment(features) {
+  if (mlModel.trainedOn < 10) {
+    // Not enough training data yet
+    return { adjustment: 0, confidence: 'low', reason: 'insufficient_training_data' };
+  }
+
+  let adjustment = 0;
+  const contributions = {};
+
+  // Calculate weighted sum of features
+  for (const [feature, weight] of Object.entries(mlModel.weights)) {
+    if (features[feature] !== undefined && weight !== 0) {
+      const contribution = features[feature] * weight;
+      adjustment += contribution;
+      if (Math.abs(contribution) > 0.5) {
+        contributions[feature] = contribution.toFixed(2);
+      }
+    }
+  }
+
+  // Clamp adjustment to reasonable range (-15% to +15%)
+  adjustment = Math.max(-15, Math.min(15, adjustment));
+
+  const confidence = mlModel.trainedOn >= 50 ? 'high' : mlModel.trainedOn >= 20 ? 'medium' : 'low';
+
+  return {
+    adjustment: parseFloat(adjustment.toFixed(2)),
+    confidence,
+    trainedOn: mlModel.trainedOn,
+    topContributions: contributions,
+    reason: Object.keys(contributions).length > 0
+      ? `Key factors: ${Object.keys(contributions).join(', ')}`
+      : 'No strong signals'
+  };
+}
+
+// Apply ML adjustment to a probability prediction
+function applyMLAdjustment(baseProbability, features) {
+  const mlResult = getMLAdjustment(features);
+
+  // Blend ML adjustment with base probability
+  // Use less ML influence when confidence is low
+  const influenceMultiplier = mlResult.confidence === 'high' ? 1.0 :
+                              mlResult.confidence === 'medium' ? 0.6 : 0.3;
+
+  const adjustedProb = baseProbability + (mlResult.adjustment * influenceMultiplier);
+
+  // Clamp to valid probability range
+  const finalProb = Math.max(5, Math.min(95, adjustedProb));
+
+  return {
+    baseProbability,
+    mlAdjustment: mlResult.adjustment * influenceMultiplier,
+    finalProbability: parseFloat(finalProb.toFixed(1)),
+    mlConfidence: mlResult.confidence,
+    mlDetails: mlResult
+  };
+}
+
+// Update ML model with outcome (called when bet settles)
+function updateMLModel(bet, outcome) {
+  if (!bet.mlFeatures) return;
+
+  const features = bet.mlFeatures;
+  const won = outcome === 'won' ? 1 : 0;
+  const predictedProb = (bet.predictedProb || 50) / 100;  // Convert to 0-1
+  const error = won - predictedProb;  // Positive if we underestimated, negative if overestimated
+
+  // Online learning: adjust weights based on error
+  const lr = mlModel.learningRate;
+
+  for (const [feature, value] of Object.entries(features)) {
+    if (mlModel.weights[feature] !== undefined && value !== 0) {
+      // Gradient descent update
+      mlModel.weights[feature] += lr * error * value;
+
+      // Regularization: keep weights from getting too extreme
+      mlModel.weights[feature] *= 0.99;
+    }
+  }
+
+  mlModel.trainedOn++;
+
+  // Track recent prediction accuracy
+  mlModel.performance.predictions.push({
+    predicted: predictedProb,
+    actual: won,
+    error: Math.abs(error)
+  });
+
+  // Keep only last 100 predictions
+  if (mlModel.performance.predictions.length > 100) {
+    mlModel.performance.predictions.shift();
+  }
+
+  // Update accuracy metrics
+  const recentPreds = mlModel.performance.predictions;
+  mlModel.performance.accuracy = recentPreds.filter(p =>
+    (p.predicted >= 0.5 && p.actual === 1) || (p.predicted < 0.5 && p.actual === 0)
+  ).length / recentPreds.length;
+
+  mlModel.performance.avgAdjustment = recentPreds.reduce((sum, p) => sum + p.error, 0) / recentPreds.length;
+
+  saveMLModel();
+
+  console.log(`🧠 ML Model updated: ${mlModel.trainedOn} training samples, ${(mlModel.performance.accuracy * 100).toFixed(1)}% accuracy`);
+}
+
+// Get ML model status for API
+function getMLModelStatus() {
+  return {
+    version: mlModel.version,
+    trainedOn: mlModel.trainedOn,
+    lastUpdated: mlModel.lastUpdated,
+    accuracy: mlModel.performance.accuracy ? (mlModel.performance.accuracy * 100).toFixed(1) + '%' : 'N/A',
+    avgError: mlModel.performance.avgAdjustment ? (mlModel.performance.avgAdjustment * 100).toFixed(1) + '%' : 'N/A',
+    learningRate: mlModel.learningRate,
+    status: mlModel.trainedOn >= 50 ? 'trained' : mlModel.trainedOn >= 10 ? 'learning' : 'collecting_data',
+    topWeights: Object.entries(mlModel.weights)
+      .filter(([k, v]) => Math.abs(v) > 0.1)
+      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+      .slice(0, 10)
+      .map(([feature, weight]) => ({ feature, weight: weight.toFixed(3) }))
+  };
+}
+
+// Load ML model on startup
+loadMLModel();
 
 // Check and settle pending bets (call periodically)
 async function checkPendingSettlements() {
@@ -5175,6 +5481,14 @@ app.post('/api/jsonbin-create', async (req, res) => {
       error: result.error
     });
   }
+});
+
+// ML Model status endpoint
+app.get('/api/ml-model', (req, res) => {
+  res.json({
+    success: true,
+    model: getMLModelStatus()
+  });
 });
 
 // Get performance summary
