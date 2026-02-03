@@ -1167,72 +1167,127 @@ function App() {
 
           {/* History Tab */}
           {tab === 'history' && (
-            <div className="history-page">
-              {/* Overall Bot Stats - from performance tracking */}
-              {performance && performance.summary && (
-                <div className="overall-stats-banner">
-                  <h3 className="stats-banner-title">All-Time Bot Stats {performance.summary.totalBets === 0 && '(No bets tracked yet)'}</h3>
-                  <div className="history-stats">
-                    <div className={`stat-summary ${parseFloat(performance.summary.totalProfitDollars) >= 0 ? 'positive' : 'negative'}`}>
-                      <span className="stat-label">Total P/L</span>
-                      <span className="stat-value">
-                        {parseFloat(performance.summary.totalProfitDollars) >= 0 ? '+' : ''}${performance.summary.totalProfitDollars}
-                      </span>
+            <div className="history-page-wrapper">
+              <div className="history-page">
+                {/* Overall Bot Stats - from performance tracking */}
+                {performance && performance.summary && (
+                  <div className="overall-stats-banner">
+                    <h3 className="stats-banner-title">All-Time Bot Stats {performance.summary.totalBets === 0 && '(No bets tracked yet)'}</h3>
+                    <div className="history-stats">
+                      <div className={`stat-summary ${parseFloat(performance.summary.totalProfitDollars) >= 0 ? 'positive' : 'negative'}`}>
+                        <span className="stat-label">Total P/L</span>
+                        <span className="stat-value">
+                          {parseFloat(performance.summary.totalProfitDollars) >= 0 ? '+' : ''}${performance.summary.totalProfitDollars}
+                        </span>
+                      </div>
+                      <div className="stat-summary">
+                        <span className="stat-label">ROI</span>
+                        <span className={`stat-value ${parseFloat(performance.summary.roi) >= 0 ? 'positive' : 'negative'}`}>
+                          {performance.summary.roi}%
+                        </span>
+                      </div>
+                      <div className="stat-summary">
+                        <span className="stat-label">Win Rate</span>
+                        <span className={`stat-value ${parseFloat(performance.summary.winRate) >= 50 ? 'positive' : 'negative'}`}>
+                          {performance.summary.winRate}%
+                        </span>
+                      </div>
+                      <div className="stat-summary">
+                        <span className="stat-label">Total Bets</span>
+                        <span className="stat-value">{performance.summary.totalBets}</span>
+                      </div>
                     </div>
-                    <div className="stat-summary">
-                      <span className="stat-label">ROI</span>
-                      <span className={`stat-value ${parseFloat(performance.summary.roi) >= 0 ? 'positive' : 'negative'}`}>
-                        {performance.summary.roi}%
-                      </span>
-                    </div>
-                    <div className="stat-summary">
-                      <span className="stat-label">Win Rate</span>
-                      <span className={`stat-value ${parseFloat(performance.summary.winRate) >= 50 ? 'positive' : 'negative'}`}>
-                        {performance.summary.winRate}%
-                      </span>
-                    </div>
-                    <div className="stat-summary">
-                      <span className="stat-label">Total Bets</span>
-                      <span className="stat-value">{performance.summary.totalBets}</span>
+                    <div className="history-stats secondary">
+                      <div className="stat-summary wins">
+                        <span className="stat-label">Wins</span>
+                        <span className="stat-value">{performance.summary.wins}</span>
+                      </div>
+                      <div className="stat-summary losses">
+                        <span className="stat-label">Losses</span>
+                        <span className="stat-value">{performance.summary.losses}</span>
+                      </div>
+                      <div className="stat-summary pending">
+                        <span className="stat-label">Pending</span>
+                        <span className="stat-value">{performance.summary.pendingBets}</span>
+                      </div>
+                      <div className="stat-summary">
+                        <span className="stat-label">Wagered</span>
+                        <span className="stat-value">${performance.summary.totalWageredDollars}</span>
+                      </div>
                     </div>
                   </div>
-                  <div className="history-stats secondary">
-                    <div className="stat-summary wins">
-                      <span className="stat-label">Wins</span>
-                      <span className="stat-value">{performance.summary.wins}</span>
+                )}
+
+                {/* Recent Activity Section */}
+                <div className="recent-history-section">
+                  <h3 className="section-subtitle">Recent Activity (Last 20)</h3>
+                  {betHistory.length === 0 ? (
+                    <div className="empty-state large">
+                      <span className="empty-icon">📜</span>
+                      <h3>No Bet History</h3>
+                      <p>Place your first bet to see history here</p>
                     </div>
-                    <div className="stat-summary losses">
-                      <span className="stat-label">Losses</span>
-                      <span className="stat-value">{performance.summary.losses}</span>
+                  ) : (
+                    <div className="history-list">
+                      {betHistory.map(bet => (
+                        <HistoryItem key={bet.id} bet={bet} currentTime={tickerTime} />
+                      ))}
                     </div>
-                    <div className="stat-summary pending">
-                      <span className="stat-label">Pending</span>
-                      <span className="stat-value">{performance.summary.pendingBets}</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Branding Sidebar */}
+              <div className="history-sidebar">
+                <div className="sidebar-brand">
+                  <div className="sidebar-logo">
+                    <span className="logo-text">//SHIMI</span>
+                    <span className="logo-subtitle">Neural Trading System</span>
+                  </div>
+                  <div className="sidebar-divider"></div>
+                </div>
+
+                <div className="sidebar-status">
+                  <div className="status-header">
+                    <span className="status-dot"></span>
+                    <span>SYSTEM STATUS</span>
+                  </div>
+                  <div className="status-grid">
+                    <div className="status-item">
+                      <span className="status-label">Engine</span>
+                      <span className="status-value online">ONLINE</span>
                     </div>
-                    <div className="stat-summary">
-                      <span className="stat-label">Wagered</span>
-                      <span className="stat-value">${performance.summary.totalWageredDollars}</span>
+                    <div className="status-item">
+                      <span className="status-label">Auto-Bet</span>
+                      <span className={`status-value ${autoBetEnabled ? 'online' : 'offline'}`}>
+                        {autoBetEnabled ? 'ACTIVE' : 'STANDBY'}
+                      </span>
+                    </div>
+                    <div className="status-item">
+                      <span className="status-label">Strategy</span>
+                      <span className="status-value">MOMENTUM</span>
+                    </div>
+                    <div className="status-item">
+                      <span className="status-label">Sizing</span>
+                      <span className="status-value">KELLY 50%</span>
                     </div>
                   </div>
                 </div>
-              )}
 
-              {/* Recent Activity Section */}
-              <div className="recent-history-section">
-                <h3 className="section-subtitle">Recent Activity (Last 20)</h3>
-                {betHistory.length === 0 ? (
-                  <div className="empty-state large">
-                    <span className="empty-icon">📜</span>
-                    <h3>No Bet History</h3>
-                    <p>Place your first bet to see history here</p>
+                <div className="sidebar-quote">
+                  <div className="quote-marks">"</div>
+                  <p className="quote-text">The market can stay irrational longer than you can stay solvent.</p>
+                  <span className="quote-author">— John Maynard Keynes</span>
+                </div>
+
+                <div className="sidebar-decoration">
+                  <div className="deco-line"></div>
+                  <div className="deco-line"></div>
+                  <div className="deco-line"></div>
+                  <div className="deco-circuit">
+                    <span>◇</span><span>◇</span><span>◇</span>
                   </div>
-                ) : (
-                  <div className="history-list">
-                    {betHistory.map(bet => (
-                      <HistoryItem key={bet.id} bet={bet} currentTime={tickerTime} />
-                    ))}
-                  </div>
-                )}
+                </div>
               </div>
             </div>
           )}
