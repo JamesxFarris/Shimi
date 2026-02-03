@@ -4087,7 +4087,6 @@ app.get('/api/opportunities/all', async (req, res) => {
       } else {
         // Create placeholder for 15min
           const price = cryptoPrices[token]?.price || 0;
-          const price = cryptoPrices[token]?.price || 0;
           coreMarkets.push({
             ticker: `KX${token}15M-PLACEHOLDER`,
             title: `${token} 15-min prediction`,
