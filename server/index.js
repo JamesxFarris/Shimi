@@ -5422,9 +5422,17 @@ async function runAutoBet() {
     // Process each opportunity (already sorted by EV)
     // AUTO-BET places: safe bets + degen bets (when degen mode enabled)
     const safeOpportunities = opportunities.filter(o => o.isSafe);
-    const degenOpportunities = opportunities.filter(o => o.isDegen || o.isDegenSafe);
 
-    // When degen mode is enabled, include ALL degen opportunities (not just degen-safe)
+    // Filter degen opportunities to respect minPrice/maxPrice limits
+    const degenMinPrice = config.degenMode.minPrice || 15;
+    const degenMaxPrice = config.degenMode.maxPrice || 39;
+    const degenOpportunities = opportunities.filter(o =>
+      (o.isDegen || o.isDegenSafe) &&
+      o.betPriceCents >= degenMinPrice &&
+      o.betPriceCents <= degenMaxPrice
+    );
+
+    // When degen mode is enabled, include degen opportunities within price range
     // They'll get smaller bet sizes via the multiplier
     let autoBetOpportunities = [...safeOpportunities];
 
@@ -5432,9 +5440,15 @@ async function runAutoBet() {
       // Mark all degen opportunities for smaller bet sizing
       degenOpportunities.forEach(o => o.isDegenBet = true);
       autoBetOpportunities = [...safeOpportunities, ...degenOpportunities];
-      console.log(`   🔥 DEGEN MODE: Including ${degenOpportunities.length} high-risk bets (smaller size)`);
+      console.log(`   🔥 DEGEN MODE: Including ${degenOpportunities.length} high-risk bets (${degenMinPrice}-${degenMaxPrice}¢ range)`);
     } else if (degenOpportunities.length > 0) {
       console.log(`   🎲 ${degenOpportunities.length} DEGEN bets skipped (enable degen mode to auto-bet these)`);
+    }
+
+    // Log any bets that were too cheap even for degen mode
+    const tooChcheap = opportunities.filter(o => (o.isDegen || o.isDegenSafe) && o.betPriceCents < degenMinPrice);
+    if (tooChcheap.length > 0) {
+      console.log(`   ⚠️ ${tooChcheap.length} bets below ${degenMinPrice}¢ min price - skipped (too risky)`);
     }
 
     if (autoBetOpportunities.length === 0) {
