@@ -1942,17 +1942,24 @@ fetchCryptoPrices();
 // ============================================
 
 // Risk limits are now configurable via config.riskLimits
-// Helper functions to get current limits
-function getMaxRisk(type) {
-  return config.riskLimits[type]?.maxTotal || 500;
+// Helper functions to get current limits - accept optional userConfig for per-user limits
+function getMaxRisk(type, userConfig = null) {
+  const cfg = userConfig || config;
+  return cfg.riskLimits[type]?.maxTotal || 500;
 }
 
-function getMaxPerBet(type) {
-  return config.riskLimits[type]?.maxPerBet || 200;
+function getMaxPerBet(type, userConfig = null) {
+  const cfg = userConfig || config;
+  return cfg.riskLimits[type]?.maxPerBet || 200;
 }
 
-function getMaxTotalRisk() {
-  return getMaxRisk('hourly') + getMaxRisk('other');
+function getMaxTotalRisk(userConfig = null) {
+  // If user has a unified maxTotal, use that
+  const cfg = userConfig || config;
+  if (cfg.riskLimits.maxTotal) {
+    return cfg.riskLimits.maxTotal;
+  }
+  return getMaxRisk('hourly', userConfig) + getMaxRisk('other', userConfig);
 }
 
 // Determine if a ticker is an hourly market
@@ -2139,8 +2146,9 @@ function getExposureByToken() {
 }
 
 // Get max allowed per token (configurable)
-function getMaxPerToken() {
-  return config.riskLimits.maxPerToken || 500; // Default $5.00
+function getMaxPerToken(userConfig = null) {
+  const cfg = userConfig || config;
+  return cfg.riskLimits.maxPerToken || 500; // Default $5.00
 }
 
 // Get remaining budget for a specific token
@@ -2755,28 +2763,31 @@ app.get('/api/opportunities/all', async (req, res) => {
       activeMarkets: activeMarkets.length,
       prices: priceDisplay,
       risk: {
-        // Total risk
+        // Total risk - use user-specific limits
         current: riskByType.total,
-        max: getMaxTotalRisk(),
-        remaining: getTotalRemainingBudget(),
+        max: getMaxTotalRisk(userConfig),
+        remaining: Math.max(0, getMaxTotalRisk(userConfig) - riskByType.total),
         currentDollars: (riskByType.total / 100).toFixed(2),
-        maxDollars: (getMaxTotalRisk() / 100).toFixed(2),
-        remainingDollars: (getTotalRemainingBudget() / 100).toFixed(2),
+        maxDollars: (getMaxTotalRisk(userConfig) / 100).toFixed(2),
+        remainingDollars: (Math.max(0, getMaxTotalRisk(userConfig) - riskByType.total) / 100).toFixed(2),
+        // Per-token limit
+        maxPerToken: getMaxPerToken(userConfig),
+        byToken: getExposureByToken(),
         // Hourly pool
         hourly: {
           current: riskByType.hourly,
-          max: getMaxRisk('hourly'),
-          remaining: Math.max(0, getMaxRisk('hourly') - riskByType.hourly),
+          max: getMaxRisk('hourly', userConfig),
+          remaining: Math.max(0, getMaxRisk('hourly', userConfig) - riskByType.hourly),
           currentDollars: (riskByType.hourly / 100).toFixed(2),
-          maxDollars: (getMaxRisk('hourly') / 100).toFixed(2)
+          maxDollars: (getMaxRisk('hourly', userConfig) / 100).toFixed(2)
         },
         // Other pool (daily, 15min, etc)
         other: {
           current: riskByType.other,
-          max: getMaxRisk('other'),
-          remaining: Math.max(0, getMaxRisk('other') - riskByType.other),
+          max: getMaxRisk('other', userConfig),
+          remaining: Math.max(0, getMaxRisk('other', userConfig) - riskByType.other),
           currentDollars: (riskByType.other / 100).toFixed(2),
-          maxDollars: (getMaxRisk('other') / 100).toFixed(2)
+          maxDollars: (getMaxRisk('other', userConfig) / 100).toFixed(2)
         }
       },
       opportunities: allOpportunities
@@ -3392,11 +3403,16 @@ app.post('/api/bet', async (req, res) => {
       return res.status(400).json({ success: false, error: 'ticker and side required' });
     }
 
+    // Use user-specific config for authentication
+    const userConfig = req.userState?.config || config;
+    const userPortfolio = req.userState?.portfolio || portfolio;
+    const userBetHistory = req.userState?.betHistory || betHistory;
+
     // CRITICAL: Refresh positions from Kalshi FIRST to get accurate risk
-    if (config.isAuthenticated) {
+    if (userConfig.isAuthenticated) {
       try {
-        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
-        portfolio.positions = posData.market_positions || posData.positions || [];
+        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
+        userPortfolio.positions = posData.market_positions || posData.positions || [];
       } catch (e) {
         console.log('Could not refresh positions before bet:', e.message);
       }
@@ -3498,11 +3514,11 @@ app.post('/api/bet', async (req, res) => {
       status: 'pending'
     };
 
-    if (!config.isAuthenticated) {
+    if (!userConfig.isAuthenticated) {
       betRecord.status = 'simulated';
       betRecord.orderId = 'SIM-' + Date.now();
-      betHistory.unshift(betRecord);
-      config.bankroll -= betRecord.totalCost;
+      userBetHistory.unshift(betRecord);
+      userConfig.bankroll = (userConfig.bankroll || 10000) - betRecord.totalCost;
 
       // Track for performance analysis
       trackBet({
@@ -3516,11 +3532,14 @@ app.post('/api/bet', async (req, res) => {
         marketType: isHourlyMarket(ticker) ? 'hourly' : ticker?.includes('15M') ? '15min' : 'daily'
       });
 
+      // Save user state
+      if (req.userId) saveUserState(req.userId);
+
       return res.json({
         success: true,
         simulated: true,
         bet: betRecord,
-        newBalance: config.bankroll / 100
+        newBalance: (userConfig.bankroll || 10000) / 100
       });
     }
 
@@ -3546,7 +3565,8 @@ app.post('/api/bet', async (req, res) => {
     console.log(`Placing order (ask: ${priceCents}¢, bid: ${fillPrice}¢):`, JSON.stringify(orderRequest));
 
     try {
-      const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
+      // Use userConfig for authentication
+      const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest, userConfig);
       console.log('Order response:', JSON.stringify(orderResponse));
 
       const order = orderResponse.order;
@@ -3571,7 +3591,7 @@ app.post('/api/bet', async (req, res) => {
       betRecord.filledCount = filledCount;
       betRecord.avgPrice = order.average_fill_price || priceCents;
       betRecord.totalCost = filledCount * (order.average_fill_price || priceCents);
-      betHistory.unshift(betRecord);
+      userBetHistory.unshift(betRecord);
 
       // Track for performance analysis
       trackBet({
@@ -3586,19 +3606,22 @@ app.post('/api/bet', async (req, res) => {
         marketType: isHourlyMarket(ticker) ? 'hourly' : ticker?.includes('15M') ? '15min' : 'daily'
       });
 
-      const balanceData = await kalshiRequest('GET', '/portfolio/balance');
-      portfolio.balance = balanceData.balance || 0;
-      config.bankroll = portfolio.balance;
+      const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
+      userPortfolio.balance = balanceData.balance || 0;
+      userConfig.bankroll = userPortfolio.balance;
 
       // Refresh positions for risk tracking
       try {
-        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
-        portfolio.positions = posData.market_positions || posData.positions || [];
+        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
+        userPortfolio.positions = posData.market_positions || posData.positions || [];
       } catch (e) {
         console.log('Could not refresh positions after bet:', e.message);
       }
 
       const riskByType = getRiskByType();
+
+      // Save user state after successful bet
+      if (req.userId) saveUserState(req.userId);
 
       res.json({
         success: true,
@@ -3606,7 +3629,7 @@ app.post('/api/bet', async (req, res) => {
         requested: count,
         avgPrice: betRecord.avgPrice,
         bet: betRecord,
-        newBalance: portfolio.balance / 100,
+        newBalance: userPortfolio.balance / 100,
         risk: {
           current: riskByType.total,
           max: getMaxTotalRisk(),
@@ -3629,7 +3652,7 @@ app.post('/api/bet', async (req, res) => {
         }
       });
 
-      console.log(`✅ Bet placed. Risk now: $${(currentRisk / 100).toFixed(2)} / $${(getMaxTotalRisk() / 100).toFixed(2)}`);
+      console.log(`✅ Bet placed. Risk now: $${(riskByType.total / 100).toFixed(2)} / $${(getMaxTotalRisk() / 100).toFixed(2)}`);
     } catch (orderError) {
       console.error('Kalshi order error:', orderError.message);
       res.status(400).json({ success: false, error: `Kalshi: ${orderError.message}` });
