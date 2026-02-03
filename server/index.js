@@ -1745,15 +1745,70 @@ Object.keys(TRACKED_TOKENS).forEach(token => {
   cryptoPrices[token] = { price: 0, timestamp: 0, history: [], volatility: 0.02 };
 });
 
-// CoinGecko ID mapping
+// Binance symbol mapping (PRIMARY - faster, <1s latency)
+const BINANCE_SYMBOLS = {
+  BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', DOGE: 'DOGEUSDT',
+  ADA: 'ADAUSDT', AVAX: 'AVAXUSDT', LINK: 'LINKUSDT', MATIC: 'MATICUSDT',
+  DOT: 'DOTUSDT', SHIB: 'SHIBUSDT', LTC: 'LTCUSDT', UNI: 'UNIUSDT', ATOM: 'ATOMUSDT', APT: 'APTUSDT'
+};
+
+// CoinGecko ID mapping (FALLBACK - slower but reliable)
 const COINGECKO_IDS = {
   BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana', XRP: 'ripple', DOGE: 'dogecoin',
   ADA: 'cardano', AVAX: 'avalanche-2', LINK: 'chainlink', MATIC: 'matic-network',
   DOT: 'polkadot', SHIB: 'shiba-inu', LTC: 'litecoin', UNI: 'uniswap', ATOM: 'cosmos', APT: 'aptos'
 };
 
-// Fetch all prices from CoinGecko (works globally, no restrictions)
-async function fetchCryptoPrices() {
+// Track which price source we're using
+let priceSource = 'none';
+let binanceFailCount = 0;
+
+// Fetch prices from Binance (PRIMARY - very fast)
+async function fetchBinancePrices() {
+  try {
+    const symbols = Object.values(BINANCE_SYMBOLS);
+    const res = await fetch(`https://api.binance.com/api/v3/ticker/price`);
+
+    if (!res.ok) {
+      throw new Error(`Binance API error: ${res.status}`);
+    }
+
+    const data = await res.json();
+    const now = Date.now();
+    let updated = 0;
+
+    // Create lookup map
+    const priceMap = {};
+    for (const item of data) {
+      priceMap[item.symbol] = parseFloat(item.price);
+    }
+
+    // Update each tracked token
+    for (const [token, symbol] of Object.entries(BINANCE_SYMBOLS)) {
+      const price = priceMap[symbol];
+      if (price && price > 0) {
+        updateTokenPrice(token, price, now);
+        updated++;
+      }
+    }
+
+    if (updated > 0) {
+      priceSource = 'binance';
+      binanceFailCount = 0;
+    }
+
+    return updated > 0 ? cryptoPrices : null;
+  } catch (error) {
+    binanceFailCount++;
+    if (binanceFailCount <= 3) {
+      console.error('Binance error (will fallback to CoinGecko):', error.message);
+    }
+    return null;
+  }
+}
+
+// Fetch prices from CoinGecko (FALLBACK - slower but reliable)
+async function fetchCoinGeckoPrices() {
   try {
     const ids = Object.values(COINGECKO_IDS).join(',');
     const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd`);
@@ -1765,38 +1820,62 @@ async function fetchCryptoPrices() {
     }
 
     const now = Date.now();
+    let updated = 0;
 
     // Update each tracked token
     for (const [token, geckoId] of Object.entries(COINGECKO_IDS)) {
       const priceData = data[geckoId];
       if (priceData && priceData.usd > 0) {
-        const price = priceData.usd;
-        cryptoPrices[token].price = price;
-        cryptoPrices[token].timestamp = now;
-
-        // Keep 60 price points for volatility calculation
-        cryptoPrices[token].history.push({ price, time: now });
-        if (cryptoPrices[token].history.length > 60) {
-          cryptoPrices[token].history.shift();
-        }
-
-        // Keep extended history for statistical analysis (2 hours)
-        if (!priceHistoryExtended[token]) priceHistoryExtended[token] = [];
-        priceHistoryExtended[token].push({ price, time: now });
-        // Keep last 2 hours (720 points at 10-second intervals)
-        const twoHoursAgo = now - 2 * 60 * 60 * 1000;
-        priceHistoryExtended[token] = priceHistoryExtended[token].filter(p => p.time > twoHoursAgo);
-
-        // Calculate volatility
-        cryptoPrices[token].volatility = calculateVolatility(cryptoPrices[token].history, token);
+        updateTokenPrice(token, priceData.usd, now);
+        updated++;
       }
     }
 
-    return cryptoPrices;
+    if (updated > 0) {
+      priceSource = 'coingecko';
+    }
+
+    return updated > 0 ? cryptoPrices : null;
   } catch (error) {
-    console.error('Error fetching crypto prices:', error.message);
+    console.error('CoinGecko error:', error.message);
     return null;
   }
+}
+
+// Helper to update a token's price data
+function updateTokenPrice(token, price, now) {
+  if (!cryptoPrices[token]) return;
+
+  cryptoPrices[token].price = price;
+  cryptoPrices[token].timestamp = now;
+  cryptoPrices[token].source = priceSource;
+
+  // Keep 120 price points for volatility (more history with faster updates)
+  cryptoPrices[token].history.push({ price, time: now });
+  if (cryptoPrices[token].history.length > 120) {
+    cryptoPrices[token].history.shift();
+  }
+
+  // Keep extended history for statistical analysis (2 hours)
+  if (!priceHistoryExtended[token]) priceHistoryExtended[token] = [];
+  priceHistoryExtended[token].push({ price, time: now });
+  const twoHoursAgo = now - 2 * 60 * 60 * 1000;
+  priceHistoryExtended[token] = priceHistoryExtended[token].filter(p => p.time > twoHoursAgo);
+
+  // Calculate volatility
+  cryptoPrices[token].volatility = calculateVolatility(cryptoPrices[token].history, token);
+}
+
+// Main price fetch function - tries Binance first, falls back to CoinGecko
+async function fetchCryptoPrices() {
+  // Try Binance first (faster)
+  const binanceResult = await fetchBinancePrices();
+  if (binanceResult) {
+    return binanceResult;
+  }
+
+  // Fall back to CoinGecko
+  return await fetchCoinGeckoPrices();
 }
 
 // ============================================
@@ -2635,9 +2714,12 @@ function normalCDF(x) {
   return 0.5 * (1.0 + sign * y);
 }
 
-// Start price tracking (every 10 seconds)
-let priceInterval = setInterval(fetchCryptoPrices, 10000);
-fetchCryptoPrices();
+// Start price tracking (every 3 seconds with Binance, faster = better edge detection)
+const PRICE_REFRESH_MS = 3000;
+let priceInterval = setInterval(fetchCryptoPrices, PRICE_REFRESH_MS);
+fetchCryptoPrices().then(() => {
+  console.log(`📊 Price source: ${priceSource.toUpperCase()} (refreshing every ${PRICE_REFRESH_MS/1000}s)`);
+});
 
 // ============================================
 // S&P 500 INDEX PRICE TRACKING
@@ -4101,7 +4183,9 @@ app.get('/api/opportunities/all', async (req, res) => {
 
     // Price display (crypto only - index disabled)
     const priceDisplay = {
-      crypto: {}
+      crypto: {},
+      source: priceSource,
+      refreshMs: PRICE_REFRESH_MS
     };
     for (const token of Object.keys(cryptoPrices)) {
       if (cryptoPrices[token].price > 0) {
