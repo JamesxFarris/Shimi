@@ -3496,25 +3496,33 @@ function analyzeCryptoMarket(parsed) {
   const ev = (ourProbability / 100) * potentialWin - ((100 - ourProbability) / 100) * betPriceCents;
 
   // === SAFE vs DEGEN vs DEGEN-SAFE ===
-  // SAFE: Auto-bet will place these. Requirements:
-  //   - Positive edge
-  //   - Price >= 40¢ (not a long shot)
-  //   - Time limit based on momentum (stronger momentum = can bet earlier)
-  //   - Medium+ confidence (score >= 2)
-  // DEGEN-SAFE: Auto-bet when degen mode enabled (see below)
+  // SAFE: Auto-bet will place these
+  // DEGEN-SAFE: Auto-bet when degen mode enabled (low price + strong momentum)
   // DEGEN: Manual only - too risky for auto
 
-  // Momentum-based time limit: strong momentum allows earlier bets
+  // Momentum indicators
   const hasMomentum = momentum.direction !== 'neutral';
   const hasAlignedMomentum = momentum.aligned && momentum.strength >= 1;
   const hasStrongMomentum = momentum.aligned && momentum.strength >= 2;
 
-  // Time limits based on momentum strength:
-  // - Strong aligned momentum → bet up to 12 min early (catch mispricing before adjustment)
-  // - Some aligned momentum → bet up to 10 min early
-  // - Any momentum → bet up to 8 min early
-  // - No momentum → only bet in final 5 min (less time for reversal)
-  const maxTimeForSafe = hasStrongMomentum ? 12 : hasAlignedMomentum ? 10 : hasMomentum ? 8 : 5;
+  // Time limits depend on PRICE and MOMENTUM:
+  // HIGH PRICE (60¢+): "Stay the course" bets - price just needs to NOT move much
+  //   → More lenient on time, momentum matters less
+  //   → Allow up to 12 min regardless of momentum
+  // MID PRICE (40-59¢): Could go either way
+  //   → Momentum-based time limits
+  // LOW PRICE (<40¢): Need price to MOVE toward strike
+  //   → Handled by degen mode (requires strong momentum)
+
+  let maxTimeForSafe;
+  if (betPriceCents >= 60) {
+    // High price = high probability = betting on stability
+    // These are safe earlier because we're betting price STAYS, not MOVES
+    maxTimeForSafe = 12;
+  } else {
+    // Mid price (40-59¢) = use momentum-based limits
+    maxTimeForSafe = hasStrongMomentum ? 12 : hasAlignedMomentum ? 10 : hasMomentum ? 8 : 6;
+  }
 
   const isSafe = edge > 0 && betPriceCents >= 40 && timeMinutes <= maxTimeForSafe && score >= 2;
 
