@@ -1683,6 +1683,143 @@ body {
   cursor: not-allowed;
 }
 
+/* Placeholder/Waiting Card - MK Character Select Style */
+.opp-card.placeholder {
+  border-color: rgba(80, 80, 100, 0.3);
+  background: linear-gradient(145deg, rgba(20, 20, 35, 0.95) 0%, rgba(15, 15, 25, 0.98) 100%);
+}
+
+.opp-card.placeholder::before {
+  background: radial-gradient(ellipse at center, rgba(100, 100, 150, 0.1) 0%, transparent 70%);
+}
+
+.opp-card.placeholder:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 15px rgba(100, 100, 150, 0.2);
+  border-color: rgba(100, 100, 150, 0.4);
+}
+
+.opp-card.placeholder .stacked-stats,
+.opp-card.placeholder .opp-header {
+  filter: grayscale(50%) brightness(0.7);
+}
+
+.waiting-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, rgba(30, 30, 50, 0.6) 0%, transparent 70%);
+}
+
+.waiting-pulse {
+  position: absolute;
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(100, 150, 255, 0.3) 0%, transparent 70%);
+  animation: waitingPulse 2s ease-in-out infinite;
+}
+
+@keyframes waitingPulse {
+  0%, 100% {
+    transform: scale(0.8);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 0.8;
+  }
+}
+
+.waiting-icon {
+  font-size: 32px;
+  margin-bottom: 8px;
+  filter: drop-shadow(0 0 15px rgba(100, 150, 255, 0.5));
+  animation: waitingBounce 1.5s ease-in-out infinite;
+  z-index: 1;
+}
+
+@keyframes waitingBounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+
+.waiting-text {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: rgba(150, 180, 255, 0.9);
+  text-shadow: 0 0 15px rgba(100, 150, 255, 0.5);
+  text-transform: uppercase;
+  z-index: 1;
+}
+
+.opp-card.placeholder .bet-btn {
+  background: rgba(40, 50, 80, 0.6);
+  color: rgba(150, 180, 255, 0.7);
+  border-color: rgba(100, 150, 255, 0.3);
+  cursor: not-allowed;
+}
+
+.bet-btn.waiting {
+  background: linear-gradient(135deg, rgba(40, 50, 80, 0.7) 0%, rgba(30, 40, 70, 0.8) 100%);
+  color: rgba(150, 180, 255, 0.8);
+  border-color: rgba(100, 150, 255, 0.3);
+}
+
+/* Actionable Card - Ready to bet! */
+.opp-card.actionable {
+  border-color: rgba(0, 255, 150, 0.5);
+  box-shadow: 0 0 20px rgba(0, 255, 150, 0.2);
+}
+
+.opp-card.actionable::before {
+  background: radial-gradient(ellipse at top right, rgba(0, 255, 150, 0.15) 0%, transparent 60%);
+}
+
+.opp-card.actionable:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 30px rgba(0, 255, 150, 0.3);
+  border-color: rgba(0, 255, 150, 0.7);
+}
+
+.actionable-badge {
+  background: linear-gradient(135deg, rgba(0, 255, 150, 0.9) 0%, rgba(0, 200, 100, 0.9) 100%) !important;
+  animation: readyPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes readyPulse {
+  0%, 100% {
+    box-shadow: 0 0 5px rgba(0, 255, 150, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 15px rgba(0, 255, 150, 0.8);
+  }
+}
+
+.bet-btn.actionable {
+  background: linear-gradient(135deg, rgba(0, 200, 100, 0.9) 0%, rgba(0, 150, 80, 0.9) 100%);
+  border-color: rgba(0, 255, 150, 0.5);
+  color: #fff;
+  font-weight: 700;
+  animation: actionableBtnPulse 2s ease-in-out infinite;
+}
+
+@keyframes actionableBtnPulse {
+  0%, 100% {
+    box-shadow: 0 0 10px rgba(0, 255, 150, 0.3);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(0, 255, 150, 0.5);
+  }
+}
+
 /* Card Header */
 .opp-header {
   display: flex;
