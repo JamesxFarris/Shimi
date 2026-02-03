@@ -1259,6 +1259,48 @@ body {
   color: #fff;
 }
 
+/* DEGEN-SAFE Card Style (auto-enabled low-price bets) */
+.opp-card.degen-safe {
+  border-color: rgba(255, 150, 50, 0.5);
+}
+
+.opp-card.degen-safe::before {
+  background: radial-gradient(ellipse at top right, rgba(255, 150, 50, 0.15) 0%, transparent 60%);
+}
+
+.opp-card.degen-safe:hover {
+  border-color: rgba(255, 150, 50, 0.8);
+  box-shadow: 0 6px 20px rgba(255, 150, 50, 0.3);
+}
+
+/* DEGEN-SAFE Badge */
+.degen-safe-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: linear-gradient(135deg, rgba(255, 150, 50, 0.95) 0%, rgba(255, 100, 30, 0.95) 100%);
+  border-radius: 4px;
+  z-index: 5;
+  box-shadow: 0 2px 8px rgba(255, 150, 50, 0.4);
+}
+
+.degen-safe-icon {
+  font-size: 10px;
+  color: #fff;
+}
+
+.degen-safe-text {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: #fff;
+}
+
 /* Locked Card - MK Character Select Style */
 .opp-card.locked {
   border-color: rgba(100, 100, 120, 0.3);
@@ -3202,9 +3244,10 @@ body {
     padding: 10px;
   }
 
-  /* Move DEGEN/SAFE badges below header on mobile to avoid overlap */
+  /* Move DEGEN/SAFE/DEGEN-SAFE badges below header on mobile to avoid overlap */
   .degen-badge,
-  .safe-badge {
+  .safe-badge,
+  .degen-safe-badge {
     top: auto;
     bottom: 50px;
     right: 8px;

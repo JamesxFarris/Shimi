@@ -131,15 +131,24 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
   const isLocked = opp.isLocked === true
   const isDegen = opp.isDegen === true
   const isSafe = opp.isSafe === true
+  const isDegenSafe = opp.isDegenSafe === true
   const pctFromStrike = parseFloat(opp.pctFromStrike) || 0
 
   return (
-    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''} ${notRecommended ? 'no-edge' : ''} ${isLocked ? 'locked' : ''} ${isDegen ? 'degen' : ''} ${isSafe ? 'safe' : ''}`}>
-      {/* DEGEN badge */}
+    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''} ${notRecommended ? 'no-edge' : ''} ${isLocked ? 'locked' : ''} ${isDegen ? 'degen' : ''} ${isSafe ? 'safe' : ''} ${isDegenSafe ? 'degen-safe' : ''}`}>
+      {/* DEGEN badge (manual only) */}
       {isDegen && !isLocked && (
         <div className="degen-badge">
           <span className="degen-icon">🎲</span>
-          <span className="degen-text">DEGEN</span>
+          <span className="degen-text">MANUAL</span>
+        </div>
+      )}
+
+      {/* DEGEN-SAFE badge (auto-enabled when degen mode on) */}
+      {isDegenSafe && !isLocked && (
+        <div className="degen-safe-badge">
+          <span className="degen-safe-icon">🔥</span>
+          <span className="degen-safe-text">AUTO</span>
         </div>
       )}
 
@@ -147,7 +156,7 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
       {isSafe && !isLocked && (
         <div className="safe-badge">
           <span className="safe-icon">✓</span>
-          <span className="safe-text">SAFE</span>
+          <span className="safe-text">AUTO</span>
         </div>
       )}
 
