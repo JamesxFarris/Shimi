@@ -9,7 +9,7 @@
 
 // Using native fetch (Node 18+)
 
-const API_BASE = 'http://localhost:3001';
+const API_BASE = process.env.API_BASE || 'http://localhost:3001';
 
 // ANSI colors for output
 const colors = {
@@ -36,7 +36,7 @@ async function runTests() {
   // Test 1: Server is running
   log(colors.yellow, '📡 Test 1: Server connectivity...');
   try {
-    const statusRes = await fetch(`${API_BASE}/api/status`);
+    const statusRes = await fetch(`${API_BASE}/api/auth/status`);
     const status = await statusRes.json();
     if (status.success) {
       log(colors.green, '   ✓ Server is running');

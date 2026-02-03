@@ -22,7 +22,18 @@
       "WebFetch(domain:help.kalshi.com)",
       "Bash($5.50 total\" for multi-bets\n\nExample: If 5 markets have 5%+ edge, we now bet on all 5\ninstead of ignoring 4 good opportunities.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
       "WebFetch(domain:shimi.onrender.com)",
-      "Bash(git pull:*)"
+      "Bash(git pull:*)",
+      "Bash(npm start)",
+      "Bash(netstat:*)",
+      "Bash(xargs:*)",
+      "Bash(findstr:*)",
+      "Bash(tasklist:*)",
+      "Bash(powershell \"Get-Process -Id 18916 | Select-Object ProcessName, Id, Path\")",
+      "Bash(powershell \"Get-Process -Id 4364 | Select-Object ProcessName, Id, CommandLine\")",
+      "Bash(PORT=3002 node:*)",
+      "Bash(API_BASE=http://localhost:3002 node:*)",
+      "Bash(powershell \"Get-Process -Id 18948 | Select-Object ProcessName, Id\")",
+      "Bash(export API_BASE=http://localhost:3002)"
     ]
   }
 }
