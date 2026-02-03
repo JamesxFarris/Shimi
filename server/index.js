@@ -4086,28 +4086,27 @@ app.get('/api/opportunities/all', async (req, res) => {
         coreMarkets.push(bestMarket);
       } else {
         // Create placeholder for 15min
-          const price = cryptoPrices[token]?.price || 0;
-          coreMarkets.push({
-            ticker: `KX${token}15M-PLACEHOLDER`,
-            title: `${token} 15-min prediction`,
-            cryptoType: token,
-            assetType: token,
-            marketCategory: 'crypto',
-            marketTimeframe: '15min',
-            currentPrice: price,
-            strikePrice: price,
-            timeRemaining: 0,
-            timeRemainingFormatted: 'Scanning...',
-            winProbability: 50,
-            edge: 0,
-            betSide: null,
-            isRecommended: false,
-            isLocked: true,
-            isCore: true,
-            isPlaceholder: true,
-            filterReason: 'No signal'
-          });
-        }
+        const price = cryptoPrices[token]?.price || 0;
+        coreMarkets.push({
+          ticker: `KX${token}15M-PLACEHOLDER`,
+          title: `${token} 15-min prediction`,
+          cryptoType: token,
+          assetType: token,
+          marketCategory: 'crypto',
+          marketTimeframe: '15min',
+          currentPrice: price,
+          strikePrice: price,
+          timeRemaining: 0,
+          timeRemainingFormatted: 'Scanning...',
+          winProbability: 50,
+          edge: 0,
+          betSide: null,
+          isRecommended: false,
+          isLocked: true,
+          isCore: true,
+          isPlaceholder: true,
+          filterReason: 'No signal'
+        });
       }
     }
 
