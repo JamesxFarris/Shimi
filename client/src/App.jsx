@@ -7,25 +7,35 @@ const API_BASE = import.meta.env.PROD ? '' : 'http://localhost:3001'
 // AUTHENTICATION
 // ============================================
 
-// Get stored password from localStorage
-const getStoredPassword = () => localStorage.getItem('shimi_password') || ''
+// Get stored auth token from localStorage
+const getStoredToken = () => localStorage.getItem('shimi_auth_token') || ''
+const getStoredUser = () => {
+  try {
+    return JSON.parse(localStorage.getItem('shimi_user') || 'null')
+  } catch {
+    return null
+  }
+}
 
 // Make authenticated API calls
 const authFetch = async (url, options = {}) => {
-  const password = getStoredPassword()
+  const token = getStoredToken()
   const headers = {
     ...options.headers,
     'Content-Type': 'application/json',
   }
-  if (password) {
-    headers['x-shimi-password'] = password
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
   }
   return fetch(url, { ...options, headers })
 }
 
-// Login Screen Component
+// Login/Register Screen Component
 const LoginScreen = ({ onLogin }) => {
+  const [mode, setMode] = useState('login') // 'login' or 'register'
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -34,19 +44,27 @@ const LoginScreen = ({ onLogin }) => {
     setLoading(true)
     setError('')
 
+    if (mode === 'register' && password !== confirmPassword) {
+      setError('Passwords do not match')
+      setLoading(false)
+      return
+    }
+
     try {
-      const res = await fetch(`${API_BASE}/api/auth/login`, {
+      const endpoint = mode === 'register' ? '/api/auth/register' : '/api/auth/login'
+      const res = await fetch(`${API_BASE}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password })
+        body: JSON.stringify({ email, password })
       })
       const data = await res.json()
 
       if (data.success) {
-        localStorage.setItem('shimi_password', password)
-        onLogin()
+        localStorage.setItem('shimi_auth_token', data.token)
+        localStorage.setItem('shimi_user', JSON.stringify(data.user))
+        onLogin(data.user)
       } else {
-        setError('Invalid password')
+        setError(data.error || 'Authentication failed')
       }
     } catch (err) {
       setError('Connection failed')
@@ -58,20 +76,57 @@ const LoginScreen = ({ onLogin }) => {
   return (
     <div className="login-screen">
       <div className="login-card">
-        <h1 className="login-title">🎰 Shimi</h1>
-        <p className="login-subtitle">Enter password to access</p>
+        <h1 className="login-title">SHIMI</h1>
+        <p className="login-subtitle">Neural Trading System</p>
+
+        <div className="auth-tabs">
+          <button
+            className={`auth-tab ${mode === 'login' ? 'active' : ''}`}
+            onClick={() => { setMode('login'); setError('') }}
+          >
+            Login
+          </button>
+          <button
+            className={`auth-tab ${mode === 'register' ? 'active' : ''}`}
+            onClick={() => { setMode('register'); setError('') }}
+          >
+            Register
+          </button>
+        </div>
+
         <form onSubmit={handleSubmit}>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="Email"
+            className="login-input"
+            autoFocus
+            required
+          />
           <input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Password"
             className="login-input"
-            autoFocus
+            required
+            minLength={6}
           />
+          {mode === 'register' && (
+            <input
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="Confirm Password"
+              className="login-input"
+              required
+              minLength={6}
+            />
+          )}
           {error && <p className="login-error">{error}</p>}
           <button type="submit" className="login-button" disabled={loading}>
-            {loading ? 'Checking...' : 'Login'}
+            {loading ? 'Please wait...' : (mode === 'register' ? 'Create Account' : 'Login')}
           </button>
         </form>
       </div>
@@ -133,11 +188,12 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
   const isDegen = opp.isDegen === true
   const isSafe = opp.isSafe === true
   const isDegenSafe = opp.isDegenSafe === true
+  const isStale = opp.isStale === true
   const pctFromStrike = parseFloat(opp.pctFromStrike) || 0
-  const showQtySelector = isDegen && !isLocked && !notRecommended
+  const showQtySelector = isDegen && !isLocked && !notRecommended && !isStale
 
   return (
-    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''} ${notRecommended ? 'no-edge' : ''} ${isLocked ? 'locked' : ''} ${isDegen ? 'degen' : ''} ${isSafe ? 'safe' : ''} ${isDegenSafe ? 'degen-safe' : ''} ${isPlacing ? 'placing' : ''}`}>
+    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''} ${notRecommended ? 'no-edge' : ''} ${isLocked ? 'locked' : ''} ${isDegen ? 'degen' : ''} ${isSafe ? 'safe' : ''} ${isDegenSafe ? 'degen-safe' : ''} ${isStale ? 'stale' : ''} ${isPlacing ? 'placing' : ''}`}>
       {/* Loading overlay when placing bet */}
       {isPlacing && (
         <div className="placing-overlay">
@@ -175,6 +231,14 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
           <div className="smoke-effect"></div>
           <div className="locked-icon">🔒</div>
           <div className="locked-text">WAITING FOR SIGNAL</div>
+        </div>
+      )}
+
+      {/* NO EDGE badge for non-recommended markets */}
+      {notRecommended && !isLocked && (
+        <div className="no-edge-badge">
+          <span className="no-edge-icon">⊘</span>
+          <span className="no-edge-text">{opp.filterReason || 'NO EDGE'}</span>
         </div>
       )}
 
@@ -268,6 +332,20 @@ const formatCountdown = (ms) => {
     return `${seconds}s`
   }
 }
+
+// Trading quotes for rotation in history sidebar
+const tradingQuotes = [
+  { text: "The market can stay irrational longer than you can stay solvent.", author: "John Maynard Keynes" },
+  { text: "Be fearful when others are greedy, greedy when others are fearful.", author: "Warren Buffett" },
+  { text: "The trend is your friend until the end when it bends.", author: "Ed Seykota" },
+  { text: "Cut your losses short and let your winners run.", author: "Jesse Livermore" },
+  { text: "Risk comes from not knowing what you're doing.", author: "Warren Buffett" },
+  { text: "In trading, the impossible happens about twice a year.", author: "Henri M. Simoes" },
+  { text: "Markets are never wrong, opinions often are.", author: "Jesse Livermore" },
+  { text: "The goal isn't to be right, it's to make money.", author: "Mark Minervini" },
+  { text: "It's not whether you're right or wrong, but how much you make when right.", author: "George Soros" },
+  { text: "The best trade is the one you don't make.", author: "Anonymous" },
+]
 
 // History Item - Shows bet with clear win/loss and profit/loss
 const HistoryItem = ({ bet, currentTime }) => {
@@ -406,6 +484,7 @@ function App() {
   // Auth state
   const [needsLogin, setNeedsLogin] = useState(null) // null = checking, true = show login, false = logged in
   const [checkingAuth, setCheckingAuth] = useState(true)
+  const [currentUser, setCurrentUser] = useState(getStoredUser())
 
   const [tab, setTab] = useState('dashboard')
   const [opportunities, setOpportunities] = useState([])
@@ -436,20 +515,34 @@ function App() {
   useEffect(() => {
     const checkAuth = async () => {
       try {
-        const password = getStoredPassword()
-        const res = await fetch(`${API_BASE}/api/auth/status`, {
-          headers: password ? { 'x-shimi-password': password } : {}
-        })
-        const data = await res.json()
-
-        if (data.requiresAuth && !data.isAuthenticated) {
+        const token = getStoredToken()
+        if (!token) {
+          // No token stored, require login
           setNeedsLogin(true)
-        } else {
+          setCheckingAuth(false)
+          return
+        }
+
+        // Verify token is still valid
+        const res = await fetch(`${API_BASE}/api/auth/me`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+
+        if (res.ok) {
+          const data = await res.json()
+          setCurrentUser(data.user)
           setNeedsLogin(false)
+        } else {
+          // Token invalid, clear and require login
+          localStorage.removeItem('shimi_auth_token')
+          localStorage.removeItem('shimi_user')
+          setCurrentUser(null)
+          setNeedsLogin(true)
         }
       } catch (err) {
-        // If server is down, try to proceed anyway
-        setNeedsLogin(false)
+        // If server is down, check if we have stored credentials
+        const token = getStoredToken()
+        setNeedsLogin(!token)
       } finally {
         setCheckingAuth(false)
       }
@@ -484,6 +577,7 @@ function App() {
   const [pinPrompt, setPinPrompt] = useState(null) // { profileId, profileName }
   const [pinInput, setPinInput] = useState('')
   const [pinError, setPinError] = useState('')
+  const [quoteIndex, setQuoteIndex] = useState(Math.floor(Math.random() * tradingQuotes.length))
   const [scaleInSettings, setScaleInSettings] = useState({
     enabled: true,
     minProbabilityIncrease: 15,
@@ -537,13 +631,28 @@ function App() {
   }, []) // No dependencies - prevents infinite loop
 
   // Fetch opportunities (now uses unified endpoint for all market types)
+  // Always fetch ALL markets to show cards even without edge
+  // IMPORTANT: Don't clear cards when API returns empty - keep last known markets visible
   const fetchOpportunities = useCallback(async () => {
     try {
-      const res = await authFetch(`${API_BASE}/api/opportunities/all`)
+      const res = await authFetch(`${API_BASE}/api/opportunities/all?showAll=true`)
       const data = await res.json()
 
       if (data.success) {
-        setOpportunities(data.opportunities || [])
+        // Only update opportunities if we got actual markets back
+        // This prevents cards from disappearing between 15-min cycles
+        const newOpps = data.opportunities || []
+        if (newOpps.length > 0) {
+          setOpportunities(newOpps)
+        } else if (opportunities.length > 0) {
+          // API returned empty but we have existing - mark them as stale/expired
+          setOpportunities(prev => prev.map(opp => ({
+            ...opp,
+            isRecommended: false,
+            filterReason: 'Market expired - waiting for next cycle',
+            isStale: true
+          })))
+        }
         if (data.stats) setMarketStats(data.stats)
         // Update risk info
         if (data.risk) {
@@ -561,7 +670,7 @@ function App() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [opportunities.length])
 
   // Fetch portfolio
   const fetchPortfolio = useCallback(async () => {
@@ -646,7 +755,7 @@ function App() {
   // Fetch scan status (for auto-bet diagnostics)
   const fetchScanStatus = useCallback(async () => {
     try {
-      const res = await authFetch(`${API_BASE}/api/scan-status`)
+      const res = await authFetch(`${API_BASE}/api/auto-bet/status`)
       const data = await res.json()
       if (data.success) {
         setScanStatus(data)
@@ -723,6 +832,19 @@ function App() {
         fetchProfiles()
         fetchOpportunities()
         fetchPortfolio()
+
+        // Auto-link profile to user account if logged in
+        const token = getStoredToken()
+        if (token && currentUser) {
+          try {
+            await authFetch(`${API_BASE}/api/auth/link-profile`, {
+              method: 'POST',
+              body: JSON.stringify({ profileId })
+            })
+          } catch (e) {
+            // Silently fail - linking is optional
+          }
+        }
       } else if (data.requiresPin) {
         // Profile requires PIN - show prompt
         const profile = profiles.find(p => p.id === profileId)
@@ -743,21 +865,35 @@ function App() {
 
   // Delete profile
   const deleteProfile = async (profileId) => {
-    if (!confirm('Delete this profile?')) return
+    const profile = profiles.find(p => p.id === profileId)
+    if (!confirm(`Delete profile "${profile?.name || 'Unknown'}"? This cannot be undone.`)) return
+
+    // If profile has PIN, prompt for it
+    let pin = null
+    if (profile?.hasPin) {
+      pin = prompt('Enter PIN to confirm deletion:')
+      if (!pin) return // Cancelled
+    }
+
     try {
       const res = await authFetch(`${API_BASE}/api/profiles/${profileId}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        body: JSON.stringify({ pin })
       })
       const data = await res.json()
       if (data.success) {
+        alert(`Profile "${profile?.name}" deleted`)
         fetchProfiles()
         if (activeProfile?.id === profileId) {
           setActiveProfile(null)
           setIsAuthenticated(false)
         }
+      } else {
+        alert(data.error || 'Failed to delete profile')
       }
     } catch (err) {
       console.error('Delete profile error:', err)
+      alert('Error deleting profile')
     }
   }
 
@@ -790,13 +926,22 @@ function App() {
     fetchAutoBetStatus()  // Get current auto-bet state
     fetchDegenModeStatus()  // Get current degen mode state
     fetchAggressiveMode()   // Get current aggressive/conservative mode
+    fetchRiskSettings()     // Get saved risk settings
     checkAuth()
 
-    // Refresh opportunities every 10 seconds (includes prices)
+    // Refresh opportunities every 10 seconds (includes prices and risk/exposure)
     const oppInterval = setInterval(fetchOpportunities, 10000)
 
-    // Refresh portfolio every 30 seconds
-    const portfolioInterval = setInterval(fetchPortfolio, 30000)
+    // Refresh portfolio every 10 seconds (faster balance updates)
+    const portfolioInterval = setInterval(fetchPortfolio, 10000)
+
+    // Faster exposure updates: poll every 3 seconds when there are pending bets
+    const fastExposureInterval = setInterval(() => {
+      const hasPendingBets = betHistory.some(b => b.outcome !== 'won' && b.outcome !== 'lost')
+      if (hasPendingBets) {
+        fetchOpportunities() // This updates exposure/risk
+      }
+    }, 3000)
 
     // Refresh performance stats every 60 seconds
     const perfInterval = setInterval(fetchPerformance, 60000)
@@ -811,6 +956,7 @@ function App() {
       clearInterval(portfolioInterval)
       clearInterval(perfInterval)
       clearInterval(tickerTimeInterval)
+      clearInterval(fastExposureInterval)
     }
   }, []) // Empty dependency - only runs on mount
 
@@ -822,6 +968,14 @@ function App() {
       return () => clearInterval(scanInterval)
     }
   }, [autoBetEnabled, fetchScanStatus])
+
+  // Rotate trading quotes every 30 seconds
+  useEffect(() => {
+    const quoteInterval = setInterval(() => {
+      setQuoteIndex(prev => (prev + 1) % tradingQuotes.length)
+    }, 30000)
+    return () => clearInterval(quoteInterval)
+  }, [])
 
   // Place a bet
   const placeBet = async (opp, qty = 1) => {
@@ -1012,6 +1166,25 @@ function App() {
     }
   }
 
+  // Fetch risk settings from server
+  const fetchRiskSettings = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/settings/risk`)
+      const data = await res.json()
+      if (data.success && data.riskLimits) {
+        setRiskSettings(data.riskLimits)
+        const totalMax = data.riskLimits.maxTotal || 1500
+        setRisk(prev => ({
+          ...prev,
+          max: totalMax,
+          maxDollars: (totalMax / 100).toFixed(2)
+        }))
+      }
+    } catch (err) {
+      console.error('Error fetching risk settings:', err)
+    }
+  }
+
   // Update local risk settings state (doesn't save until Save clicked)
   const updateRiskSettings = (field, value) => {
     setSettingsSaved(false)
@@ -1170,7 +1343,10 @@ function App() {
 
   // Show login screen if authentication required
   if (needsLogin) {
-    return <LoginScreen onLogin={() => setNeedsLogin(false)} />
+    return <LoginScreen onLogin={(user) => {
+      setCurrentUser(user)
+      setNeedsLogin(false)
+    }} />
   }
 
   return (
@@ -1242,6 +1418,22 @@ function App() {
             <span className="status-dot"></span>
             <span>{isAuthenticated ? 'Connected to Kalshi' : 'Simulation Mode'}</span>
           </div>
+          {currentUser && (
+            <div className="user-info-sidebar">
+              <span className="user-email">{currentUser.email}</span>
+              <button
+                className="logout-btn"
+                onClick={() => {
+                  localStorage.removeItem('shimi_auth_token')
+                  localStorage.removeItem('shimi_user')
+                  setCurrentUser(null)
+                  setNeedsLogin(true)
+                }}
+              >
+                Logout
+              </button>
+            </div>
+          )}
         </div>
       </aside>
 
@@ -1276,9 +1468,9 @@ function App() {
               <span className="cyber-bracket">]</span>
             </div>
             <div className="cyber-center">
-              <span className="cyber-divider">//</span>
+              <span className="cyber-divider">\\</span>
               <span className="cyber-title">SHIMI NEURAL TRADING</span>
-              <span className="cyber-divider">//</span>
+              <span className="cyber-divider">\\</span>
             </div>
             <div className="cyber-right">
               <span className="cyber-bracket">[</span>
@@ -1384,42 +1576,44 @@ function App() {
                 </div>
 
                 {/* Scan Status (visible when auto-bet is enabled) */}
-                {autoBetEnabled && scanStatus?.lastScan && (
+                {autoBetEnabled && scanStatus && (
                   <div className="scan-status">
                     <div className="scan-status-header">
-                      <span className="scan-status-indicator"></span>
-                      Last Scan: {scanStatus.summary?.age || 'just now'}
-                    </div>
-                    <div className="scan-status-details">
-                      <span>Markets: {scanStatus.lastScan.cryptoMarketsFound + scanStatus.lastScan.indexMarketsFound}</span>
-                      <span>Qualifying: {scanStatus.lastScan.above60}</span>
-                      <span className={`scan-result ${scanStatus.lastScan.betPlaced ? 'bet-placed' : scanStatus.lastScan.blockedReason || 'waiting'}`}>
-                        {scanStatus.lastScan.betPlaced ? 'Bet Placed' :
-                         scanStatus.lastScan.blockedReason === 'no_opportunities' ? 'Waiting' :
-                         scanStatus.lastScan.blockedReason === 'risk_limit' ? 'Risk limit' :
-                         scanStatus.lastScan.blockedReason === 'token_limit' ? 'Token limit' :
-                         scanStatus.lastScan.blockedReason === 'error' ? 'Error' :
-                         'Scanning...'}
+                      <span className={`scan-status-indicator ${scanStatus.status}`}></span>
+                      <span className="scan-status-label">
+                        {scanStatus.status === 'scanning' ? 'Scanning...' :
+                         scanStatus.status === 'bet_placed' ? '✅ Bet Placed' :
+                         scanStatus.status === 'no_opportunities' ? '⏳ Waiting' :
+                         scanStatus.status === 'risk_limit' ? '⚠️ Risk Limit' :
+                         scanStatus.status === 'token_limit' ? '⚠️ Token Limit' :
+                         scanStatus.status === 'bet_too_small' ? '⚠️ Budget Low' :
+                         scanStatus.status === 'error' ? '❌ Error' :
+                         scanStatus.status === 'idle' ? '💤 Idle' :
+                         'Unknown'}
                       </span>
                     </div>
-                    {scanStatus.lastScan.bestOpportunity && !scanStatus.lastScan.betPlaced && (
-                      <div className="scan-best-opp">
-                        Best: {scanStatus.lastScan.bestOpportunity.title?.substring(0, 30)}...
-                        ({scanStatus.lastScan.bestOpportunity.winProbability}%)
-                        {scanStatus.lastScan.bestOpportunity.reason && (
-                          <span className="blocked-reason"> - {scanStatus.lastScan.bestOpportunity.reason}</span>
-                        )}
+                    <div className="scan-status-details">
+                      <span>Markets: {scanStatus.marketsScanned || 0}</span>
+                      <span>With Edge: {scanStatus.marketsWithEdge || 0}</span>
+                      <span>Qualifying: {scanStatus.opportunitiesFound || 0}</span>
+                    </div>
+                    <div className="scan-status-message">
+                      {scanStatus.statusMessage}
+                    </div>
+                    {scanStatus.blockedReasons?.length > 0 && scanStatus.status !== 'bet_placed' && (
+                      <div className="scan-blocked-reasons">
+                        {scanStatus.blockedReasons.map((reason, i) => (
+                          <span key={i} className="blocked-reason">{reason}</span>
+                        ))}
                       </div>
                     )}
-                    {scanStatus.lastScan.betPlaced && scanStatus.lastScan.betDetails && (
-                      <div className="scan-bet-placed">
-                        {scanStatus.lastScan.betDetails.count > 1 ? (
-                          <>Placed {scanStatus.lastScan.betDetails.count} bets | ${(scanStatus.lastScan.betDetails.totalAmount / 100).toFixed(2)} total</>
-                        ) : scanStatus.lastScan.betDetails.bets?.[0] ? (
-                          <>Placed: {scanStatus.lastScan.betDetails.bets[0].count}x {scanStatus.lastScan.betDetails.bets[0].side} @ {scanStatus.lastScan.betDetails.bets[0].price}¢</>
-                        ) : (
-                          <>Bet placed</>
-                        )}
+                    {scanStatus.lastBet && (
+                      <div className="scan-last-bet">
+                        <span className="last-bet-label">Last bet:</span>
+                        <span className="last-bet-details">
+                          {scanStatus.lastBet.contracts}x {scanStatus.lastBet.side} @ {scanStatus.lastBet.price}¢
+                          {scanStatus.lastBet.simulated && ' (sim)'}
+                        </span>
                       </div>
                     )}
                   </div>
@@ -1439,7 +1633,7 @@ function App() {
                   </h3>
                 </div>
 
-                {loading ? (
+                {loading && opportunities.length === 0 ? (
                   <div className="loading-state">
                     <div className="spinner"></div>
                     <p>Scanning crypto markets...</p>
@@ -1447,12 +1641,8 @@ function App() {
                 ) : opportunities.length === 0 ? (
                   <div className="empty-state">
                     <span className="empty-icon">🔍</span>
-                    <h3>No opportunities with edge found</h3>
-                    <p>
-                      {marketStats.totalAnalyzed > 0
-                        ? `Analyzed ${marketStats.totalAnalyzed} markets: ${marketStats.filteredNoEdge} have no edge (price too high)`
-                        : 'Waiting for price mispricings...'}
-                    </p>
+                    <h3>Waiting for markets</h3>
+                    <p>No active markets found - waiting for next 15-minute cycle...</p>
                   </div>
                 ) : (
                   <div className="opportunities-wrapper">
@@ -1591,8 +1781,8 @@ function App() {
 
                 <div className="sidebar-quote">
                   <div className="quote-marks">"</div>
-                  <p className="quote-text">The market can stay irrational longer than you can stay solvent.</p>
-                  <span className="quote-author">— John Maynard Keynes</span>
+                  <p className="quote-text">{tradingQuotes[quoteIndex].text}</p>
+                  <span className="quote-author">— {tradingQuotes[quoteIndex].author}</span>
                 </div>
 
                 <div className="sidebar-decoration">
@@ -1822,7 +2012,7 @@ function App() {
                             {profile.name}
                           </span>
                           <span className="profile-status">
-                            {profile.hasKalshi ? '🟢 Kalshi connected' : '⚪ No Kalshi'}
+                            {profile.hasCredentials ? '🟢 Kalshi connected' : '⚪ No Kalshi'}
                           </span>
                         </div>
                         {profile.isActive ? (
@@ -2078,7 +2268,7 @@ function App() {
                     >
                       <span className="mode-icon">🛡️</span>
                       <span className="mode-name">Conservative</span>
-                      <span className="mode-desc">41¢+ min, no night</span>
+                      <span className="mode-desc">41¢+ min, safer picks</span>
                     </button>
                   </div>
                   <div className="mode-details">
