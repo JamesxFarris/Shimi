@@ -422,7 +422,15 @@ function App() {
     maxBetsPerMarket: 3,
     minTimeBetweenBets: 60000
   })
+  const [degenModeSettings, setDegenModeSettings] = useState({
+    enabled: false,
+    minPrice: 15,
+    maxTimeMinutes: 5,
+    requireStrongMomentum: true,
+    maxBetMultiplier: 0.5
+  })
   const [settingsSaved, setSettingsSaved] = useState(false)
+  const [degenSettingsSaved, setDegenSettingsSaved] = useState(false)
   const [marketFilter, setMarketFilter] = useState('all') // 'all', 'crypto', 'index'
   const [marketStats, setMarketStats] = useState({ totalAnalyzed: 0, recommended: 0, filteredNoEdge: 0, filteredLowProb: 0 })
   // Performance tracking
@@ -744,6 +752,33 @@ function App() {
       }
     } catch (err) {
       console.error('Error saving scale-in settings:', err)
+    }
+  }
+
+  // Update local degen mode settings state
+  const updateDegenModeSettings = (field, value) => {
+    setDegenSettingsSaved(false)
+    setDegenModeSettings(prev => ({
+      ...prev,
+      [field]: value
+    }))
+  }
+
+  // Save degen mode settings to server
+  const saveDegenModeSettings = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/settings/degen-mode`, {
+        method: 'POST',
+        body: JSON.stringify(degenModeSettings)
+      })
+      const data = await res.json()
+      if (data.success) {
+        setDegenModeSettings(data.degenMode)
+        setDegenSettingsSaved(true)
+        setTimeout(() => setDegenSettingsSaved(false), 3000)
+      }
+    } catch (err) {
+      console.error('Error saving degen mode settings:', err)
     }
   }
 
@@ -1479,6 +1514,66 @@ function App() {
                   </div>
                   <button className={`save-settings-btn ${settingsSaved ? 'saved' : ''}`} onClick={saveScaleInSettings}>
                     {settingsSaved ? '✓ Saved' : 'Save Scale-In Settings'}
+                  </button>
+                </div>
+
+                {/* Degen Mode Settings */}
+                <div className="settings-card degen-card">
+                  <h3 className="settings-card-title">🔥 Degen Mode</h3>
+                  <p className="settings-description">Allow low-probability bets (15-39¢) when momentum is strong. Higher risk, higher reward.</p>
+                  <div className="scale-in-settings">
+                    <div className="settings-input-group">
+                      <label>Enabled</label>
+                      <input
+                        type="checkbox"
+                        checked={degenModeSettings.enabled}
+                        onChange={(e) => updateDegenModeSettings('enabled', e.target.checked)}
+                      />
+                    </div>
+                    <div className="settings-input-group">
+                      <label>Min contract price (¢)</label>
+                      <input
+                        type="number"
+                        min="5"
+                        max="35"
+                        step="5"
+                        value={degenModeSettings.minPrice}
+                        onChange={(e) => updateDegenModeSettings('minPrice', parseInt(e.target.value) || 15)}
+                      />
+                    </div>
+                    <div className="settings-input-group">
+                      <label>Max time remaining (min)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="10"
+                        step="1"
+                        value={degenModeSettings.maxTimeMinutes}
+                        onChange={(e) => updateDegenModeSettings('maxTimeMinutes', parseInt(e.target.value) || 5)}
+                      />
+                    </div>
+                    <div className="settings-input-group">
+                      <label>Require strong momentum</label>
+                      <input
+                        type="checkbox"
+                        checked={degenModeSettings.requireStrongMomentum}
+                        onChange={(e) => updateDegenModeSettings('requireStrongMomentum', e.target.checked)}
+                      />
+                    </div>
+                    <div className="settings-input-group">
+                      <label>Bet size multiplier</label>
+                      <input
+                        type="number"
+                        min="0.1"
+                        max="1"
+                        step="0.1"
+                        value={degenModeSettings.maxBetMultiplier}
+                        onChange={(e) => updateDegenModeSettings('maxBetMultiplier', parseFloat(e.target.value) || 0.5)}
+                      />
+                    </div>
+                  </div>
+                  <button className={`save-settings-btn ${degenSettingsSaved ? 'saved' : ''}`} onClick={saveDegenModeSettings}>
+                    {degenSettingsSaved ? '✓ Saved' : 'Save Degen Settings'}
                   </button>
                 </div>
 

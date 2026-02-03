@@ -1958,6 +1958,19 @@ body {
   grid-column: span 2;
 }
 
+.settings-card.degen-card {
+  border-color: rgba(255, 100, 50, 0.4);
+  background: linear-gradient(135deg, rgba(255, 100, 50, 0.1) 0%, var(--bg-card) 100%);
+}
+
+.settings-card.degen-card .settings-card-title {
+  color: #ff6432;
+}
+
+.settings-card.degen-card .settings-card-title::before {
+  content: '';
+}
+
 .settings-card-title {
   font-family: var(--font-display);
   font-size: 14px;

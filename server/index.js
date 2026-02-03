@@ -123,6 +123,15 @@ let config = {
     minProbabilityIncrease: 15,  // Only scale in if prob increased by 15%+ (60% → 75%)
     maxBetsPerMarket: 3,         // Maximum times to bet on same market
     minTimeBetweenBets: 60000    // At least 1 minute between bets on same market
+  },
+  // Degen mode: allow low-probability bets (15-39¢) when momentum is strong
+  degenMode: {
+    enabled: false,
+    minPrice: 15,                // Minimum contract price in cents
+    maxPrice: 39,                // Maximum price for degen bets (above this = normal safe bet)
+    requireStrongMomentum: true, // All momentum timeframes must align
+    maxTimeMinutes: 5,           // Only in final 5 minutes
+    maxBetMultiplier: 0.5        // Bet half the normal Kelly size for these
   }
 };
 
@@ -208,11 +217,12 @@ function saveSettings() {
     const settings = {
       riskLimits: config.riskLimits,
       scaleIn: config.scaleIn,
+      degenMode: config.degenMode,
       minEdge: config.minEdge,
       savedAt: new Date().toISOString()
     };
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
-    console.log(`💾 Saved settings: $${config.riskLimits.maxTotal / 100} max exposure`);
+    console.log(`💾 Saved settings: $${config.riskLimits.maxTotal / 100} max exposure, degen=${config.degenMode.enabled}`);
   } catch (err) {
     console.log('Could not save settings:', err.message);
   }
@@ -3435,15 +3445,31 @@ function analyzeCryptoMarket(parsed) {
   const potentialWin = 100 - betPriceCents;
   const ev = (ourProbability / 100) * potentialWin - ((100 - ourProbability) / 100) * betPriceCents;
 
-  // === SAFE vs DEGEN ===
+  // === SAFE vs DEGEN vs DEGEN-SAFE ===
   // SAFE: Auto-bet will place these. Requirements:
   //   - Positive edge
   //   - Price >= 40¢ (not a long shot)
   //   - Time <= 8 minutes (don't bet too early - too much can change)
   //   - Medium+ confidence (score >= 2)
+  // DEGEN-SAFE: Auto-bet when degen mode enabled. Requirements:
+  //   - Positive edge
+  //   - Price 15-39¢ (long shot territory)
+  //   - Time <= 5 minutes (momentum matters most near expiry)
+  //   - Strong momentum (all timeframes aligned in bet direction)
   // DEGEN: Manual only - too risky for auto
   const isSafe = edge > 0 && betPriceCents >= 40 && timeMinutes <= 8 && score >= 2;
-  const isDegen = edge > 0 && !isSafe; // Everything else with edge is manual only
+
+  // Check if qualifies for degen-safe (low price but strong momentum)
+  const degenSettings = config.degenMode;
+  const hasStrongMomentum = momentum.aligned && momentum.strength >= 2;
+  const isDegenSafe = degenSettings.enabled &&
+    edge > 0 &&
+    betPriceCents >= degenSettings.minPrice &&
+    betPriceCents < 40 &&
+    timeMinutes <= degenSettings.maxTimeMinutes &&
+    (!degenSettings.requireStrongMomentum || hasStrongMomentum);
+
+  const isDegen = edge > 0 && !isSafe && !isDegenSafe; // Everything else with edge is manual only
 
   // Build reason string
   const dirStr = isAboveStrike ? 'above' : 'below';
@@ -3474,6 +3500,7 @@ function analyzeCryptoMarket(parsed) {
     isRecommended: edge > 0,
     isDegen,
     isSafe,
+    isDegenSafe,
     confidence,
     confidenceScore: score,
     momentumSignal: momentum,
@@ -3905,6 +3932,49 @@ app.post('/api/settings/scale-in', (req, res) => {
     success: true,
     scaleIn: config.scaleIn,
     message: 'Scale-in settings updated'
+  });
+});
+
+// Get degen mode settings
+app.get('/api/settings/degen-mode', (req, res) => {
+  res.json({
+    success: true,
+    degenMode: config.degenMode
+  });
+});
+
+// Update degen mode settings
+app.post('/api/settings/degen-mode', (req, res) => {
+  const { enabled, minPrice, maxPrice, requireStrongMomentum, maxTimeMinutes, maxBetMultiplier } = req.body;
+
+  if (enabled !== undefined) {
+    config.degenMode.enabled = !!enabled;
+  }
+  if (minPrice !== undefined) {
+    config.degenMode.minPrice = Math.max(5, Math.min(39, parseInt(minPrice) || 15));
+  }
+  if (maxPrice !== undefined) {
+    config.degenMode.maxPrice = Math.max(20, Math.min(50, parseInt(maxPrice) || 39));
+  }
+  if (requireStrongMomentum !== undefined) {
+    config.degenMode.requireStrongMomentum = !!requireStrongMomentum;
+  }
+  if (maxTimeMinutes !== undefined) {
+    config.degenMode.maxTimeMinutes = Math.max(1, Math.min(10, parseInt(maxTimeMinutes) || 5));
+  }
+  if (maxBetMultiplier !== undefined) {
+    config.degenMode.maxBetMultiplier = Math.max(0.1, Math.min(1, parseFloat(maxBetMultiplier) || 0.5));
+  }
+
+  // Persist to disk
+  saveSettings();
+
+  console.log(`🔥 Degen mode ${config.degenMode.enabled ? 'ENABLED' : 'disabled'}:`, JSON.stringify(config.degenMode));
+
+  res.json({
+    success: true,
+    degenMode: config.degenMode,
+    message: `Degen mode ${config.degenMode.enabled ? 'enabled' : 'disabled'}`
   });
 });
 
@@ -4851,33 +4921,42 @@ async function runAutoBet() {
     const betResults = [];
 
     // Process each opportunity (already sorted by EV)
-    // AUTO-BET places anything with positive edge and price >= 40¢
+    // AUTO-BET places: safe bets + degen-safe bets (when degen mode enabled)
     const safeOpportunities = opportunities.filter(o => o.isSafe);
+    const degenSafeOpportunities = opportunities.filter(o => o.isDegenSafe);
     const degenOpportunities = opportunities.filter(o => o.isDegen);
 
+    // Combine safe and degen-safe for auto-betting
+    const autoBetOpportunities = [...safeOpportunities, ...degenSafeOpportunities];
+
     if (degenOpportunities.length > 0) {
-      console.log(`   🎲 ${degenOpportunities.length} DEGEN bets (too early, low confidence, or <40¢ - manual only)`);
+      console.log(`   🎲 ${degenOpportunities.length} DEGEN bets (manual only - doesn't meet criteria)`);
     }
 
-    if (safeOpportunities.length === 0 && opportunities.length > 0) {
-      console.log('   📊 Only DEGEN bets available (manual only)');
+    if (degenSafeOpportunities.length > 0) {
+      console.log(`   🔥 ${degenSafeOpportunities.length} DEGEN-SAFE bets (low price + strong momentum - AUTO enabled)`);
+    }
+
+    if (autoBetOpportunities.length === 0 && opportunities.length > 0) {
+      console.log('   📊 Only manual DEGEN bets available');
       lastScanStatus.blockedReason = 'degen_only';
       console.log('========================================\n');
       return;
     }
 
-    if (safeOpportunities.length === 0) {
+    if (autoBetOpportunities.length === 0) {
       console.log('   📊 No opportunities with positive edge');
       lastScanStatus.blockedReason = 'no_edge';
       console.log('========================================\n');
       return;
     }
 
-    console.log(`   ✅ ${safeOpportunities.length} SAFE bets (edge>0, price>=40¢, time<=8min, confidence>=medium)`);
+    console.log(`   ✅ ${safeOpportunities.length} SAFE + ${degenSafeOpportunities.length} DEGEN-SAFE = ${autoBetOpportunities.length} auto-bets`);
 
-    for (const opp of safeOpportunities) {
+    for (const opp of autoBetOpportunities) {
       const tokenName = getTokenFromTicker(opp.ticker) || opp.assetType || opp.cryptoType || 'token';
-      console.log(`   🔄 Processing: ${tokenName} ${opp.betSide} @ ${opp.betPriceCents}¢ (edge +${parseFloat(opp.edge).toFixed(1)}%)`);
+      const betType = opp.isDegenSafe ? '🔥 DEGEN-SAFE' : '✅ SAFE';
+      console.log(`   🔄 Processing ${betType}: ${tokenName} ${opp.betSide} @ ${opp.betPriceCents}¢ (edge +${parseFloat(opp.edge).toFixed(1)}%)`);
 
       const priceCents = Math.round(opp.betPrice * 100);
 
@@ -4906,7 +4985,14 @@ async function runAutoBet() {
 
       // Kelly Criterion bet sizing - use actual balance, capped by token budget
       const actualBankroll = Math.max(config.bankroll, portfolio.balance || 0);
-      const maxBetCents = Math.min(getMaxPerBet(), remainingBudget, remainingTokenBudget);
+      let maxBetCents = Math.min(getMaxPerBet(), remainingBudget, remainingTokenBudget);
+
+      // Apply degen mode bet multiplier (bet smaller on risky low-price bets)
+      if (opp.isDegenSafe) {
+        maxBetCents = Math.floor(maxBetCents * config.degenMode.maxBetMultiplier);
+        console.log(`      Degen multiplier: ${config.degenMode.maxBetMultiplier}x → max $${(maxBetCents/100).toFixed(2)}`);
+      }
+
       const kellyBetSize = calculateKellyBet(winProb, priceCents, actualBankroll, maxBetCents);
 
       console.log(`      Kelly: prob=${winProb.toFixed(1)}%, price=${priceCents}¢, bankroll=$${(actualBankroll/100).toFixed(2)}, max=$${(maxBetCents/100).toFixed(2)}, kelly=${kellyBetSize}¢`);
@@ -5951,10 +6037,14 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
     if (savedSettings.scaleIn) {
       config.scaleIn = { ...config.scaleIn, ...savedSettings.scaleIn };
     }
+    if (savedSettings.degenMode) {
+      config.degenMode = { ...config.degenMode, ...savedSettings.degenMode };
+    }
     if (savedSettings.minEdge !== undefined) {
       config.minEdge = savedSettings.minEdge;
     }
     console.log(`⚙️ Risk limits: $${config.riskLimits.maxPerBet/100}/bet, $${config.riskLimits.maxTotal/100} max exposure`);
+    console.log(`🔥 Degen mode: ${config.degenMode.enabled ? 'ENABLED' : 'disabled'}`);
   }
 
   // Restore auto-bet state from previous session
