@@ -107,7 +107,7 @@ let config = {
   apiKeyId: null,
   privateKey: null,
   isAuthenticated: false,
-  bankroll: 1000, // cents ($10.00)
+  bankroll: 2500, // cents ($25.00)
   maxBetPercent: 15,
   minEdge: 3, // 3% minimum - lowered for more action
   autoBetEnabled: false,
@@ -2673,7 +2673,8 @@ function getMaxPerBet() {
 }
 
 // Kelly Criterion bet sizing - mathematically optimal for long-term growth
-// Uses fractional Kelly (25%) to be more conservative and handle model uncertainty
+// Uses Half Kelly (50%) - balance of growth and capital preservation
+// Returns 0 if bet would be below $1 minimum (skip small edge bets)
 function calculateKellyBet(probability, priceCents, bankrollCents, maxBetCents) {
   const p = probability / 100;  // Convert to decimal
   const q = 1 - p;              // Probability of losing
@@ -2689,18 +2690,23 @@ function calculateKellyBet(probability, priceCents, bankrollCents, maxBetCents) 
   // If Kelly is negative or zero, don't bet (no edge)
   if (kellyFraction <= 0) return 0;
 
-  // Use fractional Kelly (25%) - more conservative, handles model error
-  const KELLY_FRACTION = 0.25;
+  // Use Half Kelly (50%) - good balance of growth and safety
+  const KELLY_FRACTION = 0.50;
   const adjustedKelly = kellyFraction * KELLY_FRACTION;
 
+  // Cap Kelly at 15% of bankroll for any single bet (risk management)
+  const cappedKelly = Math.min(adjustedKelly, 0.15);
+
   // Calculate bet size in cents
-  let betSize = Math.floor(bankrollCents * adjustedKelly);
+  let betSize = Math.floor(bankrollCents * cappedKelly);
 
   // Cap at max per bet
   betSize = Math.min(betSize, maxBetCents);
 
-  // Minimum bet of 1 contract
-  if (betSize < priceCents) betSize = priceCents;
+  // Minimum bet of $1 (100 cents) - skip if Kelly suggests less
+  // This avoids taking tiny edge bets that aren't worth the exposure
+  const MIN_BET_CENTS = 100;
+  if (betSize < MIN_BET_CENTS) return 0;
 
   return betSize;
 }
@@ -3470,21 +3476,33 @@ function analyzeCryptoMarket(parsed) {
       `Market price too high (${betPriceCents}¢) - no value`);
   }
 
-  // === CALCULATE EDGE ===
-  // Simple: if we're confident price stays on this side, what's our expected edge?
-  // More distance + less time + aligned momentum = higher "true" probability
+  // === CALCULATE EDGE USING ENSEMBLE PROBABILITY ===
+  // Use the sophisticated ensemble model instead of fixed adjustments
+  // This gives us data-driven edge based on actual probability calculations
 
-  // Base probability from market price, then adjust
-  const marketImpliedProb = betPriceCents;
+  // Get ensemble probability from our statistical model
+  const prediction = predictOutcome(parsed.cryptoType, currentPrice, strikePrice, timeMinutes);
 
-  // Our adjustment based on confidence
-  let probAdjustment = 0;
-  if (confidence === 'very_high') probAdjustment = 12;
-  else if (confidence === 'high') probAdjustment = 8;
-  else if (confidence === 'medium') probAdjustment = 5;
-  else probAdjustment = 2;
+  // Use the appropriate probability based on bet side
+  // YES bet wins if price ends above strike → use probAbove
+  // NO bet wins if price ends below strike → use probBelow
+  let ensembleProb = betSide === 'YES' ? prediction.probAbove : prediction.probBelow;
 
-  let ourProbability = Math.min(95, marketImpliedProb + probAdjustment);
+  // Convert to percentage (0-100 scale to match betPriceCents)
+  let ourProbability = ensembleProb * 100;
+
+  // Apply confidence-based floor: don't let ensemble go too extreme without confidence
+  // This prevents betting on weak signals
+  const minProbByConfidence = {
+    'very_high': 55,
+    'high': 52,
+    'medium': 50,
+    'low': 48
+  };
+  ourProbability = Math.max(minProbByConfidence[confidence] || 50, ourProbability);
+
+  // Cap at reasonable bounds
+  ourProbability = Math.max(15, Math.min(92, ourProbability));
 
   // Apply ML adjustment if model has learned enough
   let mlAdjustment = 0;
@@ -3505,7 +3523,7 @@ function analyzeCryptoMarket(parsed) {
       }, priceData);
       const mlResult = getMLAdjustment(mlFeatures);
       mlAdjustment = mlResult.adjustment * (mlResult.confidence === 'high' ? 1.0 : mlResult.confidence === 'medium' ? 0.6 : 0.3);
-      ourProbability = Math.max(5, Math.min(95, ourProbability + mlAdjustment));
+      ourProbability = Math.max(15, Math.min(92, ourProbability + mlAdjustment));
     } catch (err) {
       // ML adjustment failed, continue without it
     }
@@ -3572,6 +3590,16 @@ function analyzeCryptoMarket(parsed) {
   const momStr = momentum.direction !== 'neutral' ? ` | momentum ${momentum.direction}` : '';
   const reason = `Price ${distanceFromStrike.toFixed(2)}% ${dirStr} strike, ${timeMinutes}m left${momStr}`;
 
+  // Calculate Kelly fraction for optimal bet sizing
+  // Kelly formula: f* = (p * b - q) / b where p = win prob, q = lose prob, b = odds
+  // For binary options: b = (100 - price) / price (what you win vs what you risk)
+  // Simplified: kellyFraction = edge / (100 - price)
+  const kellyFraction = edge > 0 ? edge / (100 - betPriceCents) : 0;
+  // Use Half Kelly for balance of growth and safety
+  const halfKelly = kellyFraction * 0.5;
+  // Cap Kelly at 15% of bankroll max for any single bet
+  const cappedKelly = Math.min(halfKelly, 0.15);
+
   return {
     ticker: parsed.ticker,
     title: parsed.title,
@@ -3590,9 +3618,12 @@ function analyzeCryptoMarket(parsed) {
     betSide,
     betPrice,
     winProbability: ourProbability.toFixed(1),
+    ensembleProbability: (ensembleProb * 100).toFixed(1),
     edge: edge,
     mlAdjustment: mlAdjustment ? mlAdjustment.toFixed(1) : '0',
     expectedValue: ev.toFixed(2),
+    kellyFraction: (kellyFraction * 100).toFixed(1),  // As percentage
+    recommendedBetFraction: (cappedKelly * 100).toFixed(1),  // Half Kelly, capped
     isRecommended: edge > 0,
     isDegen,
     isSafe,
@@ -4558,8 +4589,30 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       });
     }
 
-    // Cap bet at remaining risk budget, max per bet, OR token budget - whichever is lowest
-    const MAX_BET_CENTS = Math.min(maxPerBet, remainingBudget, remainingTokenBudget);
+    // === KELLY CRITERION BET SIZING ===
+    // Use Half Kelly (already calculated in opportunity) for optimal bankroll growth
+    // Kelly fraction tells us what % of bankroll to bet based on edge
+    const kellyFraction = parseFloat(best.recommendedBetFraction) / 100 || 0.05;
+    const bankrollCents = config.bankroll || 2500;  // Default $25 if not set
+    const MIN_BET_CENTS = 100;  // $1 minimum bet
+
+    // Kelly-based bet size
+    let kellyBetCents = Math.round(bankrollCents * kellyFraction);
+
+    // Apply minimum bet floor
+    if (kellyBetCents < MIN_BET_CENTS) {
+      console.log(`   📊 Kelly suggests $${(kellyBetCents/100).toFixed(2)} but minimum is $1, skipping small edge bet`);
+      return res.json({
+        success: true,
+        message: `Edge too small for Kelly sizing (${(kellyFraction * 100).toFixed(1)}% of bankroll = $${(kellyBetCents/100).toFixed(2)})`,
+        bet: null
+      });
+    }
+
+    // Cap at remaining risk budget, max per bet, OR token budget - whichever is lowest
+    const MAX_BET_CENTS = Math.min(kellyBetCents, maxPerBet, remainingBudget, remainingTokenBudget);
+
+    console.log(`   📊 Kelly sizing: ${(kellyFraction * 100).toFixed(1)}% of $${(bankrollCents/100).toFixed(2)} = $${(kellyBetCents/100).toFixed(2)} → capped at $${(MAX_BET_CENTS/100).toFixed(2)}`);
 
     // Calculate contracts but cap total cost
     let count = Math.floor(MAX_BET_CENTS / priceCents);
@@ -5118,8 +5171,14 @@ async function runAutoBet() {
 
       console.log(`      Kelly: prob=${winProb.toFixed(1)}%, price=${priceCents}¢, bankroll=$${(actualBankroll/100).toFixed(2)}, max=$${(maxBetCents/100).toFixed(2)}, kelly=${kellyBetSize}¢`);
 
-      // Use Kelly sizing but cap at remaining token budget, minimum 1 contract if budget allows
-      const betSize = Math.min(Math.max(kellyBetSize, priceCents), remainingTokenBudget);
+      // Kelly returns 0 for small edge bets - skip them
+      if (kellyBetSize === 0) {
+        console.log(`   ⏭️ ${tokenName}: Kelly says skip (edge too small for $1 min bet)`);
+        continue;
+      }
+
+      // Use Kelly sizing, capped at remaining token budget
+      const betSize = Math.min(kellyBetSize, remainingTokenBudget);
 
       const count = Math.floor(betSize / priceCents);
       if (count < 1) {
