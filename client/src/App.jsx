@@ -392,6 +392,7 @@ function App() {
   const [priceLastUpdated, setPriceLastUpdated] = useState(null)
   const [balance, setBalance] = useState(null) // null = loading
   const [balanceLoading, setBalanceLoading] = useState(true)
+  const [balanceRefreshing, setBalanceRefreshing] = useState(false)
   const [betHistory, setBetHistory] = useState([])
   const [betStats, setBetStats] = useState({ totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 })
   const [newBetsCount, setNewBetsCount] = useState(0)
@@ -540,6 +541,22 @@ function App() {
       console.error('Portfolio fetch error:', err)
     } finally {
       setBalanceLoading(false)
+    }
+  }, [])
+
+  // Quick balance refresh (doesn't fetch full portfolio)
+  const refreshBalance = useCallback(async () => {
+    setBalanceRefreshing(true)
+    try {
+      const res = await authFetch(`${API_BASE}/api/balance/refresh`)
+      const data = await res.json()
+      if (data.success) {
+        setBalance(data.balance)
+      }
+    } catch (err) {
+      console.error('Balance refresh error:', err)
+    } finally {
+      setBalanceRefreshing(false)
     }
   }, [])
 
@@ -949,9 +966,19 @@ function App() {
 
         <div className="sidebar-footer">
           <div className="balance-display">
-            <span className="balance-label">
-              {balanceLoading ? 'Loading...' : isAuthenticated ? 'Live Balance' : 'Simulated'}
-            </span>
+            <div className="balance-header">
+              <span className="balance-label">
+                {balanceLoading ? 'Loading...' : isAuthenticated ? 'Live Balance' : 'Simulated'}
+              </span>
+              <button
+                className={`balance-refresh-btn ${balanceRefreshing ? 'refreshing' : ''}`}
+                onClick={refreshBalance}
+                disabled={balanceRefreshing || balanceLoading}
+                title="Refresh balance"
+              >
+                ↻
+              </button>
+            </div>
             <span className={`balance-value ${balanceLoading ? 'loading' : ''}`}>
               {balanceLoading ? '---' : formatCurrency(balance)}
             </span>

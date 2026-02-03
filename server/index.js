@@ -5869,6 +5869,36 @@ app.get('/api/auth/status', (req, res) => {
   });
 });
 
+// Quick balance refresh endpoint
+app.get('/api/balance/refresh', async (req, res) => {
+  try {
+    if (!config.isAuthenticated) {
+      return res.json({
+        success: true,
+        balance: config.bankroll / 100,
+        simulated: true
+      });
+    }
+
+    const balanceData = await kalshiRequest('GET', '/portfolio/balance');
+    portfolio.balance = balanceData.balance || 0;
+    config.bankroll = portfolio.balance;
+
+    res.json({
+      success: true,
+      balance: portfolio.balance / 100,
+      simulated: false
+    });
+  } catch (error) {
+    console.error('Balance refresh error:', error.message);
+    res.json({
+      success: false,
+      error: error.message,
+      balance: (config.bankroll || portfolio.balance || 0) / 100
+    });
+  }
+});
+
 app.get('/api/portfolio', async (req, res) => {
   try {
     // If authenticated, fetch real data from Kalshi
