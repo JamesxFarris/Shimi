@@ -178,6 +178,14 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
         </div>
       )}
 
+      {/* NO EDGE badge for non-recommended markets */}
+      {notRecommended && !isLocked && (
+        <div className="no-edge-badge">
+          <span className="no-edge-icon">⊘</span>
+          <span className="no-edge-text">{opp.filterReason || 'NO EDGE'}</span>
+        </div>
+      )}
+
       {/* Header: Token + Time */}
       <div className="opp-header">
         <div className="opp-token">
@@ -537,9 +545,10 @@ function App() {
   }, []) // No dependencies - prevents infinite loop
 
   // Fetch opportunities (now uses unified endpoint for all market types)
+  // Always fetch ALL markets to show cards even without edge
   const fetchOpportunities = useCallback(async () => {
     try {
-      const res = await authFetch(`${API_BASE}/api/opportunities/all`)
+      const res = await authFetch(`${API_BASE}/api/opportunities/all?showAll=true`)
       const data = await res.json()
 
       if (data.success) {

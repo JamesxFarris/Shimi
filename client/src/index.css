@@ -1881,27 +1881,99 @@ body {
 }
 
 /* No-edge market cards (shown when "Show All" is enabled) */
+/* NO EDGE CARDS - Mortal Kombat Grey Style */
 .opp-card.no-edge {
-  opacity: 0.6;
-  border-color: #444;
-  background: rgba(20, 20, 30, 0.5);
+  opacity: 0.85;
+  border-color: #3a3a4a;
+  background: linear-gradient(145deg, rgba(35, 35, 45, 0.95) 0%, rgba(25, 25, 35, 0.98) 100%);
+  position: relative;
+  overflow: hidden;
+}
+
+.opp-card.no-edge::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, transparent 40%, rgba(60, 60, 80, 0.1) 100%);
+  pointer-events: none;
+}
+
+.opp-card.no-edge::after {
+  content: 'NO EDGE';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(-15deg);
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 800;
+  color: rgba(80, 80, 100, 0.4);
+  letter-spacing: 4px;
+  text-transform: uppercase;
+  pointer-events: none;
+  z-index: 1;
+  text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
 }
 
 .opp-card.no-edge:hover {
-  border-color: #555;
+  border-color: #4a4a5a;
+  transform: translateY(-2px);
+}
+
+.opp-card.no-edge .stacked-stats,
+.opp-card.no-edge .opp-header,
+.opp-card.no-edge .bet-section {
+  opacity: 0.5;
+}
+
+.opp-card.no-edge .stat-value {
+  color: #666 !important;
 }
 
 .badge.no-edge {
-  background: var(--accent-red);
-  color: white;
+  background: #4a4a5a;
+  color: #888;
   font-size: 8px;
   padding: 2px 5px;
 }
 
 .bet-btn.disabled-no-edge {
-  background: #333;
-  color: #888;
+  background: #2a2a3a;
+  color: #555;
   box-shadow: none;
+  cursor: not-allowed;
+}
+
+/* NO EDGE Badge */
+.no-edge-badge {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: linear-gradient(135deg, #3a3a4a 0%, #2a2a3a 100%);
+  border: 1px solid #4a4a5a;
+  padding: 4px 8px;
+  border-radius: 4px;
+  z-index: 5;
+}
+
+.no-edge-icon {
+  font-size: 12px;
+  color: #666;
+}
+
+.no-edge-text {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  color: #777;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 /* Show all markets button */
@@ -2564,6 +2636,10 @@ body {
 .settings-card.degen-card {
   border-color: rgba(255, 100, 50, 0.4);
   background: linear-gradient(135deg, rgba(255, 100, 50, 0.1) 0%, var(--bg-card) 100%);
+  /* Center in grid when alone on row */
+  grid-column: 1 / -1;
+  max-width: 50%;
+  justify-self: center;
 }
 
 .settings-card.degen-card .settings-card-title {

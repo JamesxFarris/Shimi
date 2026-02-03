@@ -39,15 +39,18 @@ let config = {
   autoBetEnabled: false,
   // Risk management settings (in cents) - bet sizing uses maxPerBet
   riskLimits: {
+    maxPerBet: 500,      // $5.00 max per bet (unified)
+    maxPerToken: 500,    // $5.00 max per token
+    maxTotal: 500,       // $5.00 max total exposure (unified)
+    // Legacy nested structure for compatibility
     hourly: {
-      maxPerBet: 200,    // $2.00 max per bet
-      maxTotal: 500      // $5.00 max total exposure
+      maxPerBet: 500,
+      maxTotal: 500
     },
     other: {
-      maxPerBet: 200,    // $2.00 max per bet
-      maxTotal: 1000     // $10.00 max total exposure
-    },
-    maxPerToken: 500     // $5.00 max per token (e.g., max $5 on all SOL markets combined)
+      maxPerBet: 500,
+      maxTotal: 500
+    }
   },
   // Scale-in settings: add to position when probability improves
   scaleIn: {
@@ -177,9 +180,11 @@ function saveToActiveProfile() {
 let betHistory = [];
 let portfolio = { balance: 0, positions: [] };
 
-// Load profiles on startup
+// Load profiles on startup (but DON'T auto-login - user must select profile)
 loadProfiles();
-restoreActiveProfile();
+// Clear active profile on startup - require manual login
+activeProfileId = null;
+console.log('👤 No profile auto-loaded - please select a profile to login');
 
 // ============================================
 // PERFORMANCE TRACKING
@@ -966,15 +971,93 @@ Object.keys(TRACKED_TOKENS).forEach(token => {
   cryptoPrices[token] = { price: 0, timestamp: 0, history: [], volatility: 0.02 };
 });
 
-// CoinGecko ID mapping
+// Binance symbol mapping (PRIMARY - fast)
+const BINANCE_SYMBOLS = {
+  BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT', XRP: 'XRPUSDT', DOGE: 'DOGEUSDT',
+  ADA: 'ADAUSDT', AVAX: 'AVAXUSDT', LINK: 'LINKUSDT', MATIC: 'MATICUSDT',
+  DOT: 'DOTUSDT', SHIB: 'SHIBUSDT', LTC: 'LTCUSDT', UNI: 'UNIUSDT', ATOM: 'ATOMUSDT', APT: 'APTUSDT'
+};
+
+// CoinGecko ID mapping (FALLBACK - slower but reliable)
 const COINGECKO_IDS = {
   BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana', XRP: 'ripple', DOGE: 'dogecoin',
   ADA: 'cardano', AVAX: 'avalanche-2', LINK: 'chainlink', MATIC: 'matic-network',
   DOT: 'polkadot', SHIB: 'shiba-inu', LTC: 'litecoin', UNI: 'uniswap', ATOM: 'cosmos', APT: 'aptos'
 };
 
-// Fetch all prices from CoinGecko (works globally, no restrictions)
-async function fetchCryptoPrices() {
+// Track which price source we're using
+let priceSource = 'none';
+let binanceFailCount = 0;
+
+// Helper to update a token's price data
+function updateTokenPrice(token, price, now) {
+  if (!cryptoPrices[token]) return;
+
+  cryptoPrices[token].price = price;
+  cryptoPrices[token].timestamp = now;
+  cryptoPrices[token].source = priceSource;
+
+  // Keep 120 price points for volatility (more history with faster updates)
+  cryptoPrices[token].history.push({ price, time: now });
+  if (cryptoPrices[token].history.length > 120) {
+    cryptoPrices[token].history.shift();
+  }
+
+  // Keep extended history for statistical analysis (2 hours)
+  if (!priceHistoryExtended[token]) priceHistoryExtended[token] = [];
+  priceHistoryExtended[token].push({ price, time: now });
+  const twoHoursAgo = now - 2 * 60 * 60 * 1000;
+  priceHistoryExtended[token] = priceHistoryExtended[token].filter(p => p.time > twoHoursAgo);
+
+  // Calculate volatility
+  cryptoPrices[token].volatility = calculateVolatility(cryptoPrices[token].history, token);
+}
+
+// Fetch prices from Binance.US (PRIMARY - very fast, works for US users)
+async function fetchBinancePrices() {
+  try {
+    const res = await fetch(`https://api.binance.us/api/v3/ticker/price`);
+
+    if (!res.ok) {
+      throw new Error(`Binance API error: ${res.status}`);
+    }
+
+    const data = await res.json();
+    const now = Date.now();
+    let updated = 0;
+
+    // Create lookup map
+    const priceMap = {};
+    for (const item of data) {
+      priceMap[item.symbol] = parseFloat(item.price);
+    }
+
+    // Update each tracked token
+    for (const [token, symbol] of Object.entries(BINANCE_SYMBOLS)) {
+      const price = priceMap[symbol];
+      if (price && price > 0) {
+        updateTokenPrice(token, price, now);
+        updated++;
+      }
+    }
+
+    if (updated > 0) {
+      priceSource = 'binance';
+      binanceFailCount = 0;
+    }
+
+    return updated > 0 ? cryptoPrices : null;
+  } catch (error) {
+    binanceFailCount++;
+    if (binanceFailCount <= 3) {
+      console.error('Binance error (will fallback to CoinGecko):', error.message);
+    }
+    return null;
+  }
+}
+
+// Fetch prices from CoinGecko (FALLBACK - slower but reliable)
+async function fetchCoinGeckoPrices() {
   try {
     const ids = Object.values(COINGECKO_IDS).join(',');
     const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd`);
@@ -986,38 +1069,38 @@ async function fetchCryptoPrices() {
     }
 
     const now = Date.now();
+    let updated = 0;
 
     // Update each tracked token
     for (const [token, geckoId] of Object.entries(COINGECKO_IDS)) {
       const priceData = data[geckoId];
       if (priceData && priceData.usd > 0) {
-        const price = priceData.usd;
-        cryptoPrices[token].price = price;
-        cryptoPrices[token].timestamp = now;
-
-        // Keep 60 price points for volatility calculation
-        cryptoPrices[token].history.push({ price, time: now });
-        if (cryptoPrices[token].history.length > 60) {
-          cryptoPrices[token].history.shift();
-        }
-
-        // Keep extended history for statistical analysis (2 hours)
-        if (!priceHistoryExtended[token]) priceHistoryExtended[token] = [];
-        priceHistoryExtended[token].push({ price, time: now });
-        // Keep last 2 hours (720 points at 10-second intervals)
-        const twoHoursAgo = now - 2 * 60 * 60 * 1000;
-        priceHistoryExtended[token] = priceHistoryExtended[token].filter(p => p.time > twoHoursAgo);
-
-        // Calculate volatility
-        cryptoPrices[token].volatility = calculateVolatility(cryptoPrices[token].history, token);
+        updateTokenPrice(token, priceData.usd, now);
+        updated++;
       }
     }
 
-    return cryptoPrices;
+    if (updated > 0) {
+      priceSource = 'coingecko';
+    }
+
+    return updated > 0 ? cryptoPrices : null;
   } catch (error) {
-    console.error('Error fetching crypto prices:', error.message);
+    console.error('CoinGecko error:', error.message);
     return null;
   }
+}
+
+// Main price fetch function - tries Binance first, falls back to CoinGecko
+async function fetchCryptoPrices() {
+  // Try Binance first (faster)
+  const binanceResult = await fetchBinancePrices();
+  if (binanceResult) {
+    return binanceResult;
+  }
+
+  // Fall back to CoinGecko
+  return await fetchCoinGeckoPrices();
 }
 
 // ============================================
@@ -3025,36 +3108,63 @@ app.get('/api/settings/risk', (req, res) => {
 
 // Update risk settings
 app.post('/api/settings/risk', (req, res) => {
-  const { hourly, other, maxPerToken } = req.body;
+  const { hourly, other, maxPerToken, maxPerBet, maxTotal } = req.body;
 
+  // Support BOTH nested (hourly/other) and flat (maxPerBet/maxTotal) structures
+  // Flat structure from simplified UI
+  if (maxPerBet !== undefined) {
+    const val = Math.max(10, Math.min(10000, parseInt(maxPerBet) || 200));
+    config.riskLimits.hourly.maxPerBet = val;
+    config.riskLimits.other.maxPerBet = val;
+  }
+  if (maxTotal !== undefined) {
+    const val = Math.max(100, Math.min(100000, parseInt(maxTotal) || 1500));
+    config.riskLimits.hourly.maxTotal = val;
+    config.riskLimits.other.maxTotal = val;
+    // Also set a unified maxTotal for easy access
+    config.riskLimits.maxTotal = val;
+  }
+
+  // Nested structure (legacy support)
   if (hourly) {
     if (hourly.maxPerBet !== undefined) {
-      config.riskLimits.hourly.maxPerBet = Math.max(10, Math.min(1000, parseInt(hourly.maxPerBet) || 200));
+      config.riskLimits.hourly.maxPerBet = Math.max(10, Math.min(10000, parseInt(hourly.maxPerBet) || 200));
     }
     if (hourly.maxTotal !== undefined) {
-      config.riskLimits.hourly.maxTotal = Math.max(100, Math.min(10000, parseInt(hourly.maxTotal) || 500));
+      config.riskLimits.hourly.maxTotal = Math.max(100, Math.min(100000, parseInt(hourly.maxTotal) || 500));
     }
   }
 
   if (other) {
     if (other.maxPerBet !== undefined) {
-      config.riskLimits.other.maxPerBet = Math.max(10, Math.min(1000, parseInt(other.maxPerBet) || 200));
+      config.riskLimits.other.maxPerBet = Math.max(10, Math.min(10000, parseInt(other.maxPerBet) || 200));
     }
     if (other.maxTotal !== undefined) {
-      config.riskLimits.other.maxTotal = Math.max(100, Math.min(10000, parseInt(other.maxTotal) || 1000));
+      config.riskLimits.other.maxTotal = Math.max(100, Math.min(100000, parseInt(other.maxTotal) || 1000));
     }
   }
 
   // Max per token (e.g., max $5 on all SOL markets combined)
   if (maxPerToken !== undefined) {
-    config.riskLimits.maxPerToken = Math.max(100, Math.min(5000, parseInt(maxPerToken) || 500));
+    config.riskLimits.maxPerToken = Math.max(100, Math.min(50000, parseInt(maxPerToken) || 500));
+  }
+
+  // Create unified maxTotal for response if not set
+  if (!config.riskLimits.maxTotal) {
+    config.riskLimits.maxTotal = Math.max(config.riskLimits.hourly.maxTotal, config.riskLimits.other.maxTotal);
   }
 
   console.log(`⚙️ Risk settings updated:`, JSON.stringify(config.riskLimits));
 
+  // Save to active profile
+  saveToActiveProfile();
+
   res.json({
     success: true,
-    riskLimits: config.riskLimits,
+    riskLimits: {
+      ...config.riskLimits,
+      maxTotal: config.riskLimits.maxTotal || config.riskLimits.hourly.maxTotal
+    },
     message: 'Risk settings updated'
   });
 });
@@ -3230,9 +3340,16 @@ app.post('/api/profiles/:id/switch', async (req, res) => {
 
   const profile = profiles[id];
 
-  // Check PIN if set
-  if (profile.pin && profile.pin !== pin) {
-    return res.status(401).json({ success: false, error: 'Invalid PIN' });
+  // Check PIN if profile has one
+  if (profile.pin) {
+    if (!pin) {
+      // PIN required but not provided - tell client to prompt for it
+      return res.json({ success: false, requiresPin: true, profileName: profile.name });
+    }
+    if (profile.pin !== pin) {
+      // Wrong PIN
+      return res.status(401).json({ success: false, error: 'Invalid PIN', requiresPin: true });
+    }
   }
 
   // Save current profile state before switching
@@ -3310,17 +3427,68 @@ app.post('/api/profiles/save-credentials', (req, res) => {
 // Logout from profile
 app.post('/api/profiles/logout', (req, res) => {
   if (activeProfileId && profiles[activeProfileId]) {
+    // Save current state to profile before logout
     saveToActiveProfile();
   }
 
-  // Clear credentials but keep profile selected
+  // Fully deactivate - clear profile selection AND credentials
+  activeProfileId = null;
   config.apiKeyId = null;
   config.privateKey = null;
   config.isAuthenticated = false;
   config.autoBetEnabled = false;
+
+  // Stop auto-bet if running
+  if (autoBetInterval) {
+    clearInterval(autoBetInterval);
+    autoBetInterval = null;
+  }
+
   betHistory = [];
 
-  res.json({ success: true, message: 'Logged out' });
+  // Save the cleared active profile state
+  saveProfiles();
+
+  res.json({ success: true, message: 'Logged out - no active profile' });
+});
+
+// Delete a profile
+app.delete('/api/profiles/:id', (req, res) => {
+  const { id } = req.params;
+  const { pin } = req.body;
+
+  if (!profiles[id]) {
+    return res.status(404).json({ success: false, error: 'Profile not found' });
+  }
+
+  const profile = profiles[id];
+
+  // Require PIN to delete if profile has one
+  if (profile.pin && profile.pin !== pin) {
+    return res.status(401).json({ success: false, error: 'Invalid PIN - required to delete profile' });
+  }
+
+  // If deleting active profile, logout first
+  if (activeProfileId === id) {
+    activeProfileId = null;
+    config.apiKeyId = null;
+    config.privateKey = null;
+    config.isAuthenticated = false;
+    config.autoBetEnabled = false;
+    if (autoBetInterval) {
+      clearInterval(autoBetInterval);
+      autoBetInterval = null;
+    }
+    betHistory = [];
+  }
+
+  // Delete the profile
+  const profileName = profile.name;
+  delete profiles[id];
+  saveProfiles();
+
+  console.log(`🗑️ Deleted profile: ${profileName}`);
+  res.json({ success: true, message: `Profile "${profileName}" deleted` });
 });
 
 // ============================================
@@ -4079,10 +4247,11 @@ async function runAutoBet() {
     const minPrice = isAggressive ? (aggMode.minPrice || 26) : 41;
     const hourNow = new Date().getHours();
     const isNightTime = hourNow >= 0 && hourNow < 6;
-    const allowNight = isAggressive ? (aggMode.allowNightTrading !== false) : false;
+    // Always allow night trading in both modes (user preference)
+    const allowNight = true;
 
     // Log trading mode
-    console.log(`   ⚡ Mode: ${isAggressive ? 'AGGRESSIVE' : 'CONSERVATIVE'} | Min price: ${minPrice}¢ | Night: ${allowNight ? 'OK' : 'blocked'}`);
+    console.log(`   ⚡ Mode: ${isAggressive ? 'AGGRESSIVE' : 'CONSERVATIVE'} | Min price: ${minPrice}¢ | Night: always allowed`);
 
     const opportunities = [...cryptoOpps, ...indexOpps]
       .filter(m => {
