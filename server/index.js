@@ -2367,6 +2367,28 @@ function getMaxPerToken(userConfig = null) {
   return cfg.riskLimits.maxPerToken || 500; // Default $5.00
 }
 
+// HARD CAP validation - ensures bet won't exceed ANY limit before placing
+// This is the final safety check to prevent exposure limit violations
+function validateBetWontExceedLimits(ticker, betCostCents, userState, userConfig) {
+  const currentExposure = getRiskByType(userState);
+  const tokenExposure = getExposureByToken(userState);
+  const token = getTokenFromTicker(ticker);
+
+  const newTotalExposure = currentExposure.total + betCostCents;
+  const newTokenExposure = (tokenExposure[token] || 0) + betCostCents;
+
+  const maxTotal = getMaxTotalRisk(userConfig);
+  const maxPerToken = getMaxPerToken(userConfig);
+
+  if (newTotalExposure > maxTotal) {
+    return { valid: false, reason: `Would exceed total limit: $${(newTotalExposure/100).toFixed(2)} > $${(maxTotal/100).toFixed(2)}` };
+  }
+  if (token && newTokenExposure > maxPerToken) {
+    return { valid: false, reason: `Would exceed ${token} limit: $${(newTokenExposure/100).toFixed(2)} > $${(maxPerToken/100).toFixed(2)}` };
+  }
+  return { valid: true };
+}
+
 // Get remaining budget for a specific token
 function getRemainingTokenBudget(ticker, assetType, userState = null, userConfig = null) {
   const token = getTokenFromTicker(ticker) || assetType;
@@ -3047,12 +3069,23 @@ async function evaluateTakeProfit(position, userConfig = null) {
   }
 
   // 4. TIME CRITICAL OVERRIDE
-  // With less than 3 minutes left and any profit > 5%, take it
+  // With less than 3 minutes left and profit > 5%, consider exit
+  // BUT: If probability is high (>75%), let it ride to expiration - expected payout is better
   if (market && !shouldExit) {
     const timeRemaining = market.close_time ? new Date(market.close_time).getTime() - Date.now() : null;
     if (timeRemaining && timeRemaining < 3 * 60 * 1000 && profitPercent >= 5) {
-      shouldExit = true;
-      exitReason = `TIME CRITICAL: <3min left, securing ${profitPercent.toFixed(1)}% profit`;
+      // High probability? Let it ride - EV of holding to settlement is better
+      if (probWin >= 0.75) {
+        // Don't exit - expected value of holding is higher
+        console.log(`[TakeProfit] ${ticker}: High prob (${(probWin*100).toFixed(0)}%) with <3min left - letting it ride`);
+      } else if (probWin >= 0.60 && evHold > evExit * 1.5) {
+        // Medium-high prob with much better EV hold - also let ride
+        console.log(`[TakeProfit] ${ticker}: ${(probWin*100).toFixed(0)}% prob, EV hold (${evHold.toFixed(0)}¢) >> EV exit (${evExit.toFixed(0)}¢) - holding`);
+      } else {
+        // Lower probability or EV doesn't favor holding - take the profit
+        shouldExit = true;
+        exitReason = `TIME CRITICAL: <3min left, ${(probWin*100).toFixed(0)}% prob, securing ${profitPercent.toFixed(1)}% profit`;
+      }
     }
   }
 
@@ -4790,6 +4823,18 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     // Ensure we don't exceed budget
     const totalCost = count * priceCents;
 
+    // HARD LIMIT CHECK: Validate bet won't exceed ANY limit
+    const validation = validateBetWontExceedLimits(best.ticker, totalCost, req.userState, req.userConfig);
+    if (!validation.valid) {
+      console.log(`🚫 Bet blocked: ${validation.reason}`);
+      return res.json({
+        success: true,
+        message: `Bet blocked: ${validation.reason}`,
+        bet: null,
+        risk: getRiskByType(req.userState)
+      });
+    }
+
     // Get existing bet info for scale-in tracking
     const existingBet = recentBets.get(best.ticker);
     const newBetCount = best.isScaleIn ? ((existingBet?.betCount || 1) + 1) : 1;
@@ -5034,6 +5079,12 @@ async function runAutoBet(userId = null) {
             console.log(`   💵 ${token}: $${(exposure/100).toFixed(2)} exposure (max $${(getMaxPerToken(userConfig)/100).toFixed(2)})`);
           }
         }
+        // Log pre-bet total exposure summary for debugging limit violations
+        const preExposure = getRiskByType(userState);
+        const preTokenExposure = getExposureByToken(userState);
+        console.log(`📊 Pre-bet exposure: Total=$${(preExposure.total/100).toFixed(2)} (max $${(getMaxTotalRisk(userConfig)/100).toFixed(2)}) | Tokens=${JSON.stringify(
+          Object.fromEntries(Object.entries(preTokenExposure).map(([k,v]) => [k, '$'+(v/100).toFixed(2)]))
+        )}`);
       } catch (e) {
         console.log('⚠️ Could not refresh positions:', e.message);
       }
@@ -5320,6 +5371,15 @@ async function runAutoBet(userId = null) {
     // Ensure we don't exceed budget
     const totalCost = count * priceCents;
 
+    // HARD LIMIT CHECK: Validate bet won't exceed ANY limit
+    const validation = validateBetWontExceedLimits(best.ticker, totalCost, userState, userConfig);
+    if (!validation.valid) {
+      console.log(`🚫 Bet blocked: ${validation.reason}`);
+      lastScanStatus.status = 'limit_exceeded';
+      lastScanStatus.statusMessage = validation.reason;
+      return;
+    }
+
     // Get existing bet info for scale-in tracking
     const existingBet = recentBets.get(best.ticker);
     const newBetCount = best.isScaleIn ? ((existingBet?.betCount || 1) + 1) : 1;
@@ -5525,6 +5585,9 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
     }
     userAutoBetIntervals.set(req.userId, setInterval(() => runAutoBet(req.userId), intervalSeconds * 1000));
 
+    // Start take-profit scanning to monitor positions for exit opportunities
+    startTakeProfitScanning(15000, userConfig);
+
     res.json({
       success: true,
       message: `Auto-betting enabled (every ${intervalSeconds}s)`,
@@ -5543,6 +5606,9 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
       clearInterval(autoBetInterval);
       autoBetInterval = null;
     }
+
+    // Stop take-profit scanning when auto-bet is disabled
+    stopTakeProfitScanning();
 
     res.json({ success: true, message: 'Auto-betting disabled', autoBetEnabled: false });
   } else {
@@ -5564,6 +5630,11 @@ app.get('/api/auto-bet/status', (req, res) => {
     console.log(`🔄 Restoring auto-bet interval for user ${req.userId}`);
     runAutoBet(req.userId);
     userAutoBetIntervals.set(req.userId, setInterval(() => runAutoBet(req.userId), 10000));
+
+    // Also restore take-profit scanning
+    if (!takeProfitInterval) {
+      startTakeProfitScanning(15000, userConfig);
+    }
   }
 
   res.json({
