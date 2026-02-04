@@ -2973,11 +2973,45 @@ async function evaluateTakeProfit(position, userConfig = null) {
   const netProceedsAfterSell = (currentBid * contracts) - totalSellFee - spreadCost;
   const profitPercent = ((netProceedsAfterSell - totalCostWithFees) / totalCostWithFees) * 100;
 
-  // If we're at a loss after fees, don't take profit
+  // ============================================
+  // STOP-LOSS CHECK - Cut losses before they get worse
+  // ============================================
+  const stopLossPercent = cfg.swingTradeMode?.stopLossPercent || -40;
+
+  if (profitPercent <= stopLossPercent) {
+    // Severe loss - cut it now
+    return {
+      shouldExit: true,
+      reason: `🛑 STOP-LOSS: Position at ${profitPercent.toFixed(1)}% (threshold: ${stopLossPercent}%)`,
+      urgencyScore: 100,
+      urgencyReasons: [`Stop-loss triggered at ${profitPercent.toFixed(1)}%`],
+      analysis: { profitPercent, netProfit, currentBid, avgCost, totalSellFee, spreadCost, stopLossTriggered: true }
+    };
+  }
+
+  // Get market for time-based stop-loss
+  const marketsForStopLoss = marketCache.data || [];
+  const marketForStopLoss = marketsForStopLoss.find(m => m.ticker === ticker);
+
+  // Time-based stop-loss: If <3 min left AND losing badly (>25%), cut losses
+  if (marketForStopLoss && profitPercent < -25) {
+    const timeRemaining = marketForStopLoss.close_time ? new Date(marketForStopLoss.close_time).getTime() - Date.now() : null;
+    if (timeRemaining && timeRemaining < 3 * 60 * 1000) {
+      return {
+        shouldExit: true,
+        reason: `🛑 TIME STOP-LOSS: ${profitPercent.toFixed(1)}% loss with <3min left - cutting losses`,
+        urgencyScore: 90,
+        urgencyReasons: [`Time-critical stop-loss: ${profitPercent.toFixed(1)}% loss, ${(timeRemaining/60000).toFixed(1)}min left`],
+        analysis: { profitPercent, netProfit, currentBid, avgCost, totalSellFee, spreadCost, timeRemaining, stopLossTriggered: true }
+      };
+    }
+  }
+
+  // If we're at a moderate loss, don't exit yet (wait for recovery or stop-loss threshold)
   if (netProfit <= 0) {
     return {
       shouldExit: false,
-      reason: `Position at ${profitPercent.toFixed(1)}% after fees (no profit to take)`,
+      reason: `Position at ${profitPercent.toFixed(1)}% - holding (stop-loss at ${stopLossPercent}%)`,
       analysis: { profitPercent, netProfit, currentBid, avgCost, totalSellFee, spreadCost }
     };
   }
