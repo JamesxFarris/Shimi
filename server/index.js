@@ -3007,6 +3007,46 @@ async function evaluateTakeProfit(position, userConfig = null) {
     }
   }
 
+  // ============================================
+  // COIN-FLIP PREVENTION - Exit when price is at strike near expiry
+  // ============================================
+  // If price is very close to strike AND time is running out, exit to avoid gambling
+  if (marketForStopLoss) {
+    const parsed = parseMarket(marketForStopLoss);
+    if (parsed && parsed.strikePrice) {
+      const token = parsed.cryptoType;
+      const currentPrice = cryptoPrices[token]?.price || 0;
+      if (currentPrice > 0) {
+        const pctFromStrike = Math.abs((currentPrice - parsed.strikePrice) / parsed.strikePrice * 100);
+        const timeRemaining = marketForStopLoss.close_time ? new Date(marketForStopLoss.close_time).getTime() - Date.now() : null;
+
+        // If within 0.15% of strike AND <3 min left - this is a coin flip, exit
+        if (pctFromStrike < 0.15 && timeRemaining && timeRemaining < 3 * 60 * 1000) {
+          console.log(`[TakeProfit] ${ticker}: COIN-FLIP PREVENTION - price ${pctFromStrike.toFixed(3)}% from strike with ${(timeRemaining/60000).toFixed(1)}min left`);
+          return {
+            shouldExit: true,
+            reason: `🎲 COIN-FLIP EXIT: Price only ${pctFromStrike.toFixed(2)}% from strike with <3min left - avoiding gamble`,
+            urgencyScore: 95,
+            urgencyReasons: [`Coin-flip prevention: ${pctFromStrike.toFixed(2)}% from strike, ${(timeRemaining/60000).toFixed(1)}min left`],
+            analysis: { profitPercent, netProfit, currentBid, avgCost, pctFromStrike, timeRemaining, coinFlipExit: true }
+          };
+        }
+
+        // Slightly wider threshold with less time - 0.25% from strike AND <2 min
+        if (pctFromStrike < 0.25 && timeRemaining && timeRemaining < 2 * 60 * 1000) {
+          console.log(`[TakeProfit] ${ticker}: COIN-FLIP PREVENTION - price ${pctFromStrike.toFixed(3)}% from strike with ${(timeRemaining/60000).toFixed(1)}min left`);
+          return {
+            shouldExit: true,
+            reason: `🎲 COIN-FLIP EXIT: Price ${pctFromStrike.toFixed(2)}% from strike with <2min left - too risky`,
+            urgencyScore: 95,
+            urgencyReasons: [`Coin-flip prevention: ${pctFromStrike.toFixed(2)}% from strike, ${(timeRemaining/60000).toFixed(1)}min left`],
+            analysis: { profitPercent, netProfit, currentBid, avgCost, pctFromStrike, timeRemaining, coinFlipExit: true }
+          };
+        }
+      }
+    }
+  }
+
   // If we're at a moderate loss, don't exit yet (wait for recovery or stop-loss threshold)
   if (netProfit <= 0) {
     return {
