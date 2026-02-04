@@ -61,15 +61,6 @@ const DEFAULT_CONFIG = {
     maxBetsPerMarket: 3,         // Maximum times to bet on same market
     minTimeBetweenBets: 60000    // At least 1 minute between bets on same market
   },
-  // Aggressive vs Conservative mode toggle
-  // Based on 474-bet analysis: NO bets win 70.6%, YES only 53.1%
-  aggressiveMode: {
-    enabled: false,              // Default to CONSERVATIVE (data-driven)
-    minPrice: 26,                // Aggressive: 26¢+ (vs conservative 41¢)
-    minDistanceFromStrike: 0.05, // Aggressive: 0.05% (vs conservative 0.10%)
-    allowNightTrading: true,     // Aggressive: allow night trading
-    minConfidenceScore: 1        // Aggressive: score >= 1 (vs conservative >= 2)
-  },
   // Liquidity settings: filter out illiquid markets with wide spreads
   liquiditySettings: {
     enabled: true,
@@ -297,9 +288,6 @@ function restoreActiveProfile() {
       if (profile.settings.scaleIn) {
         config.scaleIn = { ...config.scaleIn, ...profile.settings.scaleIn };
       }
-      if (profile.settings.aggressiveMode) {
-        config.aggressiveMode = { ...config.aggressiveMode, ...profile.settings.aggressiveMode };
-      }
       if (profile.settings.autoBetEnabled !== undefined) {
         config.autoBetEnabled = profile.settings.autoBetEnabled;
       }
@@ -323,7 +311,6 @@ function saveToActiveProfile() {
     profile.settings = {
       riskLimits: config.riskLimits,
       scaleIn: config.scaleIn,
-      aggressiveMode: config.aggressiveMode,
       autoBetEnabled: config.autoBetEnabled
     };
     profile.betHistory = betHistory;
@@ -4274,52 +4261,6 @@ app.post('/api/settings/scale-in', (req, res) => {
   });
 });
 
-// Get aggressive mode settings - PER-USER
-app.get('/api/settings/aggressive-mode', (req, res) => {
-  const userConfig = req.userState?.config || DEFAULT_CONFIG;
-  res.json({
-    success: true,
-    aggressiveMode: userConfig.aggressiveMode
-  });
-});
-
-// Update aggressive mode settings (toggle conservative vs aggressive) - PER-USER
-app.post('/api/settings/aggressive-mode', (req, res) => {
-  const { enabled, minPrice, minDistanceFromStrike, allowNightTrading, minConfidenceScore } = req.body;
-
-  const userConfig = req.userState?.config;
-  if (!userConfig) {
-    return res.status(401).json({ success: false, error: 'Must be logged in to update settings' });
-  }
-
-  // Initialize if not exists
-  if (!userConfig.aggressiveMode) {
-    userConfig.aggressiveMode = {
-      enabled: false,  // Default to CONSERVATIVE
-      minPrice: 26,
-      minDistanceFromStrike: 0.05,
-      allowNightTrading: true,
-      minConfidenceScore: 1
-    };
-  }
-
-  if (enabled !== undefined) userConfig.aggressiveMode.enabled = !!enabled;
-  if (minPrice !== undefined) userConfig.aggressiveMode.minPrice = Math.max(15, Math.min(50, parseInt(minPrice) || 26));
-  if (minDistanceFromStrike !== undefined) userConfig.aggressiveMode.minDistanceFromStrike = Math.max(0.01, Math.min(0.5, parseFloat(minDistanceFromStrike) || 0.05));
-  if (allowNightTrading !== undefined) userConfig.aggressiveMode.allowNightTrading = !!allowNightTrading;
-  if (minConfidenceScore !== undefined) userConfig.aggressiveMode.minConfidenceScore = Math.max(0, Math.min(5, parseInt(minConfidenceScore) || 1));
-
-  const mode = userConfig.aggressiveMode.enabled ? 'AGGRESSIVE' : 'CONSERVATIVE';
-  console.log(`⚡ Trading mode: ${mode} for user ${req.userId}`, JSON.stringify(userConfig.aggressiveMode));
-  saveUserState(req.userId);
-
-  res.json({
-    success: true,
-    aggressiveMode: userConfig.aggressiveMode,
-    mode: mode,
-    message: `Trading mode set to ${mode}`
-  });
-});
 
 // ============================================
 // PROFILE ENDPOINTS
@@ -5201,32 +5142,17 @@ async function runAutoBet(userId = null) {
     });
     console.log(`   Probability distribution: ${JSON.stringify(probBuckets)}`);
 
-    // Combine and filter using aggressiveMode settings
-    const aggMode = config.aggressiveMode || { enabled: true, minPrice: 26, allowNightTrading: true };
-    const isAggressive = aggMode.enabled !== false;
-    // Hard minimum of 40 cents - higher priced bets = lower variance, more consistent wins
-    const ABSOLUTE_MIN_PRICE = 40;
-    const modeMinPrice = isAggressive ? (aggMode.minPrice || 26) : 41;
-    const minPrice = Math.max(ABSOLUTE_MIN_PRICE, modeMinPrice);
-    const hourNow = new Date().getHours();
-    const isNightTime = hourNow >= 0 && hourNow < 6;
-    // Always allow night trading in both modes (user preference)
-    const allowNight = true;
+    // Minimum price filter - higher priced bets = lower variance, more consistent wins
+    const MIN_PRICE_CENTS = 40;
 
-    // Log trading mode
-    console.log(`   ⚡ Mode: ${isAggressive ? 'AGGRESSIVE' : 'CONSERVATIVE'} | Min price: ${minPrice}¢ | Night: always allowed`);
+    // Log trading constraints
+    console.log(`   Min price: ${MIN_PRICE_CENTS}¢`);
 
     const opportunities = allOpps
       .filter(m => {
-
-        // DATA-DRIVEN: Night trading (0-5 AM) has 43.1% win rate
-        if (isNightTime && !allowNight) {
-          return false;
-        }
-
-        // DATA-DRIVEN: Minimum price filter (under 26¢ loses badly)
+        // Minimum price filter (under 40¢ loses badly)
         const priceCents = m.betPriceCents || Math.round((m.betPrice || 0) * 100);
-        if (priceCents < minPrice) {
+        if (priceCents < MIN_PRICE_CENTS) {
           return false;
         }
 
@@ -6090,6 +6016,35 @@ app.post('/api/auth/configure', async (req, res) => {
       userConfig.isAuthenticated = false;
       res.status(401).json({ success: false, error: 'Invalid credentials: ' + authError.message });
     }
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Disconnect from Kalshi (clear API credentials)
+app.post('/api/auth/disconnect', (req, res) => {
+  try {
+    if (!req.userId || !req.userState) {
+      return res.status(401).json({ success: false, error: 'Not logged in' });
+    }
+
+    const userConfig = req.userState.config;
+
+    // Clear Kalshi credentials
+    userConfig.apiKeyId = null;
+    userConfig.privateKey = null;
+    userConfig.isAuthenticated = false;
+
+    // Reset portfolio to simulated state
+    req.userState.portfolio = { balance: 2500, positions: [] }; // $25 simulated
+    userConfig.bankroll = 2500;
+
+    // Save user state
+    saveUserState(req.userId);
+
+    console.log(`🔌 User ${req.userId} disconnected from Kalshi`);
+
+    res.json({ success: true, message: 'Disconnected from Kalshi' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

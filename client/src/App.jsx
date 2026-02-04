@@ -230,12 +230,12 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
         </div>
       )}
 
-      {/* Locked smoke overlay */}
+      {/* Locked overlay - shows filter reason */}
       {isLocked && !isWaiting && (
         <div className="locked-overlay">
           <div className="smoke-effect"></div>
           <div className="locked-icon">🔒</div>
-          <div className="locked-text">WAITING FOR SIGNAL</div>
+          <div className="locked-text">{opp.filterReason || 'NO EDGE'}</div>
         </div>
       )}
 
@@ -564,14 +564,7 @@ function App() {
     maxPerToken: 500,
     maxTotal: 1500
   })
-  const [profiles, setProfiles] = useState([])
-  const [activeProfile, setActiveProfile] = useState(null)
-  const [showNewProfile, setShowNewProfile] = useState(false)
-  const [newProfileName, setNewProfileName] = useState('')
-  const [newProfilePin, setNewProfilePin] = useState('')
-  const [pinPrompt, setPinPrompt] = useState(null) // { profileId, profileName }
-  const [pinInput, setPinInput] = useState('')
-  const [pinError, setPinError] = useState('')
+  // Profile system removed - Kalshi credentials tied directly to user account
   const [quoteIndex, setQuoteIndex] = useState(Math.floor(Math.random() * tradingQuotes.length))
   const [scaleInSettings, setScaleInSettings] = useState({
     enabled: true,
@@ -579,12 +572,18 @@ function App() {
     maxBetsPerMarket: 3,
     minTimeBetweenBets: 60000
   })
-  const [aggressiveMode, setAggressiveMode] = useState({
-    enabled: false,  // Default to CONSERVATIVE
-    minPrice: 26,
-    minDistanceFromStrike: 0.05,
-    allowNightTrading: true,
-    minConfidenceScore: 1
+  const [swingTradeMode, setSwingTradeMode] = useState({
+    enabled: true,  // ENABLED by default
+    minPriceCents: 20,
+    maxPriceCents: 50,
+    targetProfitPercent: 25,
+    requireMomentum: true
+  })
+  const [takeProfitSettings, setTakeProfitSettings] = useState({
+    enabled: true,
+    autoExecute: true,
+    minProfitPercent: 10,
+    logOnly: false
   })
   const [settingsSaved, setSettingsSaved] = useState(false)
   const [settingsSaving, setSettingsSaving] = useState(false)
@@ -759,160 +758,18 @@ function App() {
       const res = await fetch(`${API_BASE}/api/auth/status`)
       const data = await res.json()
       setIsAuthenticated(data.isAuthenticated)
-      if (data.activeProfile) {
-        setActiveProfile(data.activeProfile)
-      }
     } catch (err) {}
   }, [])
-
-  // Fetch profiles
-  const fetchProfiles = useCallback(async () => {
-    try {
-      const res = await authFetch(`${API_BASE}/api/profiles`)
-      const data = await res.json()
-      if (data.success) {
-        setProfiles(data.profiles || [])
-        if (data.activeProfileId) {
-          const active = data.profiles.find(p => p.id === data.activeProfileId)
-          if (active) setActiveProfile(active)
-        }
-      }
-    } catch (err) {
-      console.error('Profiles fetch error:', err)
-    }
-  }, [])
-
-  // Create new profile
-  const createProfile = async () => {
-    if (!newProfileName.trim()) return
-    try {
-      const res = await authFetch(`${API_BASE}/api/profiles`, {
-        method: 'POST',
-        body: JSON.stringify({ name: newProfileName.trim(), pin: newProfilePin || null })
-      })
-      const data = await res.json()
-      if (data.success) {
-        setNewProfileName('')
-        setNewProfilePin('')
-        setShowNewProfile(false)
-        fetchProfiles()
-      }
-    } catch (err) {
-      console.error('Create profile error:', err)
-    }
-  }
-
-  // Switch profile (with optional PIN)
-  const switchProfile = async (profileId, pin = null) => {
-    try {
-      const res = await authFetch(`${API_BASE}/api/profiles/${profileId}/switch`, {
-        method: 'POST',
-        body: JSON.stringify({ pin })
-      })
-      const data = await res.json()
-      if (data.success) {
-        setActiveProfile(data.profile)
-        setIsAuthenticated(data.isAuthenticated)
-        setBalance(data.balance)
-        setPinPrompt(null)
-        setPinInput('')
-        setPinError('')
-        fetchProfiles()
-        fetchOpportunities()
-        fetchPortfolio()
-
-        // Auto-link profile to user account if logged in
-        const token = getStoredToken()
-        if (token && currentUser) {
-          try {
-            await authFetch(`${API_BASE}/api/auth/link-profile`, {
-              method: 'POST',
-              body: JSON.stringify({ profileId })
-            })
-          } catch (e) {
-            // Silently fail - linking is optional
-          }
-        }
-      } else if (data.requiresPin) {
-        // Profile requires PIN - show prompt
-        const profile = profiles.find(p => p.id === profileId)
-        setPinPrompt({ profileId, profileName: profile?.name || 'Profile' })
-        setPinError(pin ? 'Incorrect PIN' : '')
-      }
-    } catch (err) {
-      console.error('Switch profile error:', err)
-    }
-  }
-
-  // Handle PIN submit
-  const handlePinSubmit = () => {
-    if (pinPrompt && pinInput) {
-      switchProfile(pinPrompt.profileId, pinInput)
-    }
-  }
-
-  // Delete profile
-  const deleteProfile = async (profileId) => {
-    const profile = profiles.find(p => p.id === profileId)
-    if (!confirm(`Delete profile "${profile?.name || 'Unknown'}"? This cannot be undone.`)) return
-
-    // If profile has PIN, prompt for it
-    let pin = null
-    if (profile?.hasPin) {
-      pin = prompt('Enter PIN to confirm deletion:')
-      if (!pin) return // Cancelled
-    }
-
-    try {
-      const res = await authFetch(`${API_BASE}/api/profiles/${profileId}`, {
-        method: 'DELETE',
-        body: JSON.stringify({ pin })
-      })
-      const data = await res.json()
-      if (data.success) {
-        alert(`Profile "${profile?.name}" deleted`)
-        fetchProfiles()
-        if (activeProfile?.id === profileId) {
-          setActiveProfile(null)
-          setIsAuthenticated(false)
-        }
-      } else {
-        alert(data.error || 'Failed to delete profile')
-      }
-    } catch (err) {
-      console.error('Delete profile error:', err)
-      alert('Error deleting profile')
-    }
-  }
-
-  // Logout of current profile
-  const logoutProfile = async () => {
-    try {
-      const res = await authFetch(`${API_BASE}/api/profiles/logout`, {
-        method: 'POST'
-      })
-      const data = await res.json()
-      if (data.success) {
-        setActiveProfile(null)
-        setIsAuthenticated(false)
-        setBalance(25)
-        fetchProfiles()
-      }
-    } catch (err) {
-      console.error('Logout error:', err)
-    }
-  }
-
 
   // Initial load - runs once
   useEffect(() => {
     // Fetch everything on initial load
-    fetchProfiles()  // Fetch profiles first
     fetchOpportunities()
     fetchPortfolio()
     fetchPerformance()  // Fetch performance stats on load
     fetchAutoBetStatus()  // Get current auto-bet state
-    fetchAggressiveMode()   // Get current aggressive/conservative mode
+    fetchSwingTradeSettings()  // Get swing trade settings
+    fetchTakeProfitSettings()  // Get take-profit settings
     fetchRiskSettings()     // Get saved risk settings
     checkAuth()
 
@@ -1095,34 +952,66 @@ function App() {
     }
   }
 
-  // Fetch aggressive mode settings
-  const fetchAggressiveMode = async () => {
+
+  // Fetch swing trade settings
+  const fetchSwingTradeSettings = async () => {
     try {
-      const res = await authFetch(`${API_BASE}/api/settings/aggressive-mode`)
+      const res = await authFetch(`${API_BASE}/api/swing-trade/settings`)
       const data = await res.json()
-      if (data.success && data.aggressiveMode) {
-        setAggressiveMode(data.aggressiveMode)
+      if (data.success && data.settings) {
+        setSwingTradeMode(data.settings)
       }
     } catch (err) {
-      console.error('Error fetching aggressive mode:', err)
+      console.error('Error fetching swing trade settings:', err)
     }
   }
 
-  // Toggle aggressive/conservative mode
-  const toggleAggressiveMode = async () => {
-    const newEnabled = !aggressiveMode.enabled
-    setAggressiveMode(prev => ({ ...prev, enabled: newEnabled }))
+  // Toggle swing trade mode
+  const toggleSwingTradeMode = async () => {
+    const newEnabled = !swingTradeMode.enabled
+    setSwingTradeMode(prev => ({ ...prev, enabled: newEnabled }))
     try {
-      const res = await authFetch(`${API_BASE}/api/settings/aggressive-mode`, {
+      const res = await authFetch(`${API_BASE}/api/swing-trade/toggle`, {
         method: 'POST',
         body: JSON.stringify({ enabled: newEnabled })
       })
       const data = await res.json()
       if (data.success) {
-        setAggressiveMode(data.aggressiveMode)
+        setSwingTradeMode(prev => ({ ...prev, enabled: data.enabled }))
       }
     } catch (err) {
-      console.error('Error toggling aggressive mode:', err)
+      console.error('Error toggling swing trade mode:', err)
+    }
+  }
+
+  // Fetch take-profit settings
+  const fetchTakeProfitSettings = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/take-profit/settings`)
+      const data = await res.json()
+      if (data.success && data.settings) {
+        setTakeProfitSettings(data.settings)
+      }
+    } catch (err) {
+      console.error('Error fetching take-profit settings:', err)
+    }
+  }
+
+  // Toggle take-profit
+  const toggleTakeProfit = async () => {
+    const newEnabled = !takeProfitSettings.enabled
+    setTakeProfitSettings(prev => ({ ...prev, enabled: newEnabled }))
+    try {
+      const res = await authFetch(`${API_BASE}/api/take-profit/settings`, {
+        method: 'POST',
+        body: JSON.stringify({ enabled: newEnabled })
+      })
+      const data = await res.json()
+      if (data.success && data.settings) {
+        setTakeProfitSettings(data.settings)
+      }
+    } catch (err) {
+      console.error('Error toggling take-profit:', err)
     }
   }
 
@@ -1266,6 +1155,16 @@ function App() {
     } catch (err) {
       console.error('Disconnect failed:', err)
     }
+  }
+
+  // Log out of account
+  const handleLogout = () => {
+    localStorage.removeItem('shimi_auth_token')
+    localStorage.removeItem('shimi_user')
+    setCurrentUser(null)
+    setNeedsLogin(true)
+    setIsAuthenticated(false)
+    setBalance(25)
   }
 
   // Calculate stats
@@ -1974,116 +1873,24 @@ function App() {
           {tab === 'settings' && (
             <div className="settings-page">
               <div className="settings-grid">
-                {/* Profiles Section */}
-                <div className="settings-card">
-                  <h3 className="settings-card-title">Profiles</h3>
-                  <p className="settings-description">Switch between users - each has their own Kalshi credentials</p>
-
-                  <div className="profiles-list">
-                    {profiles.map(profile => (
-                      <div
-                        key={profile.id}
-                        className={`profile-item ${profile.isActive ? 'active' : ''}`}
-                        onClick={() => !profile.isActive && switchProfile(profile.id)}
-                      >
-                        <div className="profile-info">
-                          <span className="profile-name">
-                            {profile.hasPin && <span className="profile-lock">🔒</span>}
-                            {profile.name}
-                          </span>
-                          <span className="profile-status">
-                            {profile.hasCredentials ? '🟢 Kalshi connected' : '⚪ No Kalshi'}
-                          </span>
-                        </div>
-                        {profile.isActive ? (
-                          <div className="profile-actions">
-                            <span className="profile-active-badge">Active</span>
-                            <button
-                              className="profile-logout-btn"
-                              onClick={(e) => { e.stopPropagation(); logoutProfile(); }}
-                            >
-                              Logout
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            className="profile-delete-btn"
-                            onClick={(e) => { e.stopPropagation(); deleteProfile(profile.id); }}
-                          >
-                            ✕
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-
-                  {showNewProfile ? (
-                    <div className="new-profile-form">
-                      <input
-                        type="text"
-                        value={newProfileName}
-                        onChange={(e) => setNewProfileName(e.target.value)}
-                        placeholder="Profile name"
-                        className="new-profile-input"
-                        autoFocus
-                      />
-                      <input
-                        type="password"
-                        value={newProfilePin}
-                        onChange={(e) => setNewProfilePin(e.target.value)}
-                        placeholder="PIN (optional - protects your account)"
-                        className="new-profile-input"
-                        maxLength={6}
-                        onKeyDown={(e) => e.key === 'Enter' && createProfile()}
-                      />
-                      <div className="new-profile-actions">
-                        <button className="btn-secondary" onClick={() => { setShowNewProfile(false); setNewProfileName(''); setNewProfilePin(''); }}>
-                          Cancel
-                        </button>
-                        <button className="btn-primary" onClick={createProfile}>
-                          Create
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <button className="add-profile-btn" onClick={() => setShowNewProfile(true)}>
-                      + Add Profile
-                    </button>
-                  )}
-
-                  {/* PIN Prompt Modal */}
-                  {pinPrompt && (
-                    <div className="pin-prompt-overlay" onClick={() => { setPinPrompt(null); setPinInput(''); setPinError(''); }}>
-                      <div className="pin-prompt" onClick={e => e.stopPropagation()}>
-                        <h3>ACCESS LOCKED</h3>
-                        <p className="pin-prompt-subtitle">Enter PIN for {pinPrompt.profileName}</p>
-                        {pinError && <p className="pin-error">{pinError}</p>}
-                        <input
-                          type="password"
-                          value={pinInput}
-                          onChange={(e) => setPinInput(e.target.value)}
-                          placeholder="******"
-                          className="pin-input"
-                          maxLength={6}
-                          autoFocus
-                          onKeyDown={(e) => e.key === 'Enter' && handlePinSubmit()}
-                        />
-                        <div className="pin-actions">
-                          <button className="btn-secondary" onClick={() => { setPinPrompt(null); setPinInput(''); setPinError(''); }}>
-                            Cancel
-                          </button>
-                          <button className="btn-primary" onClick={handlePinSubmit}>
-                            Unlock
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
                 {/* Account Section */}
                 <div className="settings-card">
+                  <h3 className="settings-card-title">Account</h3>
+                  <div className="account-info">
+                    <div className="account-email">
+                      <span className="account-label">Logged in as:</span>
+                      <span className="account-value">{currentUser?.email || 'Unknown'}</span>
+                    </div>
+                    <button className="logout-btn" onClick={handleLogout}>
+                      Log Out
+                    </button>
+                  </div>
+                </div>
+
+                {/* Kalshi Connection Section */}
+                <div className="settings-card">
                   <h3 className="settings-card-title">Kalshi Connection</h3>
+                  <p className="settings-description">Your Kalshi API credentials are tied to your account</p>
                   {isAuthenticated ? (
                     <div className="connected-info">
                       <div className="connected-badge">
@@ -2227,42 +2034,60 @@ function App() {
                   </button>
                 </div>
 
-                {/* Trading Mode Toggle */}
-                <div className="settings-card trading-mode-card">
-                  <h3 className="settings-card-title">⚡ Trading Mode</h3>
+                {/* Swing Trade & Take-Profit Settings */}
+                <div className="settings-card">
+                  <h3 className="settings-card-title">Smart Trading Features</h3>
                   <p className="settings-description">
-                    Based on 474-bet analysis: Aggressive = more volume, Conservative = higher win rate.
+                    Buy low & sell high with swing trades, auto-lock profits when optimal.
                   </p>
-                  <div className="trading-mode-toggle">
+
+                  {/* Swing Trade Toggle */}
+                  <div className="feature-toggle">
+                    <div className="feature-info">
+                      <span className="feature-icon">🔄</span>
+                      <div className="feature-text">
+                        <span className="feature-name">Swing Trade Mode</span>
+                        <span className="feature-desc">Buy {swingTradeMode.minPriceCents}¢-{swingTradeMode.maxPriceCents}¢ contracts, sell on profit</span>
+                      </div>
+                    </div>
                     <button
-                      className={`mode-btn ${aggressiveMode.enabled ? 'active' : ''}`}
-                      onClick={() => toggleAggressiveMode()}
+                      className={`toggle-btn ${swingTradeMode.enabled ? 'active' : ''}`}
+                      onClick={toggleSwingTradeMode}
                     >
-                      <span className="mode-icon">🚀</span>
-                      <span className="mode-name">Aggressive</span>
-                      <span className="mode-desc">26¢+ min, night OK</span>
-                    </button>
-                    <button
-                      className={`mode-btn ${!aggressiveMode.enabled ? 'active' : ''}`}
-                      onClick={() => toggleAggressiveMode()}
-                    >
-                      <span className="mode-icon">🛡️</span>
-                      <span className="mode-name">Conservative</span>
-                      <span className="mode-desc">41¢+ min, safer picks</span>
+                      {swingTradeMode.enabled ? 'ON' : 'OFF'}
                     </button>
                   </div>
-                  <div className="mode-details">
+
+                  {/* Take-Profit Toggle */}
+                  <div className="feature-toggle">
+                    <div className="feature-info">
+                      <span className="feature-icon">💰</span>
+                      <div className="feature-text">
+                        <span className="feature-name">Auto Take-Profit</span>
+                        <span className="feature-desc">Lock in gains at {takeProfitSettings.minProfitPercent}%+ profit</span>
+                      </div>
+                    </div>
+                    <button
+                      className={`toggle-btn ${takeProfitSettings.enabled ? 'active' : ''}`}
+                      onClick={toggleTakeProfit}
+                    >
+                      {takeProfitSettings.enabled ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+
+                  {/* Feature Stats */}
+                  <div className="mode-details" style={{ marginTop: '12px' }}>
                     <div className="mode-stat">
-                      <span className="stat-label">Min Price:</span>
-                      <span className="stat-value">{aggressiveMode.enabled ? '26¢' : '41¢'}</span>
+                      <span className="stat-label">Swing Range:</span>
+                      <span className="stat-value">{swingTradeMode.minPriceCents}¢ - {swingTradeMode.maxPriceCents}¢</span>
                     </div>
                     <div className="mode-stat">
-                      <span className="stat-label">Night Trading:</span>
-                      <span className="stat-value">{aggressiveMode.enabled ? '✓ Allowed' : '✗ Blocked'}</span>
+                      <span className="stat-label">Target Profit:</span>
+                      <span className="stat-value">{swingTradeMode.targetProfitPercent}%</span>
                     </div>
                     <div className="mode-stat">
-                      <span className="stat-label">NO Bet Bonus:</span>
-                      <span className="stat-value">+2 confidence (70.6% vs 53.1% win rate)</span>
+                      <span className="stat-label">Requires Momentum:</span>
+                      <span className="stat-value">{swingTradeMode.requireMomentum ? '✓ Yes' : '✗ No'}</span>
                     </div>
                   </div>
                 </div>

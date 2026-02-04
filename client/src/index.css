@@ -2297,11 +2297,13 @@ body {
   display: flex;
   gap: 24px;
   max-width: 1200px;
+  margin: 0 auto;
+  width: 100%;
 }
 
 .history-page {
   flex: 1;
-  max-width: 700px;
+  min-width: 0;
 }
 
 /* History Sidebar */
@@ -2610,9 +2612,9 @@ body {
 
 /* History List */
 .history-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
 }
 
 .history-card {
@@ -2812,68 +2814,7 @@ body {
   grid-column: span 2;
 }
 
-/* Trading Mode Toggle Card */
-.settings-card.trading-mode-card {
-  border-color: rgba(0, 240, 255, 0.4);
-  background: linear-gradient(135deg, rgba(0, 240, 255, 0.1) 0%, var(--bg-card) 100%);
-}
-
-.settings-card.trading-mode-card .settings-card-title {
-  color: var(--neon-cyan);
-}
-
-.trading-mode-toggle {
-  display: flex;
-  gap: 12px;
-  margin: 16px 0;
-}
-
-.mode-btn {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 16px 12px;
-  background: var(--bg-secondary);
-  border: 2px solid var(--border-color);
-  border-radius: 8px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.mode-btn:hover {
-  background: var(--bg-card-hover);
-  border-color: var(--text-muted);
-}
-
-.mode-btn.active {
-  border-color: var(--neon-cyan);
-  background: rgba(0, 240, 255, 0.1);
-  box-shadow: var(--glow-cyan);
-}
-
-.mode-btn .mode-icon {
-  font-size: 24px;
-}
-
-.mode-btn .mode-name {
-  font-family: var(--font-display);
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.mode-btn .mode-desc {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text-muted);
-}
-
-.mode-btn.active .mode-name {
-  color: var(--neon-cyan);
-}
-
+/* Feature Stats (Swing Trade, Take-Profit) */
 .mode-details {
   display: flex;
   flex-wrap: wrap;
@@ -2901,6 +2842,78 @@ body {
   font-size: 11px;
   font-weight: 600;
   color: var(--neon-cyan);
+}
+
+/* Feature Toggle Styles (Swing Trade, Take-Profit) */
+.feature-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border-color);
+  transition: all 0.2s ease;
+}
+
+.feature-toggle:hover {
+  border-color: var(--text-muted);
+}
+
+.feature-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.feature-icon {
+  font-size: 24px;
+}
+
+.feature-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.feature-name {
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.feature-desc {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.toggle-btn {
+  padding: 8px 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  border: 2px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-width: 60px;
+}
+
+.toggle-btn:hover {
+  border-color: var(--text-muted);
+  background: var(--bg-card-hover);
+}
+
+.toggle-btn.active {
+  background: rgba(0, 240, 255, 0.15);
+  border-color: var(--neon-cyan);
+  color: var(--neon-cyan);
+  box-shadow: var(--glow-cyan);
 }
 
 .settings-card.degen-card {
@@ -3019,6 +3032,51 @@ body {
 .connected-info p {
   font-size: 13px;
   color: var(--text-muted);
+}
+
+/* Account section styles */
+.account-info {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.account-email {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.account-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.account-value {
+  font-size: 14px;
+  color: var(--neon-cyan);
+  font-family: var(--font-mono);
+}
+
+.logout-btn {
+  padding: 8px 16px;
+  background: transparent;
+  border: 1px solid var(--text-muted);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+  width: fit-content;
+}
+
+.logout-btn:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: rgba(255, 107, 107, 0.1);
 }
 
 .connect-prompt {
@@ -4407,9 +4465,10 @@ body {
 .risk-exposure-label {
   display: flex;
   justify-content: space-between;
-  font-size: var(--font-size-xs);
-  color: var(--text-muted);
-  margin-bottom: 4px;
+  font-size: var(--font-size-base);
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
 }
 
 .risk-exposure-track {
@@ -4443,20 +4502,26 @@ body {
 .risk-token {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
+  gap: 8px;
+  padding: 8px 12px;
   background: var(--bg-elevated);
   border-radius: var(--radius-sm);
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-base);
 }
 
 .risk-token-name {
   font-family: var(--font-display);
-  color: var(--text-secondary);
+  font-size: var(--font-size-md);
+  font-weight: 600;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .risk-token-value {
   font-family: var(--font-mono);
+  font-size: var(--font-size-md);
+  font-weight: 600;
   color: var(--neon-cyan);
 }
 
@@ -5808,16 +5873,30 @@ body {
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  background: transparent;
-  border: 1px solid var(--border-color);
+  background: rgba(255, 68, 68, 0.1);
+  border: 1px solid var(--accent-red);
   border-radius: var(--radius-sm);
-  color: var(--text-muted);
+  color: var(--accent-red);
   cursor: pointer;
   transition: all 0.2s ease;
+  animation: logout-pulse 2s infinite;
+}
+
+@keyframes logout-pulse {
+  0%, 100% {
+    box-shadow: 0 0 5px rgba(255, 68, 68, 0.3);
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 15px rgba(255, 68, 68, 0.6);
+    opacity: 0.85;
+  }
 }
 
 .logout-btn:hover {
-  background: rgba(255, 68, 68, 0.1);
+  background: rgba(255, 68, 68, 0.2);
   border-color: var(--accent-red);
   color: var(--accent-red);
+  animation: none;
+  box-shadow: 0 0 15px rgba(255, 68, 68, 0.5);
 }
