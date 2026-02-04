@@ -5796,6 +5796,168 @@ app.get('/api/candlesticks/:ticker', async (req, res) => {
 });
 
 // ============================================
+// HISTORICAL DATA ANALYSIS API
+// ============================================
+
+// Fetch and analyze historical settled crypto 15-minute markets
+app.get('/api/historical/crypto-settlements', async (req, res) => {
+  try {
+    const { limit = 100, token = 'all' } = req.query;
+    const userConfig = req.userState?.config || config;
+
+    const cryptoSeries = token === 'all'
+      ? ['KXBTC15M', 'KXETH15M', 'KXSOL15M']
+      : [`KX${token.toUpperCase()}15M`];
+
+    const allMarkets = [];
+
+    // Fetch closed markets for each series
+    for (const series of cryptoSeries) {
+      try {
+        const data = await kalshiRequest('GET', `/markets?limit=${limit}&status=closed&series_ticker=${series}`, null, userConfig);
+        if (data.markets) {
+          allMarkets.push(...data.markets);
+        }
+      } catch (e) {
+        console.log(`Error fetching closed markets for ${series}:`, e.message);
+      }
+    }
+
+    // Analyze settlement data
+    const analysis = {
+      totalMarkets: allMarkets.length,
+      byToken: {},
+      distanceFromStrikeAtSettlement: [],
+      coinFlipCount: 0, // Markets where settlement was within 0.15% of strike
+      nearStrikeCount: 0, // Markets where settlement was within 0.25% of strike
+      avgDistanceFromStrike: 0,
+      markets: []
+    };
+
+    for (const market of allMarkets) {
+      const ticker = market.ticker || '';
+      const token = ticker.includes('BTC') ? 'BTC' : ticker.includes('ETH') ? 'ETH' : ticker.includes('SOL') ? 'SOL' : 'UNKNOWN';
+
+      // Get strike price from floor_strike
+      const strikePrice = market.floor_strike;
+      // Settlement value is typically in the result field or we need to calculate from yes/no prices
+      const settlementValue = market.settlement_value; // 0 = NO won, 1 = YES won
+      const yesPrice = market.yes_price || market.last_price;
+      const noPrice = market.no_price || (100 - (market.last_price || 50));
+
+      if (!strikePrice) continue;
+
+      // Try to get the settlement price from CF Benchmarks reference
+      // The actual crypto price at settlement isn't directly in the API,
+      // but we can infer from the result and market behavior
+
+      const marketData = {
+        ticker,
+        token,
+        strikePrice,
+        closeTime: market.close_time,
+        settlementValue,
+        yesPrice,
+        noPrice,
+        result: settlementValue === 1 ? 'YES' : settlementValue === 0 ? 'NO' : 'UNKNOWN'
+      };
+
+      // Track by token
+      if (!analysis.byToken[token]) {
+        analysis.byToken[token] = { count: 0, yesWins: 0, noWins: 0 };
+      }
+      analysis.byToken[token].count++;
+      if (settlementValue === 1) analysis.byToken[token].yesWins++;
+      if (settlementValue === 0) analysis.byToken[token].noWins++;
+
+      // Estimate how close the final price was to strike based on settlement prices
+      // If yes_price or no_price near 50, it was a coin flip
+      const finalYesPrice = yesPrice || 50;
+      const impliedCertainty = Math.abs(finalYesPrice - 50); // 0 = pure coin flip, 50 = certain
+
+      if (impliedCertainty < 10) { // Within 40-60 price range = very uncertain
+        analysis.coinFlipCount++;
+      }
+      if (impliedCertainty < 15) { // Within 35-65 price range = near strike
+        analysis.nearStrikeCount++;
+      }
+
+      analysis.markets.push(marketData);
+    }
+
+    // Calculate percentages
+    if (analysis.totalMarkets > 0) {
+      analysis.coinFlipPercent = ((analysis.coinFlipCount / analysis.totalMarkets) * 100).toFixed(1);
+      analysis.nearStrikePercent = ((analysis.nearStrikeCount / analysis.totalMarkets) * 100).toFixed(1);
+    }
+
+    // Summary stats per token
+    for (const [token, data] of Object.entries(analysis.byToken)) {
+      data.yesWinRate = data.count > 0 ? ((data.yesWins / data.count) * 100).toFixed(1) : 0;
+    }
+
+    res.json({
+      success: true,
+      analysis,
+      recommendation: analysis.coinFlipPercent > 20
+        ? `${analysis.coinFlipPercent}% of markets ended as coin flips. Consider tighter entry filters or earlier exits.`
+        : `Only ${analysis.coinFlipPercent}% coin flips. Current thresholds seem reasonable.`
+    });
+
+  } catch (error) {
+    console.error('Historical analysis error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get price volatility stats for tuning thresholds
+app.get('/api/historical/volatility-stats', (req, res) => {
+  try {
+    const stats = {};
+
+    for (const [token, data] of Object.entries(cryptoPrices)) {
+      const history = data.history || [];
+      if (history.length < 10) continue;
+
+      // Calculate 15-minute price movements
+      const movements = [];
+      for (let i = 15; i < history.length; i++) {
+        const oldPrice = history[i - 15]?.price;
+        const newPrice = history[i]?.price;
+        if (oldPrice && newPrice) {
+          const pctChange = Math.abs((newPrice - oldPrice) / oldPrice * 100);
+          movements.push(pctChange);
+        }
+      }
+
+      if (movements.length > 0) {
+        movements.sort((a, b) => a - b);
+        stats[token] = {
+          samples: movements.length,
+          min: movements[0].toFixed(3),
+          max: movements[movements.length - 1].toFixed(3),
+          median: movements[Math.floor(movements.length / 2)].toFixed(3),
+          avg: (movements.reduce((a, b) => a + b, 0) / movements.length).toFixed(3),
+          p90: movements[Math.floor(movements.length * 0.9)]?.toFixed(3), // 90th percentile
+          under015pct: ((movements.filter(m => m < 0.15).length / movements.length) * 100).toFixed(1),
+          under025pct: ((movements.filter(m => m < 0.25).length / movements.length) * 100).toFixed(1),
+          currentVolatility: (data.volatility * 100).toFixed(3)
+        };
+      }
+    }
+
+    res.json({
+      success: true,
+      stats,
+      interpretation: `"under015pct" shows % of 15-min periods where price moved <0.15% from start. Lower = more volatile = coin-flip exit triggers more often.`
+    });
+
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================
 // TAKE-PROFIT API (Phase 5)
 // ============================================
 
