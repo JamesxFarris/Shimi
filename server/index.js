@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import { parseStringPromise } from 'xml2js';
 import * as auth from './auth.js';
 import { getKalshiWebSocket } from './kalshiWebSocket.js';
+import { pool, initDatabase } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -107,14 +108,8 @@ const DEFAULT_CONFIG = {
 };
 
 // ============================================
-// PER-USER STATE MANAGEMENT
+// PER-USER STATE MANAGEMENT (PostgreSQL)
 // ============================================
-const USER_DATA_DIR = path.join(__dirname, 'userData');
-
-// Ensure userData directory exists
-if (!fs.existsSync(USER_DATA_DIR)) {
-  fs.mkdirSync(USER_DATA_DIR, { recursive: true });
-}
 
 // ============================================
 // EMPIRICAL LOOKUP TABLES (Pure Data-Driven Betting)
@@ -309,8 +304,17 @@ const userStates = new Map();
 // Auto-bet intervals per user
 const userAutoBetIntervals = new Map();
 
-// Get or create user state
-function getUserState(userId) {
+// Create default user state
+function createDefaultUserState() {
+  return {
+    config: JSON.parse(JSON.stringify(DEFAULT_CONFIG)), // Deep clone
+    betHistory: [],
+    portfolio: { balance: 0, positions: [] }
+  };
+}
+
+// Get or create user state (loads from PostgreSQL if not in cache)
+async function getUserStateAsync(userId) {
   if (!userId) {
     // Return a default read-only state for unauthenticated requests
     return {
@@ -321,75 +325,90 @@ function getUserState(userId) {
   }
 
   if (!userStates.has(userId)) {
-    // Try to load from disk
-    const userFile = path.join(USER_DATA_DIR, `${userId}.json`);
-    if (fs.existsSync(userFile)) {
-      try {
-        const data = JSON.parse(fs.readFileSync(userFile, 'utf8'));
+    // Try to load from database
+    try {
+      const result = await pool.query(
+        'SELECT config, portfolio, bet_history FROM user_data WHERE user_id = $1',
+        [userId]
+      );
+
+      if (result.rows.length > 0) {
+        const row = result.rows[0];
         // Deep merge config to preserve nested riskLimits structure
-        const loadedConfig = { ...DEFAULT_CONFIG, ...data.config };
-        if (data.config?.riskLimits) {
+        const loadedConfig = { ...DEFAULT_CONFIG, ...(row.config || {}) };
+        if (row.config?.riskLimits) {
           loadedConfig.riskLimits = {
             ...DEFAULT_CONFIG.riskLimits,
-            ...data.config.riskLimits,
+            ...row.config.riskLimits,
             hourly: {
               ...DEFAULT_CONFIG.riskLimits.hourly,
-              ...(data.config.riskLimits.hourly || {})
+              ...(row.config.riskLimits?.hourly || {})
             },
             other: {
               ...DEFAULT_CONFIG.riskLimits.other,
-              ...(data.config.riskLimits.other || {})
+              ...(row.config.riskLimits?.other || {})
             }
           };
         }
         userStates.set(userId, {
           config: loadedConfig,
-          betHistory: data.betHistory || [],
-          portfolio: data.portfolio || { balance: 0, positions: [] }
+          betHistory: row.bet_history || [],
+          portfolio: row.portfolio || { balance: 0, positions: [] }
         });
-        console.log(`📂 Loaded state for user ${userId}`);
-      } catch (err) {
-        console.error(`Error loading user state for ${userId}:`, err);
+        console.log(`📂 Loaded state for user ${userId} from database`);
+      } else {
+        // New user - create default state
         userStates.set(userId, createDefaultUserState());
+        console.log(`🆕 Created new state for user ${userId}`);
       }
-    } else {
-      // New user - create default state
+    } catch (err) {
+      console.error(`Error loading user state for ${userId}:`, err);
       userStates.set(userId, createDefaultUserState());
-      console.log(`🆕 Created new state for user ${userId}`);
     }
   }
   return userStates.get(userId);
 }
 
-// Create default user state
-function createDefaultUserState() {
-  return {
-    config: JSON.parse(JSON.stringify(DEFAULT_CONFIG)), // Deep clone
-    betHistory: [],
-    portfolio: { balance: 0, positions: [] }
-  };
+// Synchronous version for backward compatibility (returns cached state or default)
+function getUserState(userId) {
+  if (!userId) {
+    return {
+      config: { ...DEFAULT_CONFIG },
+      betHistory: [],
+      portfolio: { balance: 0, positions: [] }
+    };
+  }
+
+  if (userStates.has(userId)) {
+    return userStates.get(userId);
+  }
+
+  // If not cached, return default (async load will happen in middleware)
+  const defaultState = createDefaultUserState();
+  userStates.set(userId, defaultState);
+  return defaultState;
 }
 
-// Save user state to disk
-function saveUserState(userId) {
+// Save user state to PostgreSQL
+async function saveUserState(userId) {
   if (!userId) return;
   const state = userStates.get(userId);
   if (!state) return;
 
-  const userFile = path.join(USER_DATA_DIR, `${userId}.json`);
   try {
-    fs.writeFileSync(userFile, JSON.stringify({
-      config: state.config,
-      betHistory: state.betHistory,
-      portfolio: state.portfolio
-    }, null, 2));
+    await pool.query(`
+      INSERT INTO user_data (user_id, config, portfolio, bet_history, updated_at)
+      VALUES ($1, $2, $3, $4, NOW())
+      ON CONFLICT (user_id) DO UPDATE SET
+        config = $2, portfolio = $3, bet_history = $4, updated_at = NOW()
+    `, [userId, JSON.stringify(state.config), JSON.stringify(state.portfolio), JSON.stringify(state.betHistory)]);
   } catch (err) {
     console.error(`Error saving user state for ${userId}:`, err);
   }
 }
 
-// Middleware to extract user from JWT token
-function extractUser(req, res, next) {
+// Middleware to extract user from JWT token (async to load from DB)
+async function extractUser(req, res, next) {
   const authHeader = req.headers.authorization;
   const token = authHeader?.replace('Bearer ', '');
 
@@ -397,7 +416,7 @@ function extractUser(req, res, next) {
     const userId = auth.verifyToken(token);
     if (userId) {
       req.userId = userId;
-      req.userState = getUserState(userId);
+      req.userState = await getUserStateAsync(userId);
     }
   }
 
@@ -8626,14 +8645,16 @@ app.use((err, req, res, next) => {
   res.status(500).json({ success: false, error: 'Internal server error' });
 });
 
-const server = app.listen(PORT, '0.0.0.0', async () => {
-  console.log(`🎰 Shimi Crypto Bot running on port ${PORT}`);
-  console.log(`📊 Tracking ${Object.keys(TRACKED_TOKENS).length} tokens: ${Object.keys(TRACKED_TOKENS).join(', ')}`);
-  console.log(`💰 Min edge: ${config.minEdge}% | Max bet: ${config.maxBetPercent}%`);
-  console.log(`📈 Performance tracking: ${performanceData.bets.length} historical bets loaded`);
+// Initialize database before starting server
+initDatabase().then(() => {
+  const server = app.listen(PORT, '0.0.0.0', async () => {
+    console.log(`🎰 Shimi Crypto Bot running on port ${PORT}`);
+    console.log(`📊 Tracking ${Object.keys(TRACKED_TOKENS).length} tokens: ${Object.keys(TRACKED_TOKENS).join(', ')}`);
+    console.log(`💰 Min edge: ${config.minEdge}% | Max bet: ${config.maxBetPercent}%`);
+    console.log(`📈 Performance tracking: ${performanceData.bets.length} historical bets loaded`);
 
-  // Auto-load Kalshi credentials from environment
-  await loadCredentialsFromEnv();
+    // Auto-load Kalshi credentials from environment
+    await loadCredentialsFromEnv();
 
   // Initialize WebSocket for real-time market data (Phase 1)
   console.log(`🔌 Initializing Kalshi WebSocket connection...`);
@@ -8698,8 +8719,12 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
       }
     }
   }, 60 * 60 * 1000); // Check every hour
-});
 
-server.on('error', (err) => {
-  console.error('Server error:', err.message);
+    server.on('error', (err) => {
+      console.error('Server error:', err.message);
+    });
+  });
+}).catch(err => {
+  console.error('❌ Failed to initialize database:', err);
+  process.exit(1);
 });
