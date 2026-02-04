@@ -8397,16 +8397,30 @@ app.delete('/api/performance', (req, res) => {
   res.json({ success: true, message: 'Performance data cleared' });
 });
 
-// Debug endpoint to see raw Kalshi data
+// Debug endpoint to see raw Kalshi data (uses global server credentials)
 app.get('/api/debug/kalshi-fills', async (req, res) => {
   try {
-    const userConfig = req.userState?.config || config;
-    if (!userConfig.isAuthenticated) {
-      return res.json({ success: false, error: 'Not authenticated' });
+    // Try user config first, then fall back to global config
+    let useConfig = req.userState?.config;
+    if (!useConfig?.isAuthenticated) {
+      useConfig = config; // Global server config from env vars
+    }
+
+    if (!useConfig.isAuthenticated) {
+      return res.json({
+        success: false,
+        error: 'Not authenticated',
+        debug: {
+          hasUserConfig: !!req.userState?.config,
+          userConfigAuth: req.userState?.config?.isAuthenticated,
+          globalConfigAuth: config.isAuthenticated,
+          hasApiKeyId: !!config.apiKeyId
+        }
+      });
     }
 
     // Fetch raw fills from Kalshi
-    const fillsData = await kalshiRequest('GET', '/portfolio/fills?limit=30', null, userConfig);
+    const fillsData = await kalshiRequest('GET', '/portfolio/fills?limit=30', null, useConfig);
     const fills = fillsData.fills || [];
 
     // Fetch market data for each unique ticker
