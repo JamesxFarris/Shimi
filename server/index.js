@@ -6342,8 +6342,8 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const withinPriceWindow = marketPriceCents >= (entryWindows.priceMin || 35) &&
                             marketPriceCents <= (entryWindows.priceMax || 75);
 
-  // Apply regime multiplier to win rate
-  const adjustedWinRate = empirical.winRate * (regime.multiplier || 1.0);
+  // Apply regime multiplier to win rate (cap at 99.5% - can't exceed 100%)
+  const adjustedWinRate = Math.min(99.5, empirical.winRate * (regime.multiplier || 1.0));
 
   // Calculate edge: our win rate - market implied probability - fees
   const marketImpliedProb = marketPrice * 100; // Market price as probability
