@@ -2935,10 +2935,15 @@ async function evaluateTakeProfit(position, userConfig = null) {
 
   const ticker = position.ticker;
   const contracts = Math.abs(position.position || 0);
-  const avgCost = position.average_price || 0; // In cents
+  // Kalshi sometimes returns undefined for average_price - fall back to market_exposure / contracts
+  let avgCost = position.average_price || 0; // In cents
+  if (avgCost === 0 && position.market_exposure && contracts > 0) {
+    avgCost = Math.round(position.market_exposure / contracts);
+    console.log(`[TakeProfit] ${ticker}: Using market_exposure fallback for avgCost: ${avgCost}¢`);
+  }
 
   if (contracts === 0 || avgCost === 0) {
-    return { shouldExit: false, reason: 'No valid position data' };
+    return { shouldExit: false, reason: 'No valid position data (missing avg_price and market_exposure)' };
   }
 
   // Fetch current orderbook for exit price
@@ -2980,6 +2985,10 @@ async function evaluateTakeProfit(position, userConfig = null) {
   // Get market data for analysis
   const markets = marketCache.data || [];
   const market = markets.find(m => m.ticker === ticker);
+
+  if (!market) {
+    console.log(`[TakeProfit] ${ticker}: Market not found in cache (${markets.length} markets cached)`);
+  }
 
   // Get momentum data
   let momentum = null;
