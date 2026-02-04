@@ -3120,6 +3120,88 @@ function calculateTakeProfitUrgency(position, market, momentum, profitPercent) {
 }
 
 /**
+ * Calculate dynamic stop-loss threshold using empirical data
+ * Uses distance from strike, time remaining, and volatility to make smarter exit decisions
+ * @returns {number} Stop-loss threshold (e.g., -15 means exit at -15% loss)
+ */
+function calculateSmartStopLoss(position, market, profitPercent, userConfig) {
+  const cfg = userConfig || config;
+  const defaultStopLoss = cfg.swingTradeMode?.stopLossPercent || -40;
+
+  // Need market data for smart decisions
+  if (!market || !market.close_time) {
+    return defaultStopLoss;
+  }
+
+  const token = getTokenFromTicker(position.ticker);
+  const timeRemaining = (new Date(market.close_time).getTime() - Date.now()) / 60000; // minutes
+
+  // Calculate distance from strike
+  const parsed = parseMarket(market);
+  const strikePrice = parsed?.strikePrice || 0;
+  const currentPrice = cryptoPrices[token]?.price;
+
+  if (!currentPrice || !strikePrice) {
+    return defaultStopLoss;
+  }
+
+  const pctFromStrike = Math.abs(currentPrice - strikePrice) / strikePrice * 100;
+
+  // Get empirical data
+  const empirical = lookupEmpiricalWinRate(pctFromStrike);
+  const regime = detectVolatilityRegime(token);
+
+  // CRITICAL: Determine if our position is favored or underdog
+  // YES bet wins if price ends ABOVE strike
+  // NO bet wins if price ends BELOW strike
+  const positionSide = position.side || (position.position > 0 ? 'yes' : 'no');
+  const priceAboveStrike = currentPrice > strikePrice;
+
+  // Are we the favored side?
+  const positionIsFavored = (positionSide === 'yes' && priceAboveStrike) ||
+                            (positionSide === 'no' && !priceAboveStrike);
+
+  // Use the CORRECT win rate based on whether we're favored or underdog
+  // If we're the underdog (losing side), use surpriseRate as our recovery chance
+  const baseRecoveryChance = positionIsFavored ? empirical.winRate : empirical.surpriseRate;
+  const recoveryChance = Math.min(99.5, baseRecoveryChance * (regime.multiplier || 1.0));
+
+  // Log for debugging
+  if (profitPercent < 0) {
+    console.log(`[SmartStopLoss] ${position.ticker}: side=${positionSide}, price ${priceAboveStrike ? 'ABOVE' : 'BELOW'} strike, ` +
+                `favored=${positionIsFavored}, recovery=${recoveryChance.toFixed(1)}% (${positionIsFavored ? 'favored' : 'underdog'})`);
+  }
+
+  // Dynamic stop-loss based on recovery probability and time
+  let stopLossThreshold = defaultStopLoss;
+
+  // Coin-flip territory: very close to strike with little time
+  const coinFlipThreshold = learnedParams?.byToken?.[token]?.coinFlipThreshold || 0.1;
+  if (pctFromStrike < coinFlipThreshold && timeRemaining < 3) {
+    // Exit anything unprofitable - it's a coin flip
+    stopLossThreshold = Math.max(stopLossThreshold, -5);
+    console.log(`[SmartStopLoss] ${position.ticker}: Coin-flip territory (${pctFromStrike.toFixed(3)}% from strike, ${timeRemaining.toFixed(1)}min left) → threshold: ${stopLossThreshold}%`);
+  }
+  // Low recovery chance with limited time
+  else if (recoveryChance < 55 && timeRemaining < 5) {
+    stopLossThreshold = Math.max(stopLossThreshold, -15);
+    console.log(`[SmartStopLoss] ${position.ticker}: Low recovery (${recoveryChance.toFixed(0)}%) + limited time (${timeRemaining.toFixed(1)}min) → threshold: ${stopLossThreshold}%`);
+  }
+  // Very low recovery chance regardless of time
+  else if (recoveryChance < 45) {
+    stopLossThreshold = Math.max(stopLossThreshold, -10);
+    console.log(`[SmartStopLoss] ${position.ticker}: Very low recovery (${recoveryChance.toFixed(0)}%) → threshold: ${stopLossThreshold}%`);
+  }
+  // Near expiry with any loss
+  else if (timeRemaining < 2 && profitPercent < -10) {
+    stopLossThreshold = Math.max(stopLossThreshold, -8);
+    console.log(`[SmartStopLoss] ${position.ticker}: Near expiry (${timeRemaining.toFixed(1)}min) at ${profitPercent.toFixed(1)}% → threshold: ${stopLossThreshold}%`);
+  }
+
+  return stopLossThreshold;
+}
+
+/**
  * Smart take-profit evaluation
  * Considers multiple factors to decide when to lock in gains
  */
@@ -3171,27 +3253,29 @@ async function evaluateTakeProfit(position, userConfig = null) {
   const netProceedsAfterSell = (currentBid * contracts) - totalSellFee - spreadCost;
   const profitPercent = ((netProceedsAfterSell - totalCostWithFees) / totalCostWithFees) * 100;
 
-  // ============================================
-  // STOP-LOSS CHECK - Cut losses before they get worse
-  // ============================================
-  const stopLossPercent = cfg.swingTradeMode?.stopLossPercent || -40;
-
-  if (profitPercent <= stopLossPercent) {
-    // Severe loss - cut it now
-    return {
-      shouldExit: true,
-      reason: `🛑 STOP-LOSS: Position at ${profitPercent.toFixed(1)}% (threshold: ${stopLossPercent}%)`,
-      urgencyScore: 100,
-      urgencyReasons: [`Stop-loss triggered at ${profitPercent.toFixed(1)}%`],
-      analysis: { profitPercent, netProfit, currentBid, avgCost, totalSellFee, spreadCost, stopLossTriggered: true }
-    };
-  }
-
-  // Get market for time-based stop-loss
+  // Get market for stop-loss calculations (needed before stop-loss check)
   const marketsForStopLoss = marketCache.data || [];
   const marketForStopLoss = marketsForStopLoss.find(m => m.ticker === ticker);
 
+  // ============================================
+  // STOP-LOSS CHECK - Cut losses before they get worse
+  // Uses smart empirical-based threshold calculation
+  // ============================================
+  const stopLossPercent = calculateSmartStopLoss(position, marketForStopLoss, profitPercent, cfg);
+
+  if (profitPercent <= stopLossPercent) {
+    // Loss exceeds threshold - cut it now
+    return {
+      shouldExit: true,
+      reason: `🛑 STOP-LOSS: Position at ${profitPercent.toFixed(1)}% (smart threshold: ${stopLossPercent}%)`,
+      urgencyScore: 100,
+      urgencyReasons: [`Stop-loss triggered at ${profitPercent.toFixed(1)}% (threshold: ${stopLossPercent}%)`],
+      analysis: { profitPercent, netProfit, currentBid, avgCost, totalSellFee, spreadCost, stopLossTriggered: true, smartThreshold: stopLossPercent }
+    };
+  }
+
   // Time-based stop-loss: If <3 min left AND losing badly (>25%), cut losses
+  // This is a backup in case smart stop-loss didn't trigger
   if (marketForStopLoss && profitPercent < -25) {
     const timeRemaining = marketForStopLoss.close_time ? new Date(marketForStopLoss.close_time).getTime() - Date.now() : null;
     if (timeRemaining && timeRemaining < 3 * 60 * 1000) {
@@ -3586,33 +3670,69 @@ async function scanTakeProfitOpportunities(userConfig = null, userPortfolio = nu
   return opportunities;
 }
 
-// Take-profit scan interval
-let takeProfitInterval = null;
+// Take-profit scan interval (per-user tracking)
+let takeProfitInterval = null; // Legacy global interval (deprecated)
+const userTakeProfitIntervals = new Map(); // userId -> interval
 
 /**
- * Start take-profit scanning
+ * Start take-profit scanning for a specific user
+ * Refreshes positions from Kalshi before each scan
  */
-function startTakeProfitScanning(intervalMs = 30000, userConfig = null) {
-  stopTakeProfitScanning();
+function startTakeProfitScanning(intervalMs = 30000, userId, userConfig, userPortfolio) {
+  // Stop existing interval for this user
+  if (userId && userTakeProfitIntervals.has(userId)) {
+    clearInterval(userTakeProfitIntervals.get(userId));
+  }
 
-  console.log(`[TakeProfit] Starting position scanning (every ${intervalMs/1000}s)`);
+  console.log(`[TakeProfit] Starting position scanning for user ${userId || 'global'} (every ${intervalMs/1000}s)`);
 
-  takeProfitInterval = setInterval(async () => {
+  const interval = setInterval(async () => {
     try {
-      await scanTakeProfitOpportunities(userConfig);
+      // Refresh positions from Kalshi before scanning
+      if (userConfig && userConfig.isAuthenticated) {
+        try {
+          const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
+          if (userPortfolio) {
+            userPortfolio.positions = posData.market_positions || posData.positions || [];
+          }
+        } catch (e) {
+          console.log('[TakeProfit] Could not refresh positions:', e.message);
+        }
+      }
+
+      await scanTakeProfitOpportunities(userConfig, userPortfolio);
     } catch (error) {
       console.error('[TakeProfit] Scan error:', error.message);
     }
   }, intervalMs);
+
+  if (userId) {
+    userTakeProfitIntervals.set(userId, interval);
+  } else {
+    takeProfitInterval = interval; // Legacy fallback
+  }
 }
 
 /**
  * Stop take-profit scanning
+ * @param {string|null} userId - Stop for specific user, or all if null
  */
-function stopTakeProfitScanning() {
-  if (takeProfitInterval) {
-    clearInterval(takeProfitInterval);
-    takeProfitInterval = null;
+function stopTakeProfitScanning(userId = null) {
+  if (userId && userTakeProfitIntervals.has(userId)) {
+    clearInterval(userTakeProfitIntervals.get(userId));
+    userTakeProfitIntervals.delete(userId);
+    console.log(`[TakeProfit] Stopped scanning for user ${userId}`);
+  } else if (!userId) {
+    // Stop all (legacy behavior)
+    for (const [uid, interval] of userTakeProfitIntervals) {
+      clearInterval(interval);
+    }
+    userTakeProfitIntervals.clear();
+    // Also clear legacy global interval
+    if (takeProfitInterval) {
+      clearInterval(takeProfitInterval);
+      takeProfitInterval = null;
+    }
   }
 }
 
@@ -5882,6 +6002,7 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
   }
 
   const userConfig = req.userState.config;
+  const userPortfolio = req.userState.portfolio;
 
   if (enabled && !userConfig.autoBetEnabled) {
     userConfig.autoBetEnabled = true;
@@ -5898,7 +6019,7 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
     userAutoBetIntervals.set(req.userId, setInterval(() => runAutoBet(req.userId), intervalSeconds * 1000));
 
     // Start take-profit scanning to monitor positions for exit opportunities
-    startTakeProfitScanning(15000, userConfig);
+    startTakeProfitScanning(15000, req.userId, userConfig, userPortfolio);
 
     res.json({
       success: true,
@@ -5920,7 +6041,7 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
     }
 
     // Stop take-profit scanning when auto-bet is disabled
-    stopTakeProfitScanning();
+    stopTakeProfitScanning(req.userId);
 
     res.json({ success: true, message: 'Auto-betting disabled', autoBetEnabled: false });
   } else {
@@ -5935,6 +6056,7 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
 // Get auto-bet scan status - also restore interval if needed
 app.get('/api/auto-bet/status', (req, res) => {
   const userConfig = req.userState?.config || config;
+  const userPortfolio = req.userState?.portfolio || portfolio;
 
   // CRITICAL FIX: If user has auto-bet enabled but no interval running, restart it
   // This handles server restarts and page refreshes
@@ -5943,9 +6065,9 @@ app.get('/api/auto-bet/status', (req, res) => {
     runAutoBet(req.userId);
     userAutoBetIntervals.set(req.userId, setInterval(() => runAutoBet(req.userId), 10000));
 
-    // Also restore take-profit scanning
-    if (!takeProfitInterval) {
-      startTakeProfitScanning(15000, userConfig);
+    // Also restore take-profit scanning (per-user)
+    if (!userTakeProfitIntervals.has(req.userId)) {
+      startTakeProfitScanning(15000, req.userId, userConfig, userPortfolio);
     }
   }
 
