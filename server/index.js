@@ -6143,10 +6143,11 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
       autoBetInterval = null;
     }
 
-    // Stop take-profit scanning when auto-bet is disabled
-    stopTakeProfitScanning(req.userId);
+    // NOTE: Do NOT stop take-profit scanning when auto-bet is disabled
+    // Position protection (stop-loss) should always run to protect open positions
+    // stopTakeProfitScanning(req.userId);  // REMOVED - keep monitoring active
 
-    res.json({ success: true, message: 'Auto-betting disabled', autoBetEnabled: false });
+    res.json({ success: true, message: 'Auto-betting disabled (position monitoring still active)', autoBetEnabled: false });
   } else {
     res.json({
       success: true,
@@ -8227,6 +8228,13 @@ app.get('/api/portfolio', async (req, res) => {
 
       // Save updated state
       if (req.userId) saveUserState(req.userId);
+
+      // Start position protection monitoring if user has open positions
+      // This runs regardless of auto-bet status to always protect positions
+      if (req.userId && userPortfolio.positions?.length > 0 && !userTakeProfitIntervals.has(req.userId)) {
+        console.log(`🛡️ Starting position protection for user ${req.userId} (${userPortfolio.positions.length} open positions)`);
+        startTakeProfitScanning(15000, req.userId, userConfig, userPortfolio);
+      }
 
       res.json({
         success: true,
