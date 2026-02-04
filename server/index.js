@@ -3228,10 +3228,11 @@ function calculateSmartStopLoss(position, market, profitPercent, userConfig) {
 async function evaluateTakeProfit(position, userConfig = null) {
   const cfg = userConfig || config;
   const settings = cfg.takeProfitSettings || {};
+  const limitSettings = cfg.limitOrderSettings || {};
 
-  if (!settings.enabled) {
-    return { shouldExit: false, reason: 'Take-profit disabled' };
-  }
+  // Don't return early - always evaluate stop-loss even if take-profit is disabled
+  // Stop-loss via limit orders doesn't work reliably (orders don't fill on fast crashes)
+  // So we need active monitoring as backup
 
   const ticker = position.ticker;
   const contracts = Math.abs(position.position || 0);
@@ -3360,11 +3361,16 @@ async function evaluateTakeProfit(position, userConfig = null) {
     }
   }
 
-  // NOTE: Stop-loss is now handled via Kalshi limit orders placed at purchase time.
-  // We no longer need to check netProfit here - Kalshi will execute the stop-loss
-  // automatically when the price hits the threshold. This allows the smart exit
-  // logic below to continue analyzing momentum and other factors even for losing
-  // positions that might benefit from a coin-flip prevention exit.
+  // NOTE: Stop-loss via Kalshi limit orders is NOT reliable - limit orders only
+  // execute at the specified price or better. If the market crashes through the
+  // stop-loss price, the order sits unfilled. So we still need active monitoring
+  // as a backup to execute market sells when stop-loss triggers.
+
+  // If take-profit is disabled, we've already checked stop-loss above.
+  // Skip the rest of the take-profit logic and return hold status.
+  if (!settings.enabled) {
+    return { shouldExit: false, reason: 'Position held (take-profit disabled, stop-loss not triggered)' };
+  }
 
   // Get market data for analysis
   const markets = marketCache.data || [];
@@ -3624,8 +3630,10 @@ async function scanTakeProfitOpportunities(userConfig = null, userPortfolio = nu
   const cfg = userConfig || config;
   const pf = userPortfolio || portfolio;
   const settings = cfg.takeProfitSettings || {};
+  const limitSettings = cfg.limitOrderSettings || {};
 
-  if (!settings.enabled) return [];
+  // Don't return early - always scan for stop-loss even if take-profit is disabled
+  // Limit orders don't reliably execute on fast market crashes, so we need active monitoring
 
   const positions = pf.positions || [];
   if (positions.length === 0) return [];
