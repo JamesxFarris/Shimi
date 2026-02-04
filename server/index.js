@@ -116,6 +116,193 @@ if (!fs.existsSync(USER_DATA_DIR)) {
   fs.mkdirSync(USER_DATA_DIR, { recursive: true });
 }
 
+// ============================================
+// EMPIRICAL LOOKUP TABLES (Pure Data-Driven Betting)
+// ============================================
+// Philosophy: Let the data speak - no theoretical assumptions
+// Edge comes from volatility mispricing, not directional alpha
+// Trade selectively (5-15% of intervals) when signal is extreme
+
+const LEARNED_PARAMS_FILE = path.join(__dirname, 'learned_params.json');
+const LEARNING_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+
+// Default empirical tables structure
+const DEFAULT_EMPIRICAL_TABLES = {
+  lastUpdated: null,
+  sampleSize: 0,
+
+  // Core lookup tables - win rate by distance from strike
+  winRateByDistance: {
+    0.1: { count: 0, favoredWinRate: 50, surpriseRate: 50 },
+    0.2: { count: 0, favoredWinRate: 52, surpriseRate: 48 },
+    0.3: { count: 0, favoredWinRate: 54, surpriseRate: 46 },
+    0.5: { count: 0, favoredWinRate: 58, surpriseRate: 42 },
+    0.75: { count: 0, favoredWinRate: 62, surpriseRate: 38 },
+    1.0: { count: 0, favoredWinRate: 68, surpriseRate: 32 },
+    1.5: { count: 0, favoredWinRate: 74, surpriseRate: 26 },
+    2.0: { count: 0, favoredWinRate: 80, surpriseRate: 20 },
+    3.0: { count: 0, favoredWinRate: 86, surpriseRate: 14 },
+    5.0: { count: 0, favoredWinRate: 92, surpriseRate: 8 }
+  },
+
+  // Volatility regime tables (key insight from domain analysis)
+  volatilityRegimes: {
+    low: {
+      description: 'Calm market, predictable movements',
+      winRateMultiplier: 1.05,  // Slightly boost confidence
+      coinFlipThreshold: 0.1,   // Smaller moves matter
+      sitOut: false
+    },
+    medium: {
+      description: 'Normal market conditions',
+      winRateMultiplier: 1.0,
+      coinFlipThreshold: 0.2,
+      sitOut: false
+    },
+    high: {
+      description: 'Elevated volatility, be cautious',
+      winRateMultiplier: 0.92,  // Reduce confidence
+      coinFlipThreshold: 0.4,
+      sitOut: false
+    },
+    spike: {
+      description: 'Volatility spike detected (2%+ in 5 min)',
+      winRateMultiplier: 0,
+      coinFlipThreshold: 1.0,
+      sitOut: true  // Don't bet during spikes
+    }
+  },
+
+  // Token-specific with learned entry windows
+  byToken: {
+    BTC: {
+      sampleSize: 0,
+      avgSettlementDistance: 0,
+      settlementDistanceStdDev: 0,
+      yesWinRate: 50,
+      noWinRate: 50,
+      noBias: 0,
+      volatilityRank: 2,
+      optimalEntryWindows: {
+        distanceMin: 0.5,   // Minimum % from strike to bet
+        distanceMax: 3.0,   // Maximum % (beyond this, edge eaten by fees)
+        timeMin: 2,         // Minimum minutes remaining
+        timeMax: 12,        // Maximum minutes (too early = unpredictable)
+        priceMin: 35,       // Minimum bet price in cents
+        priceMax: 75        // Maximum bet price in cents
+      }
+    },
+    ETH: {
+      sampleSize: 0,
+      avgSettlementDistance: 0,
+      settlementDistanceStdDev: 0,
+      yesWinRate: 50,
+      noWinRate: 50,
+      noBias: 0,
+      volatilityRank: 2,
+      optimalEntryWindows: {
+        distanceMin: 0.5,
+        distanceMax: 3.0,
+        timeMin: 2,
+        timeMax: 12,
+        priceMin: 35,
+        priceMax: 75
+      }
+    },
+    SOL: {
+      sampleSize: 0,
+      avgSettlementDistance: 0,
+      settlementDistanceStdDev: 0,
+      yesWinRate: 50,
+      noWinRate: 50,
+      noBias: 0,
+      volatilityRank: 3,  // SOL typically most volatile
+      optimalEntryWindows: {
+        distanceMin: 0.75,  // Need more buffer for SOL
+        distanceMax: 4.0,
+        timeMin: 3,
+        timeMax: 10,
+        priceMin: 40,
+        priceMax: 70
+      }
+    }
+  },
+
+  // Selectivity rules (learned thresholds for when to bet)
+  selectivityRules: {
+    minSignalStrength: 70,      // 0-100 score required to bet
+    minEmpiricalWinRate: 62,    // Minimum win rate from lookup tables
+    minEdgeAfterFees: 5,        // 5% minimum edge after all fees
+    maxBetsPerHour: 6,          // Rate limiting for discipline
+    maxBetsPerToken: 3,         // Per-token concentration limit
+    requireRegimeCheck: true    // Must pass volatility regime check
+  },
+
+  // Performance tracking for adaptive adjustment
+  performanceTracking: {
+    recentBets: [],             // Last 50 bets for short-term calibration
+    winRateByRegime: {
+      low: { bets: 0, wins: 0 },
+      medium: { bets: 0, wins: 0 },
+      high: { bets: 0, wins: 0 }
+    },
+    calibrationError: 0,        // Difference between predicted and actual
+    lastCalibrationUpdate: null
+  },
+
+  // Legacy compatibility fields
+  thresholds: {
+    coinFlipExit: 0.15,
+    nearStrikeExit: 0.25,
+    timeBuffer: 180000
+  },
+  yesNoBias: {
+    global: { yesWinRate: 50, noWinRate: 50, noBias: 0, sampleSize: 0 }
+  },
+  probabilityThresholds: {
+    autoMinProbability: 62,     // Raised from 60 based on analysis
+    manualMinProbability: 55
+  },
+  confidence: 0
+};
+
+// Legacy alias for backward compatibility
+const DEFAULT_LEARNED_PARAMS = DEFAULT_EMPIRICAL_TABLES;
+
+// Load learned parameters (now empirical tables)
+let learnedParams = JSON.parse(JSON.stringify(DEFAULT_EMPIRICAL_TABLES));
+try {
+  if (fs.existsSync(LEARNED_PARAMS_FILE)) {
+    const data = JSON.parse(fs.readFileSync(LEARNED_PARAMS_FILE, 'utf8'));
+    learnedParams = { ...DEFAULT_LEARNED_PARAMS, ...data };
+    console.log(`📚 Loaded learned params: sample size ${learnedParams.sampleSize}, last updated ${learnedParams.lastUpdated}`);
+  }
+} catch (err) {
+  console.error('Error loading learned params:', err.message);
+}
+
+// Save learned parameters
+function saveLearnedParams() {
+  try {
+    fs.writeFileSync(LEARNED_PARAMS_FILE, JSON.stringify(learnedParams, null, 2));
+    console.log(`💾 Saved learned params to ${LEARNED_PARAMS_FILE}`);
+  } catch (err) {
+    console.error('Error saving learned params:', err.message);
+  }
+}
+
+// Check if learning data is stale (>24 hours old)
+function isLearningDataStale() {
+  if (!learnedParams.lastUpdated) return true;
+  const lastUpdate = new Date(learnedParams.lastUpdated).getTime();
+  return Date.now() - lastUpdate > LEARNING_INTERVAL;
+}
+
+// Sleep helper for rate limiting
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 // In-memory cache of user states
 const userStates = new Map();
 
@@ -1479,7 +1666,16 @@ function gamma(n) {
   return Math.sqrt(2 * Math.PI) * Math.pow(t, n + 0.5) * Math.exp(-t) * x;
 }
 
+// ============================================
+// LEGACY PROBABILITY FUNCTIONS (DEPRECATED)
+// ============================================
+// These theoretical probability models have been REPLACED by the
+// pure empirical data-driven system (evaluateOpportunityEmpirical).
+// Kept for backward compatibility but no longer used in runAutoBet.
+// The new system uses lookupEmpiricalWinRate() and calculateSignalStrength().
+
 // Bootstrap simulation: resample historical returns to estimate probability
+// DEPRECATED: Use lookupEmpiricalWinRate() instead
 function bootstrapProbability(history, currentPrice, targetPrice, expiryMinutes, numSimulations = 500) {
   if (history.length < 20) {
     return { probability: 0.5, confidence: 'low', simulations: 0 };
@@ -1637,7 +1833,9 @@ function calculateTailRisk(history, threshold = 0.02) {
 }
 
 // Main ensemble probability estimator
-// Combines multiple methods and returns conservative estimate
+// DEPRECATED: Use evaluateOpportunityEmpirical() instead
+// This theoretical model with z-scores, Student-t, and bootstrap has been replaced
+// by pure empirical lookup tables built from 6000+ historical settlements.
 function calculateEnsembleProbability(token, currentPrice, targetPrice, expiryMinutes = 15) {
   const history = cryptoPrices[token]?.history || [];
   const extHistory = priceHistoryExtended[token] || [];
@@ -3009,6 +3207,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
 
   // ============================================
   // COIN-FLIP PREVENTION - Exit when price is at strike near expiry
+  // Uses DATA-DRIVEN LEARNED THRESHOLDS when available
   // ============================================
   // If price is very close to strike AND time is running out, exit to avoid gambling
   if (marketForStopLoss) {
@@ -3020,27 +3219,37 @@ async function evaluateTakeProfit(position, userConfig = null) {
         const pctFromStrike = Math.abs((currentPrice - parsed.strikePrice) / parsed.strikePrice * 100);
         const timeRemaining = marketForStopLoss.close_time ? new Date(marketForStopLoss.close_time).getTime() - Date.now() : null;
 
-        // If within 0.15% of strike AND <3 min left - this is a coin flip, exit
-        if (pctFromStrike < 0.15 && timeRemaining && timeRemaining < 3 * 60 * 1000) {
-          console.log(`[TakeProfit] ${ticker}: COIN-FLIP PREVENTION - price ${pctFromStrike.toFixed(3)}% from strike with ${(timeRemaining/60000).toFixed(1)}min left`);
+        // Get learned threshold for this token (falls back to 0.15 if not learned)
+        const coinFlipThreshold = getCoinFlipThreshold(token);
+        const nearStrikeThreshold = learnedParams.thresholds.nearStrikeExit || 0.25;
+        const timeBuffer = learnedParams.thresholds.timeBuffer || 180000; // 3 minutes default
+
+        // Log threshold being used (for debugging)
+        if (pctFromStrike < nearStrikeThreshold && timeRemaining && timeRemaining < timeBuffer) {
+          console.log(`[TakeProfit] ${ticker}: Using learned threshold ${coinFlipThreshold}% for ${token} (sample size: ${learnedParams.byToken[token]?.sampleSize || 0})`);
+        }
+
+        // If within learned coin-flip threshold AND <3 min left - this is a coin flip, exit
+        if (pctFromStrike < coinFlipThreshold && timeRemaining && timeRemaining < timeBuffer) {
+          console.log(`[TakeProfit] ${ticker}: COIN-FLIP PREVENTION - price ${pctFromStrike.toFixed(3)}% from strike with ${(timeRemaining/60000).toFixed(1)}min left (threshold: ${coinFlipThreshold}%)`);
           return {
             shouldExit: true,
-            reason: `🎲 COIN-FLIP EXIT: Price only ${pctFromStrike.toFixed(2)}% from strike with <3min left - avoiding gamble`,
+            reason: `🎲 COIN-FLIP EXIT: Price only ${pctFromStrike.toFixed(2)}% from strike with <3min left - avoiding gamble (learned threshold: ${coinFlipThreshold}%)`,
             urgencyScore: 95,
             urgencyReasons: [`Coin-flip prevention: ${pctFromStrike.toFixed(2)}% from strike, ${(timeRemaining/60000).toFixed(1)}min left`],
-            analysis: { profitPercent, netProfit, currentBid, avgCost, pctFromStrike, timeRemaining, coinFlipExit: true }
+            analysis: { profitPercent, netProfit, currentBid, avgCost, pctFromStrike, timeRemaining, coinFlipExit: true, learnedThreshold: coinFlipThreshold }
           };
         }
 
-        // Slightly wider threshold with less time - 0.25% from strike AND <2 min
-        if (pctFromStrike < 0.25 && timeRemaining && timeRemaining < 2 * 60 * 1000) {
-          console.log(`[TakeProfit] ${ticker}: COIN-FLIP PREVENTION - price ${pctFromStrike.toFixed(3)}% from strike with ${(timeRemaining/60000).toFixed(1)}min left`);
+        // Slightly wider threshold with less time - nearStrikeThreshold from strike AND <2 min
+        if (pctFromStrike < nearStrikeThreshold && timeRemaining && timeRemaining < 2 * 60 * 1000) {
+          console.log(`[TakeProfit] ${ticker}: COIN-FLIP PREVENTION - price ${pctFromStrike.toFixed(3)}% from strike with ${(timeRemaining/60000).toFixed(1)}min left (near-strike threshold: ${nearStrikeThreshold}%)`);
           return {
             shouldExit: true,
-            reason: `🎲 COIN-FLIP EXIT: Price ${pctFromStrike.toFixed(2)}% from strike with <2min left - too risky`,
+            reason: `🎲 COIN-FLIP EXIT: Price ${pctFromStrike.toFixed(2)}% from strike with <2min left - too risky (near-strike threshold: ${nearStrikeThreshold}%)`,
             urgencyScore: 95,
             urgencyReasons: [`Coin-flip prevention: ${pctFromStrike.toFixed(2)}% from strike, ${(timeRemaining/60000).toFixed(1)}min left`],
-            analysis: { profitPercent, netProfit, currentBid, avgCost, pctFromStrike, timeRemaining, coinFlipExit: true }
+            analysis: { profitPercent, netProfit, currentBid, avgCost, pctFromStrike, timeRemaining, coinFlipExit: true, learnedThreshold: nearStrikeThreshold }
           };
         }
       }
@@ -4830,9 +5039,10 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       })
       .filter(m => {
         if (m === null) return false;
-        // REQUIRE 60%+ WIN PROBABILITY for auto-betting
+        // REQUIRE minimum WIN PROBABILITY for auto-betting (learned from historical data)
         const winProb = parseFloat(m.winProbability) || 0;
-        if (winProb < 60) return false;
+        const minAutoProb = getMinAutoWinProbability();
+        if (winProb < minAutoProb) return false;
 
         // Check if we already bet on this market
         if (recentBets.has(m.ticker)) {
@@ -5216,90 +5426,107 @@ async function runAutoBet(userId = null) {
       kalshiWs.subscribeOrderbooks(tickers);
     }
 
-    // Analyze crypto opportunities with enhanced data (orderbook + momentum)
+    // ============================================
+    // EMPIRICAL DATA-DRIVEN ANALYSIS
+    // ============================================
+    // Check global sit-out conditions first
+    const globalSitOut = shouldSitOut(learnedParams);
+    if (globalSitOut.sitOut) {
+      console.log(`⏸️ SITTING OUT: ${globalSitOut.reasons.join(', ')}`);
+      lastScanStatus.status = 'sitting_out';
+      lastScanStatus.statusMessage = globalSitOut.reasons[0];
+      lastScanStatus.blockedReasons = globalSitOut.reasons;
+      console.log('========================================\n');
+      return;
+    }
+
+    // Analyze crypto opportunities with EMPIRICAL evaluation
     const analysisPromises = cryptoMarkets.map(async (m) => {
       const parsed = parseMarket(m);
+      if (!parsed.cryptoType || !parsed.strikePrice) return null;
 
-      // Fetch orderbook for spread/liquidity awareness (Phase 2)
+      // Get current price for this token
+      const priceData = cryptoPrices[parsed.cryptoType];
+      if (!priceData?.price) return null;
+
+      // Fetch orderbook for liquidity check
       let orderbook = null;
       if (userConfig.liquiditySettings?.enabled !== false) {
         try {
           orderbook = await fetchOrderbook(m.ticker, userConfig);
         } catch (e) {
-          // Continue without orderbook data if fetch fails
+          // Continue without orderbook
         }
       }
 
-      // Fetch candlesticks for momentum confirmation (Phase 4)
-      let momentum = null;
-      if (userConfig.momentumSettings?.enabled !== false) {
-        try {
-          const candleData = await fetchCandlesticks(m.ticker, 1, 15, userConfig);
-          if (candleData?.candles?.length >= 3) {
-            momentum = analyzeMarketMomentum(candleData);
-          }
-        } catch (e) {
-          // Continue without momentum data if fetch fails
-        }
-      }
+      // Use the new empirical evaluation
+      const empiricalResult = evaluateOpportunityEmpirical(
+        parsed,
+        priceData.price,
+        learnedParams,
+        orderbook
+      );
 
-      // Analyze with enhanced data
-      const analyzed = analyzeCryptoMarket(parsed, orderbook, momentum, userConfig);
-      if (analyzed) analyzed.marketCategory = 'crypto';
-      return analyzed;
+      // Merge parsed data with empirical evaluation
+      return {
+        ...parsed,
+        ...empiricalResult,
+        ticker: m.ticker,
+        currentPrice: priceData.price,
+        marketCategory: 'crypto',
+        token: parsed.cryptoType,
+        betSide: empiricalResult.side,
+        betPrice: empiricalResult.marketPrice,
+        betPriceCents: empiricalResult.marketPriceCents
+      };
     });
 
     const allOppsRaw = await Promise.all(analysisPromises);
     const allOpps = allOppsRaw.filter(m => m !== null);
     const withEdge = allOpps.filter(m => m.edge > 0);
-    const above50 = allOpps.filter(m => parseFloat(m.winProbability) >= 50);
-    const above60 = allOpps.filter(m => parseFloat(m.winProbability) >= 60);
+    const recommended = allOpps.filter(m => m.shouldBet);
+    const minAutoThreshold = learnedParams.selectivityRules?.minEmpiricalWinRate || 62;
 
-    console.log(`   Analyzed: ${allOpps.length} valid | ${withEdge.length} with edge | ${above50.length} >50% | ${above60.length} >60%`);
+    console.log(`   Analyzed: ${allOpps.length} valid | ${withEdge.length} with edge | ${recommended.length} recommended`);
 
-    // Update scan status with analysis results
-    // Always show 3 markets (BTC, ETH, SOL) since we track all 3, even if some don't have active windows
+    // Update scan status
     lastScanStatus.marketsScanned = 3;
-    lastScanStatus.activeMarkets = allOpps.length;  // Actual active markets right now
+    lastScanStatus.activeMarkets = allOpps.length;
     lastScanStatus.marketsWithEdge = withEdge.length;
 
-    // Show probability distribution for debugging
-    const probBuckets = { '50-55': 0, '55-60': 0, '60-65': 0, '65-70': 0, '70-75': 0, '75-80': 0 };
+    // Show signal strength distribution for empirical debugging
+    const signalBuckets = { '0-40': 0, '40-60': 0, '60-70': 0, '70-80': 0, '80-90': 0, '90-100': 0 };
     allOpps.forEach(m => {
-      const prob = parseFloat(m.winProbability) || 0;
-      if (prob >= 75) probBuckets['75-80']++;
-      else if (prob >= 70) probBuckets['70-75']++;
-      else if (prob >= 65) probBuckets['65-70']++;
-      else if (prob >= 60) probBuckets['60-65']++;
-      else if (prob >= 55) probBuckets['55-60']++;
-      else if (prob >= 50) probBuckets['50-55']++;
+      const sig = m.signalStrength || 0;
+      if (sig >= 90) signalBuckets['90-100']++;
+      else if (sig >= 80) signalBuckets['80-90']++;
+      else if (sig >= 70) signalBuckets['70-80']++;
+      else if (sig >= 60) signalBuckets['60-70']++;
+      else if (sig >= 40) signalBuckets['40-60']++;
+      else signalBuckets['0-40']++;
     });
-    console.log(`   Probability distribution: ${JSON.stringify(probBuckets)}`);
+    console.log(`   Signal strength distribution: ${JSON.stringify(signalBuckets)}`);
 
-    // Minimum price filter - higher priced bets = lower variance, more consistent wins
-    const MIN_PRICE_CENTS = 40;
+    // Show regime status for each token
+    console.log(`   Volatility regimes:`);
+    for (const token of ['BTC', 'ETH', 'SOL']) {
+      const regime = detectVolatilityRegime(token);
+      console.log(`      ${token}: ${regime.regime} (${regime.reason})`);
+    }
 
-    // Log trading constraints
-    console.log(`   Min price: ${MIN_PRICE_CENTS}¢`);
-
+    // Filter to only empirically recommended opportunities
     const opportunities = allOpps
       .filter(m => {
-        // Minimum price filter (under 40¢ loses badly)
-        const priceCents = m.betPriceCents || Math.round((m.betPrice || 0) * 100);
-        if (priceCents < MIN_PRICE_CENTS) {
+        // Must pass empirical evaluation
+        if (!m.shouldBet) {
           return false;
         }
 
-        // REQUIRE 60%+ WIN PROBABILITY for auto-betting
-        const winProb = parseFloat(m.winProbability) || 0;
-        if (winProb < 60) return false;
-        // Also require positive edge
-        if (m.edge < 0.5) return false;
-
         // Check if we already bet on this market
         if (recentBets.has(m.ticker)) {
-          // Allow scale-in if probability improved significantly
-          if (shouldAllowScaleIn(m.ticker, winProb)) {
+          // Allow scale-in if win rate improved significantly
+          const currentWinRate = parseFloat(m.winProbability) || 0;
+          if (shouldAllowScaleIn(m.ticker, currentWinRate)) {
             m.isScaleIn = true; // Mark as scale-in opportunity
           } else {
             return false; // Skip - already bet and not a valid scale-in
@@ -5307,75 +5534,66 @@ async function runAutoBet(userId = null) {
         }
         return true;
       })
-      // DATA-DRIVEN: Prefer HIGH-PRICED bets with SHORT TIME LEFT
-      // User observed: "algorithm was doing better on 80¢ bets with less time left"
-      // High price = market agrees with us, Short time = less volatility risk
+      // EMPIRICAL: Sort by signal strength (combines win rate, edge, regime, timing)
       .sort((a, b) => {
-        // Score components:
-        // 1) Win probability (base)
-        // 2) Price bonus: Higher price = safer (market agrees)
-        // 3) Time bonus: Less time remaining = safer
-        // 4) NO bet bonus (from data analysis)
+        // Primary sort: signal strength (the unified quality score)
+        const aSignal = a.signalStrength || 0;
+        const bSignal = b.signalStrength || 0;
 
-        const aProb = parseFloat(a.winProbability) || 0;
-        const bProb = parseFloat(b.winProbability) || 0;
+        // If signals are close (within 5 points), use secondary criteria
+        if (Math.abs(aSignal - bSignal) <= 5) {
+          // Prefer higher edge
+          const aEdge = a.edge || 0;
+          const bEdge = b.edge || 0;
+          if (Math.abs(aEdge - bEdge) > 2) {
+            return bEdge - aEdge;
+          }
+          // Then prefer larger sample size (more reliable)
+          return (b.sampleSize || 0) - (a.sampleSize || 0);
+        }
 
-        // Price bonus: 60¢+ gets bonus, 80¢+ gets bigger bonus
-        const aPriceCents = a.betPriceCents || 0;
-        const bPriceCents = b.betPriceCents || 0;
-        const aPriceBonus = aPriceCents >= 80 ? 8 : aPriceCents >= 60 ? 4 : 0;
-        const bPriceBonus = bPriceCents >= 80 ? 8 : bPriceCents >= 60 ? 4 : 0;
-
-        // Time bonus: Under 5 min left = safer
-        const aTimeMin = a.timeRemainingMinutes || 15;
-        const bTimeMin = b.timeRemainingMinutes || 15;
-        const aTimeBonus = aTimeMin <= 5 ? 5 : aTimeMin <= 8 ? 2 : 0;
-        const bTimeBonus = bTimeMin <= 5 ? 5 : bTimeMin <= 8 ? 2 : 0;
-
-        // NO bet bonus (from data analysis: 70.6% win rate vs YES 53.1%)
-        const aNoBonus = (a.betSide || '').toUpperCase() === 'NO' ? 3 : 0;
-        const bNoBonus = (b.betSide || '').toUpperCase() === 'NO' ? 3 : 0;
-
-        const aScore = aProb + aPriceBonus + aTimeBonus + aNoBonus;
-        const bScore = bProb + bPriceBonus + bTimeBonus + bNoBonus;
-        return bScore - aScore;
+        return bSignal - aSignal;
       });
 
-    const highConfCount = opportunities.filter(o => parseFloat(o.winProbability) >= 70).length;
-    console.log(`   Final: ${opportunities.length} opportunities (${highConfCount} above 70%)`);
+    const highSignalCount = opportunities.filter(o => (o.signalStrength || 0) >= 80).length;
+    console.log(`   Final: ${opportunities.length} opportunities (${highSignalCount} with signal ≥80)`);
 
-    // Show top opportunities
+    // Show top opportunities with empirical details
     if (opportunities.length > 0) {
-      console.log(`   🎯 Top opportunities:`);
+      console.log(`   🎯 Top empirical opportunities:`);
       opportunities.slice(0, 3).forEach(m => {
-        console.log(`      - ${m.title}: ${m.winProbability}% @ ${m.betPriceCents}¢ (${m.betSide}, edge +${m.edge.toFixed(1)}%)`);
+        console.log(`      - ${m.title}: signal=${m.signalStrength} | win=${m.winProbability}% @ ${m.marketPriceCents}¢ | edge=${m.edge?.toFixed(1)}% | regime=${m.regime}`);
       });
     }
 
-    // Show markets approaching the threshold (55-59%)
-    const approaching = allOpps.filter(m => {
-      const prob = parseFloat(m.winProbability) || 0;
-      return prob >= 55 && prob < 60 && m.edge > 0;
+    // Show markets that almost qualified (signal 60-70)
+    const minSignal = learnedParams.selectivityRules?.minSignalStrength || 70;
+    const almostQualified = allOpps.filter(m => {
+      const sig = m.signalStrength || 0;
+      return sig >= minSignal - 15 && sig < minSignal && m.edge > 0;
     });
-    if (approaching.length > 0) {
-      console.log(`   📈 ${approaching.length} markets approaching 60% threshold:`);
-      approaching.slice(0, 3).forEach(m => {
-        console.log(`      - ${m.title}: ${m.winProbability}% (${m.betSide})`);
+    if (almostQualified.length > 0) {
+      console.log(`   📈 ${almostQualified.length} markets approaching signal threshold:`);
+      almostQualified.slice(0, 3).forEach(m => {
+        const rejectionReason = m.reasons?.[0] || 'Unknown';
+        console.log(`      - ${m.title}: signal=${m.signalStrength} | ${rejectionReason}`);
       });
     }
 
     if (opportunities.length === 0) {
-      console.log('⏳ No valid opportunities - waiting for next scan...');
+      console.log('⏳ No empirically valid opportunities - waiting for next scan...');
       console.log('========================================\n');
 
       // Update status with reason
       lastScanStatus.status = 'no_opportunities';
-      lastScanStatus.statusMessage = `Scanning 3 markets (BTC, ETH, SOL) - waiting for opportunity`;
-      if (approaching.length > 0) {
-        lastScanStatus.blockedReasons.push(`${approaching.length} markets at 55-59% (need 60%+)`);
+      lastScanStatus.statusMessage = `Scanning 3 markets (BTC, ETH, SOL) - waiting for high-signal opportunity`;
+      if (almostQualified.length > 0) {
+        lastScanStatus.blockedReasons.push(`${almostQualified.length} markets with signal ${minSignal-15}-${minSignal-1} (need ${minSignal}+)`);
       }
-      if (above50.length > above60.length) {
-        lastScanStatus.blockedReasons.push(`${above50.length - above60.length} markets at 50-59%`);
+      // Show rejected opportunities and their reasons
+      const rejectedWithReasons = allOpps.filter(m => !m.shouldBet && m.reasons?.length > 0);
+      if (rejectedWithReasons.length > 0) {
+        lastScanStatus.blockedReasons.push(`${rejectedWithReasons.length} markets rejected by empirical filters`);
       }
       return;
     }
@@ -5396,16 +5614,18 @@ async function runAutoBet(userId = null) {
 
     console.log(`💰 Risk [${poolName}]: $${(poolCurrent/100).toFixed(2)} / $${(poolMax/100).toFixed(2)} | Total: $${(riskByType.total/100).toFixed(2)} / $${(getMaxTotalRisk(userConfig)/100).toFixed(2)}`);
 
-    console.log(`\n💰 BEST OPPORTUNITY [${category.toUpperCase()}]:`);
+    // Display EMPIRICAL analysis for best opportunity
+    console.log(`\n💰 BEST EMPIRICAL OPPORTUNITY [${category.toUpperCase()}]:`);
     console.log(`   ${best.title}`);
-    console.log(`   ${best.betReason}`);
-    console.log(`   Side: ${best.betSide} @ ${(best.betPrice * 100).toFixed(0)}¢ | Win prob: ${best.winProbability}%`);
+    console.log(`   📊 Signal Strength: ${best.signalStrength}/100`);
+    console.log(`   Side: ${best.betSide} @ ${best.marketPriceCents}¢ | Win rate: ${best.winProbability}% (empirical)`);
     console.log(`   Current: $${best.currentPrice?.toFixed(2) || 'N/A'} | Strike: $${best.strikePrice?.toFixed(2) || 'N/A'}`);
-    console.log(`   Edge: +${best.edge.toFixed(1)}%`);
+    console.log(`   Distance: ${best.absDistance?.toFixed(2)}% from strike | Regime: ${best.regime}`);
+    console.log(`   Edge: +${best.edge?.toFixed(1)}% (after fees) | Sample size: ${best.sampleSize}`);
 
     // Show other good opportunities
     if (opportunities.length > 1) {
-      console.log(`   + ${opportunities.length - 1} more opportunities above 60%`);
+      console.log(`   + ${opportunities.length - 1} more opportunities with signal ≥${minSignal}`);
     }
 
     // Check risk limit AFTER showing opportunities
@@ -5432,7 +5652,10 @@ async function runAutoBet(userId = null) {
       return;
     }
 
-    console.log(`   ${best.isObviousBet ? '✅ HIGH CONFIDENCE' : '⚠️ Model-based'}`);
+    // Display confidence based on signal strength
+    const confidenceLevel = best.signalStrength >= 85 ? '✅ HIGH CONFIDENCE (empirical)' :
+                           best.signalStrength >= 75 ? '📊 GOOD SIGNAL' : '⚠️ MODERATE SIGNAL';
+    console.log(`   ${confidenceLevel}`);
     console.log(`   Token budget for ${tokenName}: $${(remainingTokenBudget/100).toFixed(2)} remaining`);
 
     // Cap bet at remaining risk budget, max per bet, OR token budget - whichever is lowest
@@ -5491,10 +5714,16 @@ async function runAutoBet(userId = null) {
       timestamp: now,
       side: best.betSide,
       probability: parseFloat(best.winProbability),
+      signalStrength: best.signalStrength,
+      regime: best.regime,
       betCount: newBetCount
     });
+
+    // Record for empirical rate limiting
+    recordEmpiricalBet(best.token || best.cryptoType);
+
     if (best.isScaleIn) {
-      console.log(`📈 SCALE-IN: Adding bet #${newBetCount} on ${best.ticker} (prob increased to ${best.winProbability}%)`);
+      console.log(`📈 SCALE-IN: Adding bet #${newBetCount} on ${best.ticker} (signal increased to ${best.signalStrength})`);
     }
 
     if (!userConfig.isAuthenticated) {
@@ -5799,6 +6028,1143 @@ app.get('/api/candlesticks/:ticker', async (req, res) => {
 // HISTORICAL DATA ANALYSIS API
 // ============================================
 
+// ============================================
+// EMPIRICAL DATA-DRIVEN BETTING SYSTEM
+// ============================================
+// Philosophy: Pure lookup-based evaluation from 6000+ historical settlements
+// No theoretical probability models - let the data speak
+
+// Track recent bets for rate limiting and performance
+const empiricalBetTracking = {
+  recentBetsThisHour: [],  // Timestamps of bets in the last hour
+  betsByToken: new Map(),  // Token -> count of bets in last hour
+  lastSpikeTimes: new Map() // Token -> timestamp of last detected spike
+};
+
+/**
+ * Detect current volatility regime for a token
+ * @param {string} token - 'BTC', 'ETH', or 'SOL'
+ * @param {Array} priceHistory - Recent price history
+ * @returns {object} Regime info: { regime: 'low'|'medium'|'high'|'spike', reason: string }
+ */
+function detectVolatilityRegime(token, priceHistory = null) {
+  const history = priceHistory || cryptoPrices[token]?.history || [];
+  const now = Date.now();
+
+  // Default to medium if insufficient data
+  if (history.length < 10) {
+    return { regime: 'medium', reason: 'Insufficient price history', multiplier: 1.0 };
+  }
+
+  // Check for recent spike (2%+ move in 5 minutes)
+  const fiveMinAgo = now - 5 * 60 * 1000;
+  const recentPrices = history.filter(p => p.time > fiveMinAgo);
+
+  if (recentPrices.length >= 2) {
+    const firstPrice = recentPrices[0]?.price;
+    const lastPrice = recentPrices[recentPrices.length - 1]?.price;
+    if (firstPrice && lastPrice) {
+      const pctMove = Math.abs((lastPrice - firstPrice) / firstPrice * 100);
+      if (pctMove >= 2.0) {
+        empiricalBetTracking.lastSpikeTimes.set(token, now);
+        return {
+          regime: 'spike',
+          reason: `${pctMove.toFixed(2)}% move in 5 min`,
+          multiplier: 0,
+          sitOut: true
+        };
+      }
+    }
+  }
+
+  // Check if we're still in cooldown from a recent spike (5 min cooldown)
+  const lastSpike = empiricalBetTracking.lastSpikeTimes.get(token);
+  if (lastSpike && (now - lastSpike) < 5 * 60 * 1000) {
+    return {
+      regime: 'spike',
+      reason: 'Spike cooldown period',
+      multiplier: 0,
+      sitOut: true
+    };
+  }
+
+  // Calculate 15-minute realized volatility
+  const fifteenMinAgo = now - 15 * 60 * 1000;
+  const windowPrices = history.filter(p => p.time > fifteenMinAgo);
+
+  if (windowPrices.length < 5) {
+    return { regime: 'medium', reason: 'Limited recent data', multiplier: 1.0 };
+  }
+
+  // Calculate volatility as std dev of returns
+  const returns = [];
+  for (let i = 1; i < windowPrices.length; i++) {
+    const ret = (windowPrices[i].price - windowPrices[i-1].price) / windowPrices[i-1].price;
+    returns.push(ret);
+  }
+
+  const meanRet = returns.reduce((a, b) => a + b, 0) / returns.length;
+  const variance = returns.reduce((a, b) => a + Math.pow(b - meanRet, 2), 0) / returns.length;
+  const volatility = Math.sqrt(variance) * 100; // As percentage
+
+  // Get token-specific volatility thresholds from learned data
+  const tokenData = learnedParams.byToken[token];
+  const avgVol = tokenData?.avgSettlementDistance || 0.5;
+
+  // Classify regime based on current vs historical volatility
+  if (volatility < avgVol * 0.7) {
+    return {
+      regime: 'low',
+      reason: `Low vol (${volatility.toFixed(3)}% vs avg ${avgVol.toFixed(3)}%)`,
+      multiplier: 1.05,
+      volatility
+    };
+  } else if (volatility > avgVol * 1.5) {
+    return {
+      regime: 'high',
+      reason: `High vol (${volatility.toFixed(3)}% vs avg ${avgVol.toFixed(3)}%)`,
+      multiplier: 0.92,
+      volatility
+    };
+  } else {
+    return {
+      regime: 'medium',
+      reason: `Normal vol (${volatility.toFixed(3)}%)`,
+      multiplier: 1.0,
+      volatility
+    };
+  }
+}
+
+/**
+ * Calculate signal strength score (0-100) from empirical factors
+ * @param {number} winRate - Empirical win rate from lookup tables (50-100)
+ * @param {number} edge - Edge after fees (%)
+ * @param {number} sampleSize - Number of samples at this distance bucket
+ * @param {string} regime - Volatility regime
+ * @param {number} timeRemaining - Minutes until expiry
+ * @returns {number} Signal strength 0-100
+ */
+function calculateSignalStrength(winRate, edge, sampleSize, regime, timeRemaining) {
+  let score = 0;
+
+  // Win rate contribution: 0-40 points
+  // 50% = 0 points, 70% = 20 points, 90% = 40 points
+  const winRatePoints = Math.max(0, Math.min(40, (winRate - 50) * 2));
+  score += winRatePoints;
+
+  // Edge contribution: 0-30 points
+  // 0% = 0 points, 5% = 10 points, 15%+ = 30 points
+  const edgePoints = Math.max(0, Math.min(30, edge * 2));
+  score += edgePoints;
+
+  // Sample size contribution: 0-15 points
+  // 0 samples = 0 points, 50 samples = 7.5 points, 100+ samples = 15 points
+  const samplePoints = Math.min(15, (sampleSize / 100) * 15);
+  score += samplePoints;
+
+  // Regime contribution: -15 to +10 points
+  const regimePoints = {
+    'low': 10,      // Calm market = safer to bet
+    'medium': 0,    // Normal conditions
+    'high': -10,    // Volatile = riskier
+    'spike': -15    // Don't bet
+  };
+  score += regimePoints[regime] || 0;
+
+  // Time sweet spot contribution: 0-5 points
+  // Optimal: 3-8 minutes (enough time for price to stabilize but not too much uncertainty)
+  let timePoints = 0;
+  if (timeRemaining >= 3 && timeRemaining <= 8) {
+    timePoints = 5; // Sweet spot
+  } else if (timeRemaining >= 2 && timeRemaining <= 12) {
+    timePoints = 2; // Acceptable range
+  } else {
+    timePoints = 0; // Too early or too late
+  }
+  score += timePoints;
+
+  return Math.max(0, Math.min(100, Math.round(score)));
+}
+
+/**
+ * Check if we should sit out this interval
+ * @param {object} tables - Empirical tables
+ * @param {string} token - Token to check (optional, for token-specific limits)
+ * @returns {object} { sitOut: boolean, reasons: string[] }
+ */
+function shouldSitOut(tables, token = null) {
+  const reasons = [];
+  const rules = tables?.selectivityRules || learnedParams.selectivityRules;
+  const now = Date.now();
+  const oneHourAgo = now - 60 * 60 * 1000;
+
+  // Rate limiting: max bets per hour
+  empiricalBetTracking.recentBetsThisHour = empiricalBetTracking.recentBetsThisHour
+    .filter(ts => ts > oneHourAgo);
+
+  if (empiricalBetTracking.recentBetsThisHour.length >= (rules?.maxBetsPerHour || 6)) {
+    reasons.push(`Rate limit: ${empiricalBetTracking.recentBetsThisHour.length}/${rules?.maxBetsPerHour || 6} bets this hour`);
+  }
+
+  // Token-specific rate limiting
+  if (token) {
+    const tokenBets = empiricalBetTracking.betsByToken.get(token) || 0;
+    if (tokenBets >= (rules?.maxBetsPerToken || 3)) {
+      reasons.push(`Token limit: ${tokenBets}/${rules?.maxBetsPerToken || 3} ${token} bets this hour`);
+    }
+  }
+
+  // Check if we have sufficient data
+  if ((tables?.sampleSize || learnedParams.sampleSize) < 100) {
+    reasons.push('Insufficient historical data for empirical betting');
+  }
+
+  return {
+    sitOut: reasons.length > 0,
+    reasons
+  };
+}
+
+/**
+ * Look up empirical win rate for a given distance from strike
+ * @param {number} pctFromStrike - Absolute percentage distance from strike
+ * @returns {object} { winRate: number, sampleSize: number, bucket: number }
+ */
+function lookupEmpiricalWinRate(pctFromStrike) {
+  const absDistance = Math.abs(pctFromStrike);
+  const winRateData = learnedParams.winRateByDistance || DEFAULT_EMPIRICAL_TABLES.winRateByDistance;
+
+  // Find the appropriate bucket
+  const buckets = Object.keys(winRateData).map(Number).sort((a, b) => a - b);
+
+  for (const bucket of buckets) {
+    if (absDistance <= bucket) {
+      const data = winRateData[bucket];
+      return {
+        winRate: data?.favoredWinRate || 50,
+        sampleSize: data?.count || 0,
+        bucket,
+        surpriseRate: data?.surpriseRate || 50
+      };
+    }
+  }
+
+  // Beyond all buckets - use the largest one with extrapolation
+  const maxBucket = buckets[buckets.length - 1];
+  const maxData = winRateData[maxBucket];
+  const extrapolatedWinRate = Math.min(98, (maxData?.favoredWinRate || 85) + (absDistance - maxBucket) * 2);
+
+  return {
+    winRate: extrapolatedWinRate,
+    sampleSize: maxData?.count || 0,
+    bucket: maxBucket,
+    extrapolated: true
+  };
+}
+
+/**
+ * Evaluate a market opportunity using pure empirical data
+ * @param {object} parsed - Parsed market data
+ * @param {object} currentPrice - Current crypto price
+ * @param {object} tables - Empirical lookup tables
+ * @param {object} orderbook - Orderbook data (optional)
+ * @returns {object} { shouldBet, signalStrength, side, edge, winRate, reasons }
+ */
+function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, orderbook = null) {
+  const empiricalTables = tables || learnedParams;
+  const token = parsed.cryptoType;
+  const strikePrice = parsed.strikePrice;
+  const timeRemaining = parsed.timeRemainingMinutes || 15;
+
+  // Basic validation
+  if (!token || !strikePrice || !currentPrice) {
+    return { shouldBet: false, reasons: ['Missing required data'] };
+  }
+
+  // Calculate distance from strike
+  const pctFromStrike = ((currentPrice - strikePrice) / strikePrice) * 100;
+  const absDistance = Math.abs(pctFromStrike);
+
+  // Detect volatility regime
+  const regime = detectVolatilityRegime(token);
+
+  // Check for sit-out conditions
+  if (regime.sitOut) {
+    return {
+      shouldBet: false,
+      regime: regime.regime,
+      reasons: [`Volatility spike: ${regime.reason}`],
+      signalStrength: 0
+    };
+  }
+
+  // Look up empirical win rate
+  const empirical = lookupEmpiricalWinRate(absDistance);
+
+  // Get token-specific optimal entry windows
+  const tokenData = empiricalTables.byToken?.[token] || DEFAULT_EMPIRICAL_TABLES.byToken[token];
+  const entryWindows = tokenData?.optimalEntryWindows || {};
+
+  // Check if within optimal entry window
+  const withinDistanceWindow = absDistance >= (entryWindows.distanceMin || 0.5) &&
+                               absDistance <= (entryWindows.distanceMax || 3.0);
+  const withinTimeWindow = timeRemaining >= (entryWindows.timeMin || 2) &&
+                           timeRemaining <= (entryWindows.timeMax || 12);
+
+  // Determine bet side based on price position
+  const isAboveStrike = currentPrice > strikePrice;
+  let betSide, marketPrice;
+
+  if (parsed.marketType === 'above') {
+    // YES wins if price >= strike at expiry
+    if (isAboveStrike) {
+      betSide = 'YES';
+      marketPrice = parsed.yesAsk || 0.5;
+    } else {
+      betSide = 'NO';
+      marketPrice = parsed.noAsk || 0.5;
+    }
+  } else {
+    // Below market: YES wins if price < strike
+    if (isAboveStrike) {
+      betSide = 'NO';
+      marketPrice = parsed.noAsk || 0.5;
+    } else {
+      betSide = 'YES';
+      marketPrice = parsed.yesAsk || 0.5;
+    }
+  }
+
+  const marketPriceCents = Math.round(marketPrice * 100);
+
+  // Check price window
+  const withinPriceWindow = marketPriceCents >= (entryWindows.priceMin || 35) &&
+                            marketPriceCents <= (entryWindows.priceMax || 75);
+
+  // Apply regime multiplier to win rate
+  const adjustedWinRate = empirical.winRate * (regime.multiplier || 1.0);
+
+  // Calculate edge: our win rate - market implied probability - fees
+  const marketImpliedProb = marketPrice * 100; // Market price as probability
+  const feePct = 2; // Approximate Kalshi fee
+  const grossEdge = adjustedWinRate - marketImpliedProb;
+  const netEdge = grossEdge - feePct;
+
+  // Calculate signal strength
+  const signalStrength = calculateSignalStrength(
+    adjustedWinRate,
+    netEdge,
+    empirical.sampleSize,
+    regime.regime,
+    timeRemaining
+  );
+
+  // Get selectivity rules
+  const rules = empiricalTables.selectivityRules || DEFAULT_EMPIRICAL_TABLES.selectivityRules;
+
+  // Build rejection reasons
+  const reasons = [];
+
+  if (signalStrength < (rules.minSignalStrength || 70)) {
+    reasons.push(`Signal strength ${signalStrength} < ${rules.minSignalStrength || 70}`);
+  }
+
+  if (adjustedWinRate < (rules.minEmpiricalWinRate || 62)) {
+    reasons.push(`Win rate ${adjustedWinRate.toFixed(1)}% < ${rules.minEmpiricalWinRate || 62}%`);
+  }
+
+  if (netEdge < (rules.minEdgeAfterFees || 5)) {
+    reasons.push(`Edge ${netEdge.toFixed(1)}% < ${rules.minEdgeAfterFees || 5}%`);
+  }
+
+  if (!withinDistanceWindow) {
+    reasons.push(`Distance ${absDistance.toFixed(2)}% outside optimal window [${entryWindows.distanceMin}-${entryWindows.distanceMax}%]`);
+  }
+
+  if (!withinTimeWindow) {
+    reasons.push(`Time ${timeRemaining}min outside optimal window [${entryWindows.timeMin}-${entryWindows.timeMax}min]`);
+  }
+
+  if (!withinPriceWindow) {
+    reasons.push(`Price ${marketPriceCents}¢ outside optimal window [${entryWindows.priceMin}-${entryWindows.priceMax}¢]`);
+  }
+
+  // Final decision
+  const shouldBet = reasons.length === 0 && signalStrength >= (rules.minSignalStrength || 70);
+
+  return {
+    shouldBet,
+    signalStrength,
+    side: betSide,
+    edge: netEdge,
+    grossEdge,
+    winRate: adjustedWinRate,
+    rawWinRate: empirical.winRate,
+    marketImpliedProb,
+    marketPrice,
+    marketPriceCents,
+    pctFromStrike,
+    absDistance,
+    regime: regime.regime,
+    regimeMultiplier: regime.multiplier,
+    sampleSize: empirical.sampleSize,
+    bucket: empirical.bucket,
+    extrapolated: empirical.extrapolated,
+    withinDistanceWindow,
+    withinTimeWindow,
+    withinPriceWindow,
+    timeRemaining,
+    token,
+    reasons,
+    // For display
+    winProbability: adjustedWinRate.toFixed(1),
+    isRecommended: shouldBet
+  };
+}
+
+/**
+ * Build comprehensive empirical lookup tables from settlement data
+ * @param {Array} settlements - Array of settlement objects
+ * @returns {object} Complete empirical tables
+ */
+function buildEmpiricalLookupTables(settlements) {
+  if (!settlements || settlements.length < 100) {
+    console.log(`⚠️ Insufficient data for empirical tables: ${settlements?.length || 0} settlements`);
+    return null;
+  }
+
+  console.log(`📊 Building empirical tables from ${settlements.length} settlements...`);
+
+  const tables = JSON.parse(JSON.stringify(DEFAULT_EMPIRICAL_TABLES));
+  tables.sampleSize = settlements.length;
+  tables.lastUpdated = new Date().toISOString();
+
+  // Process settlements for distance analysis
+  const distances = settlements.map(s => ({
+    pctFromStrike: Math.abs((s.settlementPrice - s.strikePrice) / s.strikePrice * 100),
+    result: s.result,
+    token: s.token,
+    wasAboveStrike: s.settlementPrice > s.strikePrice,
+    wasBelowStrike: s.settlementPrice < s.strikePrice,
+    closeTime: s.closeTime
+  }));
+
+  // Build win rate by distance buckets
+  const distanceBuckets = [0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0];
+
+  for (const bucket of distanceBuckets) {
+    const withinBucket = distances.filter(d => d.pctFromStrike <= bucket);
+    if (withinBucket.length < 5) continue;
+
+    let favoredWins = 0;
+    for (const d of withinBucket) {
+      const yesFavored = d.wasAboveStrike;
+      const noFavored = d.wasBelowStrike;
+      const yesWon = d.result === 'yes';
+      const noWon = d.result === 'no';
+
+      if ((yesFavored && yesWon) || (noFavored && noWon)) {
+        favoredWins++;
+      }
+    }
+
+    const favoredWinRate = (favoredWins / withinBucket.length * 100);
+
+    tables.winRateByDistance[bucket] = {
+      count: withinBucket.length,
+      favoredWinRate: parseFloat(favoredWinRate.toFixed(2)),
+      surpriseRate: parseFloat((100 - favoredWinRate).toFixed(2))
+    };
+  }
+
+  // Build token-specific stats
+  const tokens = ['BTC', 'ETH', 'SOL'];
+  for (const token of tokens) {
+    const tokenSettlements = distances.filter(d => d.token === token);
+    if (tokenSettlements.length < 20) continue;
+
+    const tokenDistances = tokenSettlements.map(d => d.pctFromStrike);
+    const avgDistance = tokenDistances.reduce((a, b) => a + b, 0) / tokenDistances.length;
+    const variance = tokenDistances.reduce((a, b) => a + Math.pow(b - avgDistance, 2), 0) / tokenDistances.length;
+    const stdDev = Math.sqrt(variance);
+
+    const yesWins = tokenSettlements.filter(d => d.result === 'yes').length;
+    const yesWinRate = (yesWins / tokenSettlements.length * 100);
+    const noWinRate = 100 - yesWinRate;
+
+    tables.byToken[token] = {
+      ...tables.byToken[token],
+      sampleSize: tokenSettlements.length,
+      avgSettlementDistance: parseFloat(avgDistance.toFixed(4)),
+      settlementDistanceStdDev: parseFloat(stdDev.toFixed(4)),
+      yesWinRate: parseFloat(yesWinRate.toFixed(2)),
+      noWinRate: parseFloat(noWinRate.toFixed(2)),
+      noBias: parseFloat((noWinRate - yesWinRate).toFixed(2))
+    };
+
+    // Learn optimal entry windows from data
+    // Find distance range where favored side wins >= 65%
+    let optimalDistanceMin = 0.5;
+    let optimalDistanceMax = 3.0;
+
+    for (const bucket of distanceBuckets) {
+      const bucketData = tables.winRateByDistance[bucket];
+      if (bucketData && bucketData.favoredWinRate >= 65 && bucketData.count >= 20) {
+        optimalDistanceMin = Math.min(optimalDistanceMin, bucket);
+        break;
+      }
+    }
+
+    for (const bucket of [...distanceBuckets].reverse()) {
+      const bucketData = tables.winRateByDistance[bucket];
+      if (bucketData && bucketData.favoredWinRate >= 75 && bucketData.count >= 20) {
+        optimalDistanceMax = Math.max(optimalDistanceMax, bucket);
+        break;
+      }
+    }
+
+    tables.byToken[token].optimalEntryWindows = {
+      ...tables.byToken[token].optimalEntryWindows,
+      distanceMin: optimalDistanceMin,
+      distanceMax: Math.max(optimalDistanceMax, optimalDistanceMin + 1)
+    };
+  }
+
+  // Calculate volatility rankings
+  const tokenVolatilities = Object.entries(tables.byToken)
+    .map(([token, data]) => ({
+      token,
+      volatility: data.avgSettlementDistance || 0
+    }))
+    .sort((a, b) => a.volatility - b.volatility);
+
+  tokenVolatilities.forEach((item, index) => {
+    if (tables.byToken[item.token]) {
+      tables.byToken[item.token].volatilityRank = index + 1;
+    }
+  });
+
+  // Update global YES/NO bias
+  const globalYesWins = distances.filter(d => d.result === 'yes').length;
+  const globalYesRate = (globalYesWins / distances.length * 100);
+
+  tables.yesNoBias = {
+    global: {
+      yesWinRate: parseFloat(globalYesRate.toFixed(2)),
+      noWinRate: parseFloat((100 - globalYesRate).toFixed(2)),
+      noBias: parseFloat((100 - 2 * globalYesRate).toFixed(2)),
+      sampleSize: distances.length
+    }
+  };
+
+  // Set optimal selectivity rules based on data
+  // Find the threshold where we have consistent edge
+  let minWinRateForAuto = 62;
+  for (const bucket of distanceBuckets) {
+    const bucketData = tables.winRateByDistance[bucket];
+    if (bucketData && bucketData.favoredWinRate >= 62 && bucketData.count >= 50) {
+      minWinRateForAuto = Math.max(62, Math.min(68, Math.floor(bucketData.favoredWinRate - 3)));
+      break;
+    }
+  }
+
+  tables.selectivityRules = {
+    ...tables.selectivityRules,
+    minEmpiricalWinRate: minWinRateForAuto
+  };
+
+  tables.probabilityThresholds = {
+    autoMinProbability: minWinRateForAuto,
+    manualMinProbability: Math.max(55, minWinRateForAuto - 7)
+  };
+
+  // Calculate confidence based on sample size
+  tables.confidence = Math.min(0.99, settlements.length / 5000);
+
+  console.log(`✅ Built empirical tables:`);
+  console.log(`   Sample size: ${settlements.length}`);
+  console.log(`   Win rate buckets: ${Object.keys(tables.winRateByDistance).filter(k => tables.winRateByDistance[k].count > 0).length}`);
+  console.log(`   Min auto win rate: ${minWinRateForAuto}%`);
+  for (const token of tokens) {
+    const data = tables.byToken[token];
+    console.log(`   ${token}: ${data.sampleSize} samples, avg distance ${data.avgSettlementDistance?.toFixed(3)}%, NO bias ${data.noBias}%`);
+  }
+
+  return tables;
+}
+
+/**
+ * Record a bet for rate limiting tracking
+ * @param {string} token - Token that was bet on
+ */
+function recordEmpiricalBet(token) {
+  const now = Date.now();
+  empiricalBetTracking.recentBetsThisHour.push(now);
+
+  const currentCount = empiricalBetTracking.betsByToken.get(token) || 0;
+  empiricalBetTracking.betsByToken.set(token, currentCount + 1);
+
+  // Clean up old entries every 10 bets
+  if (empiricalBetTracking.recentBetsThisHour.length % 10 === 0) {
+    const oneHourAgo = now - 60 * 60 * 1000;
+    empiricalBetTracking.recentBetsThisHour = empiricalBetTracking.recentBetsThisHour
+      .filter(ts => ts > oneHourAgo);
+
+    // Reset token counts every hour
+    for (const [t, count] of empiricalBetTracking.betsByToken) {
+      if (count > 0) {
+        empiricalBetTracking.betsByToken.set(t, Math.max(0, count - 1));
+      }
+    }
+  }
+}
+
+// ============================================
+// BULK DATA COLLECTION & THRESHOLD LEARNING
+// ============================================
+
+/**
+ * Fetch bulk historical settlement data with cursor pagination
+ * @param {string} token - 'all', 'BTC', 'ETH', or 'SOL'
+ * @param {number} maxPages - Maximum pages to fetch per token (100 events per page)
+ * @param {object} userConfig - User configuration for API auth
+ * @returns {Array} Array of settlement objects
+ */
+async function fetchBulkHistoricalData(token = 'all', maxPages = 50, userConfig = null) {
+  const cfg = userConfig || config;
+  const tokens = token === 'all' ? ['BTC', 'ETH', 'SOL'] : [token.toUpperCase()];
+  const allSettlements = [];
+
+  for (const t of tokens) {
+    console.log(`📊 Fetching ${t} historical data...`);
+    const series = `KX${t}15M`;
+    const allEvents = [];
+    let cursor = null;
+    let page = 0;
+
+    // Paginate through all events for this token
+    while (page < maxPages) {
+      try {
+        const url = cursor
+          ? `/events?limit=100&series_ticker=${series}&status=closed&cursor=${cursor}`
+          : `/events?limit=100&series_ticker=${series}&status=closed`;
+
+        const response = await kalshiRequest('GET', url, null, cfg);
+
+        if (response.events && response.events.length > 0) {
+          allEvents.push(...response.events);
+        }
+
+        cursor = response.cursor;
+        page++;
+
+        console.log(`   Page ${page}: ${allEvents.length} events total`);
+
+        if (!cursor || !response.events || response.events.length === 0) break;
+        await sleep(500); // Rate limit protection
+      } catch (err) {
+        console.error(`   Error fetching page ${page} for ${t}:`, err.message);
+        break;
+      }
+    }
+
+    console.log(`   📋 Fetching market details for ${allEvents.length} ${t} events...`);
+
+    // For each event, fetch the market to get settlement data
+    let processedCount = 0;
+    for (const event of allEvents) {
+      try {
+        const marketData = await kalshiRequest('GET', `/markets?event_ticker=${event.event_ticker}`, null, cfg);
+        const market = marketData.markets?.[0];
+
+        if (market && market.floor_strike && market.expiration_value !== undefined) {
+          allSettlements.push({
+            ticker: market.ticker,
+            eventTicker: event.event_ticker,
+            token: t,
+            strikePrice: market.floor_strike,
+            settlementPrice: parseFloat(market.expiration_value),
+            result: market.result, // 'yes' or 'no'
+            closeTime: market.close_time,
+            volume: market.volume || 0
+          });
+        }
+
+        processedCount++;
+        if (processedCount % 50 === 0) {
+          console.log(`   Processed ${processedCount}/${allEvents.length} ${t} markets...`);
+        }
+
+        await sleep(100); // Rate limit between market fetches
+      } catch (err) {
+        // Skip individual market errors, continue with others
+        if (!err.message.includes('404')) {
+          console.error(`   Error fetching market for ${event.event_ticker}:`, err.message);
+        }
+      }
+    }
+
+    const tokenSettlements = allSettlements.filter(s => s.token === t).length;
+    console.log(`   ✅ ${t}: ${tokenSettlements} settlements with valid data`);
+  }
+
+  return allSettlements;
+}
+
+/**
+ * Analyze settlement data to find optimal thresholds
+ * @param {Array} settlements - Array of settlement objects
+ * @returns {object} Analysis results with optimal thresholds
+ */
+function analyzeSettlementData(settlements) {
+  if (!settlements || settlements.length === 0) {
+    return { error: 'No settlement data to analyze' };
+  }
+
+  // Calculate distance from strike for each settlement
+  const distances = settlements.map(s => ({
+    pctFromStrike: Math.abs((s.settlementPrice - s.strikePrice) / s.strikePrice * 100),
+    result: s.result,
+    token: s.token,
+    ticker: s.ticker,
+    // Add direction info for YES/NO bias analysis
+    wasAboveStrike: s.settlementPrice > s.strikePrice,
+    wasBelowStrike: s.settlementPrice < s.strikePrice
+  }));
+
+  // Distribution analysis at various thresholds
+  const coinFlipThresholds = [0.05, 0.10, 0.12, 0.15, 0.18, 0.20, 0.25, 0.30, 0.35, 0.40];
+  const analysis = {};
+
+  for (const threshold of coinFlipThresholds) {
+    const withinThreshold = distances.filter(d => d.pctFromStrike < threshold);
+    const yesWins = withinThreshold.filter(d => d.result === 'yes').length;
+    const noWins = withinThreshold.filter(d => d.result === 'no').length;
+
+    analysis[threshold] = {
+      count: withinThreshold.length,
+      percent: withinThreshold.length > 0
+        ? (withinThreshold.length / distances.length * 100).toFixed(1)
+        : '0.0',
+      yesWins,
+      noWins,
+      // Win rate when within this threshold (should be ~50% for true coin flips)
+      yesWinRate: withinThreshold.length > 0
+        ? (yesWins / withinThreshold.length * 100).toFixed(1)
+        : '0.0'
+    };
+  }
+
+  // Find optimal threshold: where win rate is closest to 50% with meaningful sample
+  let optimalThreshold = 0.15; // Default
+  let closestTo50 = 100;
+
+  for (const [threshold, data] of Object.entries(analysis)) {
+    const yesRate = parseFloat(data.yesWinRate);
+    const diff = Math.abs(yesRate - 50);
+    // Require at least 10 samples and win rate between 45-55% (true coin flip range)
+    if (data.count >= 10 && diff < closestTo50 && yesRate >= 45 && yesRate <= 55) {
+      closestTo50 = diff;
+      optimalThreshold = parseFloat(threshold);
+    }
+  }
+
+  // Group analysis by token
+  const byToken = {};
+  const tokens = [...new Set(distances.map(d => d.token))];
+
+  for (const token of tokens) {
+    const tokenDistances = distances.filter(d => d.token === token);
+    const tokenAnalysis = {};
+
+    for (const threshold of coinFlipThresholds) {
+      const withinThreshold = tokenDistances.filter(d => d.pctFromStrike < threshold);
+      const yesWins = withinThreshold.filter(d => d.result === 'yes').length;
+
+      tokenAnalysis[threshold] = {
+        count: withinThreshold.length,
+        percent: tokenDistances.length > 0
+          ? (withinThreshold.length / tokenDistances.length * 100).toFixed(1)
+          : '0.0',
+        yesWinRate: withinThreshold.length > 0
+          ? (yesWins / withinThreshold.length * 100).toFixed(1)
+          : '0.0'
+      };
+    }
+
+    // Find token-specific optimal threshold
+    let tokenOptimal = 0.15;
+    let tokenClosest = 100;
+
+    for (const [threshold, data] of Object.entries(tokenAnalysis)) {
+      const yesRate = parseFloat(data.yesWinRate);
+      const diff = Math.abs(yesRate - 50);
+      if (data.count >= 5 && diff < tokenClosest && yesRate >= 45 && yesRate <= 55) {
+        tokenClosest = diff;
+        tokenOptimal = parseFloat(threshold);
+      }
+    }
+
+    // Calculate token-specific YES/NO win rates
+    const tokenYesWins = tokenDistances.filter(d => d.result === 'yes').length;
+    const tokenNoWins = tokenDistances.filter(d => d.result === 'no').length;
+    const tokenYesWinRate = tokenDistances.length > 0 ? (tokenYesWins / tokenDistances.length * 100) : 50;
+    const tokenNoWinRate = tokenDistances.length > 0 ? (tokenNoWins / tokenDistances.length * 100) : 50;
+
+    // Calculate token volatility (average distance and std dev)
+    const tokenDistanceValues = tokenDistances.map(d => d.pctFromStrike);
+    const tokenAvgDistance = tokenDistanceValues.length > 0
+      ? tokenDistanceValues.reduce((a, b) => a + b, 0) / tokenDistanceValues.length
+      : 0;
+    const tokenDistanceVariance = tokenDistanceValues.length > 0
+      ? tokenDistanceValues.reduce((sum, d) => sum + Math.pow(d - tokenAvgDistance, 2), 0) / tokenDistanceValues.length
+      : 0;
+    const tokenDistanceStdDev = Math.sqrt(tokenDistanceVariance);
+
+    byToken[token] = {
+      sampleSize: tokenDistances.length,
+      analysis: tokenAnalysis,
+      optimalThreshold: tokenOptimal,
+      coinFlipPct: tokenAnalysis[tokenOptimal]?.percent || '0.0',
+      // New metrics for data-driven improvements
+      avgSettlementDistance: parseFloat(tokenAvgDistance.toFixed(4)),
+      settlementDistanceStdDev: parseFloat(tokenDistanceStdDev.toFixed(4)),
+      yesWinRate: parseFloat(tokenYesWinRate.toFixed(2)),
+      noWinRate: parseFloat(tokenNoWinRate.toFixed(2)),
+      noBias: parseFloat((tokenNoWinRate - tokenYesWinRate).toFixed(2)) // Positive = NO wins more often
+    };
+  }
+
+  // Calculate overall statistics
+  const allDistances = distances.map(d => d.pctFromStrike);
+  allDistances.sort((a, b) => a - b);
+
+  const stats = {
+    min: allDistances[0]?.toFixed(4) || 0,
+    max: allDistances[allDistances.length - 1]?.toFixed(4) || 0,
+    median: allDistances[Math.floor(allDistances.length / 2)]?.toFixed(4) || 0,
+    mean: (allDistances.reduce((a, b) => a + b, 0) / allDistances.length).toFixed(4),
+    p10: allDistances[Math.floor(allDistances.length * 0.1)]?.toFixed(4) || 0,
+    p25: allDistances[Math.floor(allDistances.length * 0.25)]?.toFixed(4) || 0,
+    p75: allDistances[Math.floor(allDistances.length * 0.75)]?.toFixed(4) || 0,
+    p90: allDistances[Math.floor(allDistances.length * 0.9)]?.toFixed(4) || 0
+  };
+
+  // ===== NEW: YES/NO BIAS ANALYSIS =====
+  // Calculate global YES/NO win rates
+  const globalYesWins = distances.filter(d => d.result === 'yes').length;
+  const globalNoWins = distances.filter(d => d.result === 'no').length;
+  const globalYesWinRate = distances.length > 0 ? (globalYesWins / distances.length * 100) : 50;
+  const globalNoWinRate = distances.length > 0 ? (globalNoWins / distances.length * 100) : 50;
+  const globalNoBias = globalNoWinRate - globalYesWinRate; // Positive = NO wins more
+
+  const yesNoBias = {
+    global: {
+      yesWinRate: parseFloat(globalYesWinRate.toFixed(2)),
+      noWinRate: parseFloat(globalNoWinRate.toFixed(2)),
+      noBias: parseFloat(globalNoBias.toFixed(2)),
+      sampleSize: distances.length
+    }
+  };
+
+  // ===== NEW: WIN RATE BY DISTANCE BUCKETS =====
+  // Analyze empirical win rates at different distance thresholds
+  const distanceBuckets = [0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0];
+  const winRateByDistance = {};
+
+  for (const bucket of distanceBuckets) {
+    // Find settlements where price was within this distance from strike
+    const withinBucket = distances.filter(d => d.pctFromStrike <= bucket);
+    if (withinBucket.length < 5) continue; // Need minimum sample size
+
+    // For each settlement, determine if the "favored side" won
+    // Favored side = the direction the price was when the bet would have been placed
+    // If price > strike, YES is favored; if price < strike, NO is favored
+    let favoredWins = 0;
+    for (const d of withinBucket) {
+      // If price was above strike (YES favored) and YES won, or
+      // If price was below strike (NO favored) and NO won
+      const yesFavored = d.wasAboveStrike;
+      const noFavored = d.wasBelowStrike;
+      const yesWon = d.result === 'yes';
+      const noWon = d.result === 'no';
+
+      if ((yesFavored && yesWon) || (noFavored && noWon)) {
+        favoredWins++;
+      }
+    }
+
+    const favoredWinRate = (favoredWins / withinBucket.length * 100);
+
+    winRateByDistance[bucket] = {
+      count: withinBucket.length,
+      favoredSideWinRate: parseFloat(favoredWinRate.toFixed(2)),
+      // Also track the surprise rate (unfavored side wins)
+      surpriseRate: parseFloat((100 - favoredWinRate).toFixed(2))
+    };
+  }
+
+  // ===== NEW: PROBABILITY THRESHOLD ANALYSIS =====
+  // Analyze what minimum probability leads to profitability
+  // Use distance buckets to infer approximate probability
+  // Distance of ~0.5% -> roughly 70% win chance for favored side based on historical data
+  // Distance of ~1.0% -> roughly 80% win chance, etc.
+
+  // Find the distance threshold where favored side wins >= 60% (break-even for betting)
+  let autoMinDistance = 0.5; // Default: 0.5% distance
+  for (const bucket of distanceBuckets) {
+    const data = winRateByDistance[bucket];
+    if (data && data.favoredSideWinRate >= 60 && data.count >= 20) {
+      autoMinDistance = bucket;
+      break;
+    }
+  }
+
+  // Convert distance to approximate probability for threshold
+  // Higher distance = higher win rate for favored side
+  const probabilityThresholds = {
+    autoMinProbability: 60, // Default, will be updated based on analysis
+    manualMinProbability: 55, // Can be more aggressive manually
+    minDistanceForAuto: autoMinDistance
+  };
+
+  // Calculate volatility rankings for tokens
+  const tokenVolatilities = Object.entries(byToken).map(([token, data]) => ({
+    token,
+    volatility: data.avgSettlementDistance || 0
+  })).sort((a, b) => a.volatility - b.volatility);
+
+  // Assign volatility ranks (1=lowest/safest, 3=highest/riskiest)
+  tokenVolatilities.forEach((item, index) => {
+    if (byToken[item.token]) {
+      byToken[item.token].volatilityRank = index + 1;
+    }
+  });
+
+  return {
+    totalSamples: settlements.length,
+    analysis,
+    optimalThreshold,
+    byToken,
+    distanceStats: stats,
+    confidence: Math.min(0.99, settlements.length / 5000), // Confidence grows with sample size
+    // New data-driven analysis results
+    yesNoBias,
+    winRateByDistance,
+    probabilityThresholds
+  };
+}
+
+/**
+ * Update learned parameters from historical data
+ * NOW BUILDS COMPREHENSIVE EMPIRICAL LOOKUP TABLES
+ * This is the main learning function
+ */
+async function updateLearnedParameters(userConfig = null) {
+  console.log('📚 Starting EMPIRICAL TABLES build from historical data...');
+
+  try {
+    const settlements = await fetchBulkHistoricalData('all', 50, userConfig);
+
+    if (settlements.length < 100) {
+      console.log(`⚠️ Insufficient data for learning: only ${settlements.length} settlements`);
+      return { success: false, error: 'Insufficient data', sampleSize: settlements.length };
+    }
+
+    // Build comprehensive empirical tables using the new function
+    const empiricalTables = buildEmpiricalLookupTables(settlements);
+
+    if (!empiricalTables) {
+      console.log('⚠️ Failed to build empirical tables');
+      return { success: false, error: 'Failed to build empirical tables' };
+    }
+
+    // Also run legacy analysis for backward compatibility
+    const analysis = analyzeSettlementData(settlements);
+
+    // Merge empirical tables into learnedParams
+    learnedParams = {
+      ...learnedParams,
+      ...empiricalTables,
+      // Keep legacy thresholds for compatibility
+      thresholds: {
+        ...learnedParams.thresholds,
+        coinFlipExit: analysis.optimalThreshold
+      }
+    };
+
+    // Merge token data (empirical tables + legacy analysis)
+    for (const [token, data] of Object.entries(analysis.byToken)) {
+      learnedParams.byToken[token] = {
+        ...learnedParams.byToken[token],
+        coinFlipThreshold: data.optimalThreshold,
+        coinFlipPct: parseFloat(data.coinFlipPct) || 0
+      };
+    }
+
+    // Save to disk
+    saveLearnedParams();
+
+    console.log(`\n✅ EMPIRICAL TABLES BUILD COMPLETE!`);
+    console.log(`   Sample size: ${settlements.length}`);
+    console.log(`   Win rate buckets: ${Object.keys(empiricalTables.winRateByDistance).filter(k => empiricalTables.winRateByDistance[k].count > 0).length}`);
+    console.log(`   Confidence: ${(empiricalTables.confidence * 100).toFixed(0)}%`);
+    console.log(`\n📊 Selectivity Rules:`);
+    console.log(`   Min signal strength: ${empiricalTables.selectivityRules.minSignalStrength}`);
+    console.log(`   Min empirical win rate: ${empiricalTables.selectivityRules.minEmpiricalWinRate}%`);
+    console.log(`   Min edge after fees: ${empiricalTables.selectivityRules.minEdgeAfterFees}%`);
+    console.log(`   Max bets per hour: ${empiricalTables.selectivityRules.maxBetsPerHour}`);
+    console.log(`\n📈 Win Rate by Distance (favored side):`);
+    for (const [bucket, data] of Object.entries(empiricalTables.winRateByDistance)) {
+      if (data.count > 0) {
+        console.log(`   ${bucket}%: ${data.favoredWinRate}% win rate (n=${data.count})`);
+      }
+    }
+    console.log(`\n💰 Token Analysis:`);
+    for (const [token, data] of Object.entries(learnedParams.byToken)) {
+      console.log(`   ${token}: ${data.sampleSize} samples | avg dist ${data.avgSettlementDistance?.toFixed(3)}% | NO bias ${data.noBias}% | vol rank ${data.volatilityRank}`);
+      if (data.optimalEntryWindows) {
+        console.log(`      Entry window: distance [${data.optimalEntryWindows.distanceMin}-${data.optimalEntryWindows.distanceMax}%]`);
+      }
+    }
+
+    return {
+      success: true,
+      sampleSize: settlements.length,
+      empiricalTables: {
+        winRateByDistance: empiricalTables.winRateByDistance,
+        selectivityRules: empiricalTables.selectivityRules,
+        volatilityRegimes: empiricalTables.volatilityRegimes
+      },
+      byToken: learnedParams.byToken,
+      confidence: empiricalTables.confidence,
+      yesNoBias: learnedParams.yesNoBias,
+      probabilityThresholds: learnedParams.probabilityThresholds
+    };
+  } catch (err) {
+    console.error('❌ Learning failed:', err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Get the coin-flip threshold for a specific token
+ * Uses learned params if available, falls back to defaults
+ */
+function getCoinFlipThreshold(token) {
+  // Try token-specific threshold first
+  if (learnedParams.byToken[token]?.coinFlipThreshold && learnedParams.byToken[token].sampleSize >= 100) {
+    return learnedParams.byToken[token].coinFlipThreshold;
+  }
+  // Fall back to global learned threshold
+  if (learnedParams.sampleSize >= 100) {
+    return learnedParams.thresholds.coinFlipExit;
+  }
+  // Default threshold
+  return 0.15;
+}
+
+/**
+ * Get the NO side bias bonus for a specific token
+ * Uses learned YES/NO win rates to determine how much to favor NO bets
+ * @param {string} token - Token symbol (BTC, ETH, SOL)
+ * @returns {number} Bonus points to add for NO bets (0-10 scale)
+ */
+function getNoBiasBonus(token) {
+  // Try token-specific NO bias first
+  const tokenData = learnedParams.byToken[token];
+  if (tokenData && tokenData.sampleSize >= 100 && typeof tokenData.noBias === 'number') {
+    // Convert noBias percentage to bonus points
+    // noBias of 6% (NO wins 53% vs YES 47%) = 3 bonus points (original default)
+    // Scale: every 2% bias = 1 bonus point, capped at 0-10
+    const bonus = Math.max(0, Math.min(10, tokenData.noBias / 2));
+    return parseFloat(bonus.toFixed(1));
+  }
+
+  // Fall back to global NO bias
+  const globalBias = learnedParams.yesNoBias?.global;
+  if (globalBias && globalBias.sampleSize >= 100 && typeof globalBias.noBias === 'number') {
+    const bonus = Math.max(0, Math.min(10, globalBias.noBias / 2));
+    return parseFloat(bonus.toFixed(1));
+  }
+
+  // Default: 3 points (original hardcoded value)
+  return 3;
+}
+
+/**
+ * Get empirical win rate for favored side at a given distance from strike
+ * Uses historical data to estimate probability instead of theoretical models
+ * @param {number} pctFromStrike - Percentage distance from strike price
+ * @returns {number|null} Win rate percentage (50-100), or null if insufficient data
+ */
+function getEmpiricalWinRate(pctFromStrike) {
+  const winRateData = learnedParams.winRateByDistance;
+  if (!winRateData || Object.keys(winRateData).length === 0) {
+    return null; // No learned data, use statistical model
+  }
+
+  // Find the closest bucket that is >= pctFromStrike
+  const buckets = Object.keys(winRateData).map(Number).sort((a, b) => a - b);
+
+  for (const bucket of buckets) {
+    if (pctFromStrike <= bucket) {
+      const data = winRateData[bucket];
+      if (data && data.count >= 20) {
+        return data.favoredSideWinRate;
+      }
+    }
+  }
+
+  // If distance is larger than all buckets, use the largest bucket
+  const lastBucket = buckets[buckets.length - 1];
+  if (lastBucket && winRateData[lastBucket]?.count >= 20) {
+    // For larger distances, extrapolate slightly higher win rate
+    const baseRate = winRateData[lastBucket].favoredSideWinRate;
+    const extrapolation = Math.min(5, (pctFromStrike - lastBucket) * 2);
+    return Math.min(99, baseRate + extrapolation);
+  }
+
+  return null; // Insufficient data
+}
+
+/**
+ * Get token volatility factor for adjusting thresholds
+ * Lower volatility = more predictable = can be more aggressive
+ * @param {string} token - Token symbol (BTC, ETH, SOL)
+ * @returns {number} Volatility factor (0.8 to 1.2, where 1.0 is baseline)
+ */
+function getTokenVolatilityFactor(token) {
+  const tokenData = learnedParams.byToken[token];
+  if (!tokenData || tokenData.sampleSize < 100) {
+    return 1.0; // Default baseline
+  }
+
+  // Use volatility rank to determine factor
+  // Rank 1 (lowest volatility) = 0.9 (can be more aggressive)
+  // Rank 2 (medium volatility) = 1.0 (baseline)
+  // Rank 3 (highest volatility) = 1.1 (be more conservative)
+  const rank = tokenData.volatilityRank || 2;
+  const factors = { 1: 0.9, 2: 1.0, 3: 1.1 };
+  return factors[rank] || 1.0;
+}
+
+/**
+ * Get minimum auto-bet probability threshold
+ * Uses learned data to determine the optimal minimum probability
+ * @returns {number} Minimum probability percentage for auto-betting (55-70)
+ */
+function getMinAutoWinProbability() {
+  const thresholds = learnedParams.probabilityThresholds;
+  if (thresholds && typeof thresholds.autoMinProbability === 'number' && learnedParams.sampleSize >= 100) {
+    // Clamp to reasonable range
+    return Math.max(55, Math.min(70, thresholds.autoMinProbability));
+  }
+  // Default: 60% (original hardcoded value)
+  return 60;
+}
+
 // Fetch and analyze historical settled crypto 15-minute markets
 app.get('/api/historical/crypto-settlements', async (req, res) => {
   try {
@@ -5955,6 +7321,134 @@ app.get('/api/historical/volatility-stats', (req, res) => {
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
+});
+
+// ============================================
+// BULK SETTLEMENT DATA & THRESHOLD LEARNING API
+// ============================================
+
+// Fetch bulk historical settlements with pagination
+// GET /api/historical/bulk-settlements?token=all&maxPages=10
+app.get('/api/historical/bulk-settlements', async (req, res) => {
+  try {
+    const { token = 'all', maxPages = 10 } = req.query;
+    const userConfig = req.userState?.config || config;
+
+    console.log(`📊 Bulk settlement fetch requested: token=${token}, maxPages=${maxPages}`);
+
+    const settlements = await fetchBulkHistoricalData(
+      token,
+      parseInt(maxPages, 10),
+      userConfig
+    );
+
+    res.json({
+      success: true,
+      count: settlements.length,
+      byToken: {
+        BTC: settlements.filter(s => s.token === 'BTC').length,
+        ETH: settlements.filter(s => s.token === 'ETH').length,
+        SOL: settlements.filter(s => s.token === 'SOL').length
+      },
+      settlements: settlements.slice(0, 100), // Return first 100 for preview
+      message: settlements.length > 100
+        ? `Showing first 100 of ${settlements.length} settlements`
+        : `Retrieved ${settlements.length} settlements`
+    });
+  } catch (error) {
+    console.error('Bulk settlements error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Run statistical analysis on settlement data
+// GET /api/historical/analyze?token=all&maxPages=20
+app.get('/api/historical/analyze', async (req, res) => {
+  try {
+    const { token = 'all', maxPages = 20 } = req.query;
+    const userConfig = req.userState?.config || config;
+
+    console.log(`📈 Running settlement analysis: token=${token}, maxPages=${maxPages}`);
+
+    const settlements = await fetchBulkHistoricalData(
+      token,
+      parseInt(maxPages, 10),
+      userConfig
+    );
+
+    if (settlements.length === 0) {
+      return res.json({
+        success: false,
+        error: 'No settlement data available'
+      });
+    }
+
+    const analysis = analyzeSettlementData(settlements);
+
+    res.json({
+      success: true,
+      ...analysis,
+      recommendations: {
+        globalThreshold: `Use ${analysis.optimalThreshold}% as coin-flip exit threshold`,
+        perToken: Object.entries(analysis.byToken).map(([token, data]) => ({
+          token,
+          threshold: data.optimalThreshold,
+          sampleSize: data.sampleSize,
+          recommendation: `${token}: Use ${data.optimalThreshold}% threshold (${data.coinFlipPct}% of markets within this range)`
+        }))
+      }
+    });
+  } catch (error) {
+    console.error('Analysis error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Trigger parameter learning from historical data
+// POST /api/historical/learn
+app.post('/api/historical/learn', async (req, res) => {
+  try {
+    const userConfig = req.userState?.config || config;
+
+    console.log('📚 Manual learning triggered via API');
+
+    const result = await updateLearnedParameters(userConfig);
+
+    if (result.success) {
+      res.json({
+        success: true,
+        message: 'Learning complete! Thresholds updated.',
+        ...result,
+        currentParams: learnedParams
+      });
+    } else {
+      res.json({
+        success: false,
+        error: result.error || 'Learning failed',
+        sampleSize: result.sampleSize || 0
+      });
+    }
+  } catch (error) {
+    console.error('Learning error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// View current learned parameters
+// GET /api/historical/params
+app.get('/api/historical/params', (req, res) => {
+  res.json({
+    success: true,
+    params: learnedParams,
+    isStale: isLearningDataStale(),
+    defaults: DEFAULT_LEARNED_PARAMS,
+    thresholdsInUse: {
+      BTC: getCoinFlipThreshold('BTC'),
+      ETH: getCoinFlipThreshold('ETH'),
+      SOL: getCoinFlipThreshold('SOL'),
+      global: learnedParams.thresholds.coinFlipExit
+    }
+  });
 });
 
 // ============================================
@@ -6947,6 +8441,45 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
       .then(() => console.log('🔄 Keep-alive ping successful'))
       .catch(() => {}); // Silently ignore errors
   }, 10 * 60 * 1000);
+
+  // ============================================
+  // THRESHOLD LEARNING SCHEDULE
+  // ============================================
+  // Run learning on startup if data is stale, then daily thereafter
+
+  // Initial learning check (delayed 30 seconds to let server stabilize)
+  setTimeout(async () => {
+    if (isLearningDataStale()) {
+      console.log('📚 Learned thresholds are stale, triggering learning update...');
+      try {
+        await updateLearnedParameters();
+      } catch (err) {
+        console.log(`⚠️ Initial learning failed: ${err.message}`);
+      }
+    } else {
+      console.log(`📚 Learned thresholds are current (last updated: ${learnedParams.lastUpdated})`);
+      console.log(`   Global threshold: ${learnedParams.thresholds.coinFlipExit}%`);
+      for (const [token, data] of Object.entries(learnedParams.byToken)) {
+        if (data.sampleSize > 0) {
+          console.log(`   ${token}: ${data.coinFlipThreshold}% (${data.sampleSize} samples)`);
+        }
+      }
+    }
+  }, 30000);
+
+  // Schedule daily learning updates (run at ~4 AM server time to minimize impact)
+  setInterval(async () => {
+    const hour = new Date().getHours();
+    // Only run between 4-5 AM to minimize impact on trading
+    if (hour === 4) {
+      console.log('📚 Running scheduled daily threshold learning...');
+      try {
+        await updateLearnedParameters();
+      } catch (err) {
+        console.log(`⚠️ Scheduled learning failed: ${err.message}`);
+      }
+    }
+  }, 60 * 60 * 1000); // Check every hour
 });
 
 server.on('error', (err) => {
