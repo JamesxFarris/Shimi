@@ -2829,7 +2829,7 @@ body {
   grid-column: span 2;
 }
 
-/* Feature Stats (Swing Trade, Take-Profit) */
+/* Feature Stats (Limit Orders) */
 .mode-details {
   display: flex;
   flex-wrap: wrap;
@@ -2859,7 +2859,7 @@ body {
   color: var(--neon-cyan);
 }
 
-/* Feature Toggle Styles (Swing Trade, Take-Profit) */
+/* Feature Toggle Styles */
 .feature-toggle {
   display: flex;
   align-items: center;

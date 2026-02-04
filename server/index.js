@@ -94,17 +94,6 @@ const DEFAULT_CONFIG = {
       critical: 80               // At this: take any profit > 3%
     }
   },
-  // Swing Trade Mode: DISABLED - empirical data shows best results at 40-75 cent prices
-  // Low-priced bets have higher variance and the exit logic has issues
-  swingTradeMode: {
-    enabled: false,              // DISABLED - use safe 40¢+ prices only
-    minPriceCents: 20,           // (unused when disabled)
-    maxPriceCents: 50,           // (unused when disabled)
-    targetProfitPercent: 25,     // (unused when disabled)
-    stopLossPercent: -40,        // (unused when disabled)
-    requireMomentum: true,       // (unused when disabled)
-    maxPositionsPerToken: 2      // (unused when disabled)
-  },
   // Limit Order Settings: Automatic stop-loss and take-profit via Kalshi limit orders
   // These are placed immediately after purchase - Kalshi handles execution
   limitOrderSettings: {
@@ -3157,7 +3146,7 @@ function calculateTakeProfitUrgency(position, market, momentum, profitPercent) {
  */
 function calculateSmartStopLoss(position, market, profitPercent, userConfig) {
   const cfg = userConfig || config;
-  const defaultStopLoss = cfg.swingTradeMode?.stopLossPercent || -40;
+  const defaultStopLoss = cfg.limitOrderSettings?.stopLoss?.threshold || -40;
 
   // Need market data for smart decisions
   if (!market || !market.close_time) {
@@ -8061,65 +8050,6 @@ app.post('/api/momentum/settings', (req, res) => {
     success: true,
     message: 'Momentum settings updated',
     settings: userConfig.momentumSettings
-  });
-});
-
-// ============================================
-// SWING TRADE MODE API
-// ============================================
-
-// Get swing trade settings
-app.get('/api/swing-trade/settings', (req, res) => {
-  const userConfig = req.userState?.config || config;
-  res.json({
-    success: true,
-    settings: userConfig.swingTradeMode || {}
-  });
-});
-
-// Update swing trade settings
-app.post('/api/swing-trade/settings', (req, res) => {
-  if (!req.userId) {
-    return res.status(401).json({ success: false, error: 'Please login first' });
-  }
-
-  const userConfig = req.userState.config;
-  const updates = req.body;
-
-  userConfig.swingTradeMode = {
-    ...userConfig.swingTradeMode,
-    ...updates
-  };
-
-  saveUserState(req.userId);
-
-  res.json({
-    success: true,
-    message: 'Swing trade settings updated',
-    settings: userConfig.swingTradeMode
-  });
-});
-
-// Quick toggle for swing trade mode
-app.post('/api/swing-trade/toggle', (req, res) => {
-  if (!req.userId) {
-    return res.status(401).json({ success: false, error: 'Please login first' });
-  }
-
-  const userConfig = req.userState.config;
-  const { enabled } = req.body;
-
-  if (!userConfig.swingTradeMode) {
-    userConfig.swingTradeMode = {};
-  }
-
-  userConfig.swingTradeMode.enabled = enabled === true;
-  saveUserState(req.userId);
-
-  res.json({
-    success: true,
-    message: `Swing trade mode ${enabled ? 'ENABLED' : 'DISABLED'}`,
-    enabled: userConfig.swingTradeMode.enabled
   });
 });
 

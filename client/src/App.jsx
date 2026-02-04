@@ -572,13 +572,6 @@ function App() {
     maxBetsPerMarket: 3,
     minTimeBetweenBets: 60000
   })
-  const [swingTradeMode, setSwingTradeMode] = useState({
-    enabled: true,  // ENABLED by default
-    minPriceCents: 20,
-    maxPriceCents: 50,
-    targetProfitPercent: 25,
-    requireMomentum: true
-  })
   const [takeProfitSettings, setTakeProfitSettings] = useState({
     enabled: true,
     autoExecute: true,
@@ -773,7 +766,6 @@ function App() {
     fetchPortfolio()
     fetchPerformance()  // Fetch performance stats on load
     fetchAutoBetStatus()  // Get current auto-bet state
-    fetchSwingTradeSettings()  // Get swing trade settings
     fetchTakeProfitSettings()  // Get take-profit settings
     fetchLimitOrderSettings()  // Get limit order settings (stop-loss/take-profit via Kalshi)
     fetchRiskSettings()     // Get saved risk settings
@@ -958,37 +950,6 @@ function App() {
     }
   }
 
-
-  // Fetch swing trade settings
-  const fetchSwingTradeSettings = async () => {
-    try {
-      const res = await authFetch(`${API_BASE}/api/swing-trade/settings`)
-      const data = await res.json()
-      if (data.success && data.settings) {
-        setSwingTradeMode(data.settings)
-      }
-    } catch (err) {
-      console.error('Error fetching swing trade settings:', err)
-    }
-  }
-
-  // Toggle swing trade mode
-  const toggleSwingTradeMode = async () => {
-    const newEnabled = !swingTradeMode.enabled
-    setSwingTradeMode(prev => ({ ...prev, enabled: newEnabled }))
-    try {
-      const res = await authFetch(`${API_BASE}/api/swing-trade/toggle`, {
-        method: 'POST',
-        body: JSON.stringify({ enabled: newEnabled })
-      })
-      const data = await res.json()
-      if (data.success) {
-        setSwingTradeMode(prev => ({ ...prev, enabled: data.enabled }))
-      }
-    } catch (err) {
-      console.error('Error toggling swing trade mode:', err)
-    }
-  }
 
   // Fetch take-profit settings
   const fetchTakeProfitSettings = async () => {
@@ -2070,64 +2031,6 @@ function App() {
                   <button className={`save-settings-btn ${settingsSaved ? 'saved' : ''}`} onClick={saveScaleInSettings}>
                     {settingsSaved ? '✓ Saved' : 'Save Scale-In Settings'}
                   </button>
-                </div>
-
-                {/* Swing Trade & Take-Profit Settings */}
-                <div className="settings-card">
-                  <h3 className="settings-card-title">Smart Trading Features</h3>
-                  <p className="settings-description">
-                    Buy low & sell high with swing trades, auto-lock profits when optimal.
-                  </p>
-
-                  {/* Swing Trade Toggle */}
-                  <div className="feature-toggle">
-                    <div className="feature-info">
-                      <span className="feature-icon">🔄</span>
-                      <div className="feature-text">
-                        <span className="feature-name">Swing Trade Mode</span>
-                        <span className="feature-desc">Buy {swingTradeMode.minPriceCents}¢-{swingTradeMode.maxPriceCents}¢ contracts, sell on profit</span>
-                      </div>
-                    </div>
-                    <button
-                      className={`toggle-btn ${swingTradeMode.enabled ? 'active' : ''}`}
-                      onClick={toggleSwingTradeMode}
-                    >
-                      {swingTradeMode.enabled ? 'ON' : 'OFF'}
-                    </button>
-                  </div>
-
-                  {/* Take-Profit Toggle */}
-                  <div className="feature-toggle">
-                    <div className="feature-info">
-                      <span className="feature-icon">💰</span>
-                      <div className="feature-text">
-                        <span className="feature-name">Auto Take-Profit</span>
-                        <span className="feature-desc">Lock in gains at {takeProfitSettings.minProfitPercent}%+ profit</span>
-                      </div>
-                    </div>
-                    <button
-                      className={`toggle-btn ${takeProfitSettings.enabled ? 'active' : ''}`}
-                      onClick={toggleTakeProfit}
-                    >
-                      {takeProfitSettings.enabled ? 'ON' : 'OFF'}
-                    </button>
-                  </div>
-
-                  {/* Feature Stats */}
-                  <div className="mode-details" style={{ marginTop: '12px' }}>
-                    <div className="mode-stat">
-                      <span className="stat-label">Swing Range:</span>
-                      <span className="stat-value">{swingTradeMode.minPriceCents}¢ - {swingTradeMode.maxPriceCents}¢</span>
-                    </div>
-                    <div className="mode-stat">
-                      <span className="stat-label">Target Profit:</span>
-                      <span className="stat-value">{swingTradeMode.targetProfitPercent}%</span>
-                    </div>
-                    <div className="mode-stat">
-                      <span className="stat-label">Requires Momentum:</span>
-                      <span className="stat-value">{swingTradeMode.requireMomentum ? '✓ Yes' : '✗ No'}</span>
-                    </div>
-                  </div>
                 </div>
 
                 {/* Limit Order Settings - Stop-Loss & Take-Profit via Kalshi */}
