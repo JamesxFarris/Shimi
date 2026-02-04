@@ -7,6 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { parseStringPromise } from 'xml2js';
 import * as auth from './auth.js';
+import { getKalshiWebSocket } from './kalshiWebSocket.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -68,6 +69,49 @@ const DEFAULT_CONFIG = {
     minDistanceFromStrike: 0.05, // Aggressive: 0.05% (vs conservative 0.10%)
     allowNightTrading: true,     // Aggressive: allow night trading
     minConfidenceScore: 1        // Aggressive: score >= 1 (vs conservative >= 2)
+  },
+  // Liquidity settings: filter out illiquid markets with wide spreads
+  liquiditySettings: {
+    enabled: true,
+    minContracts: 10,            // Minimum contracts at best price
+    maxSpreadCents: 8,           // Maximum bid-ask spread in cents
+    spreadPenaltyEnabled: true   // Subtract half-spread from edge calculation
+  },
+  // Momentum confirmation: use candlestick data to confirm price direction
+  momentumSettings: {
+    enabled: true,
+    alignmentBonus: 2,           // +2% edge bonus if momentum aligns with bet
+    oppositionPenalty: -3,       // -3% edge penalty if momentum opposes bet
+    lookbackCandles: 5,          // Number of candles to analyze
+    volumeWeighted: true         // Weight by volume
+  },
+  // Take-profit settings: exit positions early when favorable
+  // SMART MODE: Uses urgency scoring to decide when to lock in gains
+  takeProfitSettings: {
+    enabled: true,               // ENABLED by default - solidify gains!
+    autoExecute: true,           // Auto-execute when conditions are optimal
+    minProfitPercent: 10,        // Base minimum (lowered by urgency score)
+    confidenceFactor: 0.85,      // Model uncertainty discount
+    logOnly: false,              // Actually execute (set true to test first)
+    scanIntervalMs: 15000,       // Check positions every 15 seconds (faster reaction)
+    // Smart exit thresholds (urgency score 0-100)
+    urgencyThresholds: {
+      low: 20,                   // Below this: require full minProfitPercent
+      medium: 40,                // At this: start lowering profit requirement
+      high: 60,                  // At this: take 5%+ profits
+      critical: 80               // At this: take any profit > 3%
+    }
+  },
+  // Swing Trade Mode: Buy lower-priced contracts to sell for profit before expiry
+  // Allows "buy low, sell high" strategy with take-profit
+  swingTradeMode: {
+    enabled: true,               // ENABLED - allows buying cheaper contracts
+    minPriceCents: 20,           // Minimum price for swing trades (20¢ - not too risky)
+    maxPriceCents: 50,           // Max price for swing trades (above this, use hold-to-expiry)
+    targetProfitPercent: 25,     // Target profit before taking (25% after fees)
+    stopLossPercent: -40,        // Cut losses at -40% (cheap contracts can crash fast)
+    requireMomentum: true,       // Only buy if momentum is in our favor
+    maxPositionsPerToken: 2      // Don't over-concentrate in swing trades
   }
 };
 
@@ -104,8 +148,24 @@ function getUserState(userId) {
     if (fs.existsSync(userFile)) {
       try {
         const data = JSON.parse(fs.readFileSync(userFile, 'utf8'));
+        // Deep merge config to preserve nested riskLimits structure
+        const loadedConfig = { ...DEFAULT_CONFIG, ...data.config };
+        if (data.config?.riskLimits) {
+          loadedConfig.riskLimits = {
+            ...DEFAULT_CONFIG.riskLimits,
+            ...data.config.riskLimits,
+            hourly: {
+              ...DEFAULT_CONFIG.riskLimits.hourly,
+              ...(data.config.riskLimits.hourly || {})
+            },
+            other: {
+              ...DEFAULT_CONFIG.riskLimits.other,
+              ...(data.config.riskLimits.other || {})
+            }
+          };
+        }
         userStates.set(userId, {
-          config: { ...DEFAULT_CONFIG, ...data.config },
+          config: loadedConfig,
           betHistory: data.betHistory || [],
           portfolio: data.portfolio || { balance: 0, positions: [] }
         });
@@ -272,11 +332,8 @@ function saveToActiveProfile() {
   }
 }
 
-// Load profiles on startup (but DON'T auto-login - user must select profile)
-loadProfiles();
-// Clear active profile on startup - require manual login
-activeProfileId = null;
-console.log('👤 No profile auto-loaded - please select a profile to login');
+// Profile system removed - user state is now tied directly to logged-in user account
+// Each user's settings, Kalshi credentials, and bet history are stored in their user state file
 
 // ============================================
 // PERFORMANCE TRACKING
@@ -333,6 +390,7 @@ function trackBet(betInfo) {
   const bet = {
     id: betInfo.id || Date.now().toString(),
     timestamp: new Date().toISOString(),
+    userId: betInfo.userId || null,  // Track which user placed this bet
     ticker: betInfo.ticker,
     title: betInfo.title,
     token: betInfo.token || betInfo.assetType || getTokenFromTicker(betInfo.ticker),
@@ -489,36 +547,65 @@ async function checkPendingSettlements() {
 
   for (const bet of pending) {
     try {
-      // Check if market has settled
-      if (bet.expiryTime && new Date(bet.expiryTime) > new Date()) {
-        continue; // Not expired yet
+      // Infer expiry from ticker if not set (ticker format: KXBTC15M-26FEB031700-00)
+      // Pattern: [YY][MMM][DD][HHMM] where YY=year, MMM=month, DD=day, HHMM=time
+      let expiryTime = bet.expiryTime;
+      if (!expiryTime && bet.ticker) {
+        const match = bet.ticker.match(/(\d{2})([A-Z]{3})(\d{2})(\d{2})(\d{2})/);
+        if (match) {
+          const [, yearSuffix, monthStr, day, hour, minute] = match;
+          const months = { JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5, JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11 };
+          const fullYear = 2000 + parseInt(yearSuffix);
+          const month = months[monthStr] || 0;
+          expiryTime = new Date(fullYear, month, parseInt(day), parseInt(hour), parseInt(minute)).toISOString();
+          // Store inferred expiry time for next check
+          bet.expiryTime = expiryTime;
+        }
       }
 
-      // Try to get settlement from Kalshi
-      if (config.isAuthenticated && bet.ticker) {
+      // Check if market has settled (allow 5 minute grace period for settlement)
+      if (expiryTime && new Date(expiryTime).getTime() + 5 * 60 * 1000 > Date.now()) {
+        continue; // Not expired yet (with 5 min grace period)
+      }
+
+      // Try to get settlement from Kalshi (market data is public, try without auth first)
+      // If bet has userId, try to get user's config for authenticated request
+      let userConfig = config;
+      if (bet.userId) {
+        const userState = getUserState(bet.userId);
+        if (userState?.config?.isAuthenticated) {
+          userConfig = userState.config;
+        }
+      }
+
+      if (bet.ticker) {
         try {
-          const market = await kalshiRequest('GET', `/markets/${bet.ticker}`);
+          // Try with user config if available, otherwise use global
+          const market = await kalshiRequest('GET', `/markets/${bet.ticker}`, null, userConfig);
           if (market.market?.result) {
             const result = market.market.result;  // 'yes' or 'no'
             const won = (bet.side.toLowerCase() === result);
             const profit = won ? (bet.contracts * 100 - bet.totalCost) : 0;
             settleBet(bet.id, won ? 'won' : 'lost', market.market.settlement_value, profit);
+            console.log(`   ✅ Settled bet ${bet.id}: ${won ? 'WON' : 'LOST'} (${bet.side} on ${bet.ticker})`);
           }
         } catch (e) {
-          // Market might not exist or API error - skip
+          // Market might not exist or API error - try price-based settlement below
         }
       }
 
       // For simulated bets or if we can't get Kalshi data, check price
       if (bet.outcome === 'pending' && bet.strikePrice && bet.token) {
         const currentPrice = cryptoPrices[bet.token]?.price;
-        if (currentPrice && bet.expiryTime && new Date(bet.expiryTime) <= new Date()) {
+        // Use inferred expiryTime (variable from above) which may have been set earlier in this iteration
+        if (currentPrice && expiryTime && new Date(expiryTime) <= new Date()) {
           // Market should have settled - determine outcome from price
           const isAbove = currentPrice >= bet.strikePrice;
           const won = (bet.side.toLowerCase() === 'yes' && isAbove) ||
                       (bet.side.toLowerCase() === 'no' && !isAbove);
           const profit = won ? (bet.contracts * 100 - bet.totalCost) : 0;
           settleBet(bet.id, won ? 'won' : 'lost', currentPrice, profit);
+          console.log(`   ✅ Settled bet ${bet.id} via price: ${won ? 'WON' : 'LOST'} (${bet.side} ${bet.token} @ strike $${bet.strikePrice}, current $${currentPrice})`);
         }
       }
     } catch (err) {
@@ -1325,6 +1412,11 @@ function calculateMomentumMultiTimeframe(history) {
 // Student-t CDF approximation (better for fat tails than normal)
 // Degrees of freedom (df) controls tail heaviness: lower df = fatter tails
 function studentTCDF(x, df = 5) {
+  // Handle edge cases
+  if (isNaN(x) || !isFinite(x)) return 0.5;
+  if (x > 10) return 0.999;
+  if (x < -10) return 0.001;
+
   // For crypto, use df=3-5 (very fat tails)
   // For indices, use df=7-10 (moderately fat tails)
   const t = x;
@@ -1334,11 +1426,16 @@ function studentTCDF(x, df = 5) {
   // Use incomplete beta function approximation
   const x2 = df / (df + t * t);
 
+  let result;
   if (t >= 0) {
-    return 1 - 0.5 * incompleteBeta(x2, a, b);
+    result = 1 - 0.5 * incompleteBeta(x2, a, b);
   } else {
-    return 0.5 * incompleteBeta(x2, a, b);
+    result = 0.5 * incompleteBeta(x2, a, b);
   }
+
+  // Sanitize result
+  if (isNaN(result) || !isFinite(result)) return 0.5;
+  return Math.max(0.001, Math.min(0.999, result));
 }
 
 // Incomplete beta function approximation
@@ -1368,9 +1465,14 @@ function incompleteBeta(x, a, b) {
 
 // Gamma function approximation (Stirling)
 function gamma(n) {
+  if (isNaN(n) || !isFinite(n)) return 1;
   if (n === 1) return 1;
   if (n === 0.5) return Math.sqrt(Math.PI);
-  if (n < 0.5) return Math.PI / (Math.sin(Math.PI * n) * gamma(1 - n));
+  if (n < 0.5) {
+    const sinVal = Math.sin(Math.PI * n);
+    if (Math.abs(sinVal) < 1e-10) return 1; // Avoid division by zero
+    return Math.PI / (sinVal * gamma(1 - n));
+  }
 
   // Stirling approximation for n > 0.5
   n -= 1;
@@ -1603,12 +1705,18 @@ function calculateEnsembleProbability(token, currentPrice, targetPrice, expiryMi
   const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0);
   Object.keys(weights).forEach(k => weights[k] /= totalWeight);
 
+  // Sanitize individual probabilities before combining
+  const safeNormalProb = isNaN(normalProbAbove) ? 0.5 : Math.max(0.01, Math.min(0.99, normalProbAbove));
+  const safeTProb = isNaN(tProbAbove) ? 0.5 : Math.max(0.01, Math.min(0.99, tProbAbove));
+  const safeBootstrapProb = isNaN(bootstrapProbAbove) ? 0.5 : Math.max(0.01, Math.min(0.99, bootstrapProbAbove));
+  const safeHistoricalProb = isNaN(historicalProbStay) ? 0.5 : Math.max(0.01, Math.min(0.99, historicalProbStay));
+
   // Calculate raw ensemble probability
   let ensembleProbAbove =
-    weights.normal * normalProbAbove +
-    weights.studentT * tProbAbove +
-    weights.bootstrap * bootstrapProbAbove +
-    weights.historical * (isAboveTarget ? historicalProbStay : 1 - historicalProbStay);
+    weights.normal * safeNormalProb +
+    weights.studentT * safeTProb +
+    weights.bootstrap * safeBootstrapProb +
+    weights.historical * (isAboveTarget ? safeHistoricalProb : 1 - safeHistoricalProb);
 
   // Apply momentum adjustment
   ensembleProbAbove = Math.max(0.05, Math.min(0.95, ensembleProbAbove + momentumAdjust));
@@ -1658,6 +1766,13 @@ function calculateEnsembleProbability(token, currentPrice, targetPrice, expiryMi
   }
 
   ensembleProbAbove = Math.max(MIN_PROB, Math.min(MAX_PROB, ensembleProbAbove));
+
+  // Defensive check: if any NaN crept through, use simple fallback
+  if (isNaN(ensembleProbAbove)) {
+    console.log(`   ⚠️ NaN detected in probability calculation, using simple fallback`);
+    // Simple fallback: if above target, more likely to stay above
+    ensembleProbAbove = isAboveTarget ? 0.55 : 0.45;
+  }
 
   const ensembleProbBelow = 1 - ensembleProbAbove;
 
@@ -1921,6 +2036,11 @@ function simpleEdgeCheck(currentPrice, strikePrice, marketPrice, side, volatilit
 
 // Standard normal CDF
 function normalCDF(x) {
+  // Handle edge cases
+  if (isNaN(x) || !isFinite(x)) return 0.5;
+  if (x > 8) return 0.9999;
+  if (x < -8) return 0.0001;
+
   const a1 =  0.254829592, a2 = -0.284496736, a3 =  1.421413741;
   const a4 = -1.453152027, a5 =  1.061405429, p  =  0.3275911;
 
@@ -1930,7 +2050,8 @@ function normalCDF(x) {
   const t = 1.0 / (1.0 + p * x);
   const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x / 2);
 
-  return 0.5 * (1.0 + sign * y);
+  const result = 0.5 * (1.0 + sign * y);
+  return isNaN(result) ? 0.5 : Math.max(0.0001, Math.min(0.9999, result));
 }
 
 // Start price tracking (every 10 seconds)
@@ -1969,16 +2090,119 @@ function isHourlyMarket(ticker) {
   return ticker.includes('1H') || ticker.includes('-1H-');
 }
 
+// Sync Kalshi positions to betHistory so exposure is tracked correctly after server restart
+// This creates synthetic bet records for positions that don't have matching local bets
+function syncKalshiPositionsToBetHistory(userState, positions, userId = null) {
+  const userBetHistory = userState?.betHistory || betHistory;
+  const positionsArray = positions || [];
+
+  // Build set of current Kalshi position tickers
+  const currentPositionTickers = new Set(
+    positionsArray
+      .filter(p => Math.abs(p.position || 0) > 0)
+      .map(p => p.ticker)
+  );
+
+  // Clean up stale synced bets (positions that no longer exist in Kalshi)
+  let cleanedCount = 0;
+  for (const bet of userBetHistory) {
+    if (bet.source === 'kalshi-sync' && bet.status !== 'settled' && bet.status !== 'closed') {
+      if (!currentPositionTickers.has(bet.ticker)) {
+        bet.status = 'settled';
+        bet.outcome = 'unknown'; // We don't know the outcome, just that it's gone
+        cleanedCount++;
+        console.log(`🧹 Cleaned up stale synced bet: ${bet.ticker}`);
+      }
+    }
+  }
+
+  if (cleanedCount > 0) {
+    console.log(`🧹 Cleaned up ${cleanedCount} stale synced bets`);
+  }
+
+  // Now sync new positions
+  if (positionsArray.length === 0) {
+    // Still need to save if we cleaned up stale bets
+    if (cleanedCount > 0 && userId) {
+      saveUserState(userId);
+    }
+    return;
+  }
+
+  const existingTickers = new Set(
+    userBetHistory
+      .filter(b => b.status !== 'settled' && b.status !== 'closed')
+      .map(b => b.ticker)
+  );
+
+  let syncedCount = 0;
+  for (const pos of positionsArray) {
+    const contracts = Math.abs(pos.position || 0);
+    if (contracts === 0) continue;
+
+    // Skip if we already have a bet record for this ticker
+    if (existingTickers.has(pos.ticker)) continue;
+
+    // Calculate the cost for this position
+    let totalCost;
+    if (pos.market_exposure && pos.market_exposure > 0) {
+      totalCost = pos.market_exposure;
+    } else if (pos.average_price && pos.average_price > 0) {
+      totalCost = contracts * pos.average_price;
+    } else {
+      // Conservative estimate
+      totalCost = contracts * 75;
+    }
+
+    // Create a synthetic bet record
+    const syntheticBet = {
+      id: `sync-${pos.ticker}-${Date.now()}`,
+      ticker: pos.ticker,
+      title: pos.market_title || pos.ticker,
+      side: pos.position > 0 ? 'yes' : 'no',
+      price: pos.average_price || 0,
+      count: contracts,
+      filledCount: contracts,
+      totalCost: totalCost,
+      status: 'open',
+      outcome: 'pending',
+      timestamp: new Date().toISOString(),
+      source: 'kalshi-sync', // Mark as synced from Kalshi
+      assetType: getTokenFromTicker(pos.ticker),
+      userId: userId
+    };
+
+    userBetHistory.push(syntheticBet);
+    existingTickers.add(pos.ticker);
+    syncedCount++;
+    console.log(`🔄 Synced position: ${pos.ticker} | ${contracts} contracts @ ${pos.average_price || '?'}¢ | exposure: $${(totalCost / 100).toFixed(2)}`);
+  }
+
+  if (syncedCount > 0) {
+    console.log(`✅ Synced ${syncedCount} existing Kalshi positions to bet history`);
+  }
+
+  // Save user state if any changes were made
+  if ((syncedCount > 0 || cleanedCount > 0) && userId) {
+    saveUserState(userId);
+  }
+}
+
 // Get risk breakdown by market type
-function getRiskByType() {
+// Now accepts optional userState for per-user tracking
+function getRiskByType(userState = null) {
   let hourlyRisk = 0;
   let otherRisk = 0;
   const kalshiTickers = new Set();
 
+  // Use user-specific data if provided, otherwise fall back to globals
+  const userBetHistory = userState?.betHistory || betHistory;
+  const userPortfolio = userState?.portfolio || portfolio;
+
   // First, build a map of our actual costs from betHistory for each ticker
   const ourCostsByTicker = {};
   const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
-  for (const bet of betHistory) {
+  for (const bet of userBetHistory) {
     if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') continue;
     const betTime = new Date(bet.timestamp).getTime();
     if (betTime < twoHoursAgo) continue;
@@ -1992,8 +2216,8 @@ function getRiskByType() {
   }
 
   // Count Kalshi positions
-  if (portfolio.positions && Array.isArray(portfolio.positions)) {
-    for (const pos of portfolio.positions) {
+  if (userPortfolio.positions && Array.isArray(userPortfolio.positions)) {
+    for (const pos of userPortfolio.positions) {
       const contracts = Math.abs(pos.position || 0);
       if (contracts > 0) {
         kalshiTickers.add(pos.ticker);
@@ -2023,7 +2247,7 @@ function getRiskByType() {
   }
 
   // Add unsettled local bets not already counted via Kalshi positions
-  for (const bet of betHistory) {
+  for (const bet of userBetHistory) {
     if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') continue;
     const betTime = new Date(bet.timestamp).getTime();
     if (betTime < twoHoursAgo) continue;
@@ -2040,28 +2264,28 @@ function getRiskByType() {
   return { hourly: hourlyRisk, other: otherRisk, total: hourlyRisk + otherRisk };
 }
 
-function getCurrentRiskFromPortfolio() {
-  const { total } = getRiskByType();
+function getCurrentRiskFromPortfolio(userState = null) {
+  const { total } = getRiskByType(userState);
   return total;
 }
 
-function canPlaceBet(betCostCents, ticker) {
-  const risk = getRiskByType();
+function canPlaceBet(betCostCents, ticker, userState = null) {
+  const risk = getRiskByType(userState);
   const type = isHourlyMarket(ticker) ? 'hourly' : 'other';
   return (risk[type] + betCostCents) <= getMaxRisk(type);
 }
 
-function getRemainingRiskBudget(ticker) {
-  const risk = getRiskByType();
+function getRemainingRiskBudget(ticker, userState = null, userConfig = null) {
+  const risk = getRiskByType(userState);
   const type = isHourlyMarket(ticker) ? 'hourly' : 'other';
-  return Math.max(0, getMaxRisk(type) - risk[type]);
+  return Math.max(0, getMaxRisk(type, userConfig) - risk[type]);
 }
 
 // Get total remaining budget (for display)
-function getTotalRemainingBudget() {
-  const risk = getRiskByType();
-  const hourlyRemaining = Math.max(0, getMaxRisk('hourly') - risk.hourly);
-  const otherRemaining = Math.max(0, getMaxRisk('other') - risk.other);
+function getTotalRemainingBudget(userState = null, userConfig = null) {
+  const risk = getRiskByType(userState);
+  const hourlyRemaining = Math.max(0, getMaxRisk('hourly', userConfig) - risk.hourly);
+  const otherRemaining = Math.max(0, getMaxRisk('other', userConfig) - risk.other);
   return hourlyRemaining + otherRemaining;
 }
 
@@ -2075,14 +2299,18 @@ function getTokenFromTicker(ticker) {
 }
 
 // Get total exposure per token across all positions
-function getExposureByToken() {
+function getExposureByToken(userState = null) {
   const tokenExposure = {};
   const kalshiTickers = new Set();
+
+  // Use user-specific data if provided, otherwise fall back to globals
+  const userBetHistory = userState?.betHistory || betHistory;
+  const userPortfolio = userState?.portfolio || portfolio;
 
   // First, build a map of our actual costs from betHistory for each ticker
   const ourCostsByTicker = {};
   const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
-  for (const bet of betHistory) {
+  for (const bet of userBetHistory) {
     if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') continue;
     const betTime = new Date(bet.timestamp).getTime();
     if (betTime < twoHoursAgo) continue;
@@ -2096,8 +2324,8 @@ function getExposureByToken() {
   }
 
   // Count Kalshi positions by token
-  if (portfolio.positions && Array.isArray(portfolio.positions)) {
-    for (const pos of portfolio.positions) {
+  if (userPortfolio.positions && Array.isArray(userPortfolio.positions)) {
+    for (const pos of userPortfolio.positions) {
       const contracts = Math.abs(pos.position || 0);
       if (contracts > 0) {
         const token = getTokenFromTicker(pos.ticker);
@@ -2128,11 +2356,12 @@ function getExposureByToken() {
   }
 
   // Add unsettled local bets not already counted via Kalshi positions
-  for (const bet of betHistory) {
+  for (const bet of userBetHistory) {
     if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') continue;
     const betTime = new Date(bet.timestamp).getTime();
     if (betTime < twoHoursAgo) continue;
-    if (kalshiTickers.has(bet.ticker)) continue;
+    // Skip bets already counted via Kalshi positions or synced from Kalshi
+    if (kalshiTickers.has(bet.ticker) || bet.source === 'kalshi-sync') continue;
 
     const betRisk = bet.totalCost || (bet.count * bet.price) || 0;
     const token = getTokenFromTicker(bet.ticker) || bet.assetType;
@@ -2152,13 +2381,13 @@ function getMaxPerToken(userConfig = null) {
 }
 
 // Get remaining budget for a specific token
-function getRemainingTokenBudget(ticker, assetType) {
+function getRemainingTokenBudget(ticker, assetType, userState = null, userConfig = null) {
   const token = getTokenFromTicker(ticker) || assetType;
-  if (!token) return getMaxPerToken(); // If can't determine token, use full budget
+  if (!token) return getMaxPerToken(userConfig); // If can't determine token, use full budget
 
-  const tokenExposure = getExposureByToken();
+  const tokenExposure = getExposureByToken(userState);
   const currentExposure = tokenExposure[token] || 0;
-  return Math.max(0, getMaxPerToken() - currentExposure);
+  return Math.max(0, getMaxPerToken(userConfig) - currentExposure);
 }
 
 // ============================================
@@ -2222,7 +2451,9 @@ async function kalshiRequest(method, endpoint, body = null, userConfig = null) {
 
 // Sign request with specific config
 function signRequestWithConfig(method, path, timestamp, cfg) {
-  const message = timestamp + method + path;
+  // Strip query parameters from path (Kalshi expects signature without query params)
+  const pathWithoutQuery = path.split('?')[0];
+  const message = timestamp + method + pathWithoutQuery;
   try {
     const privateKeyObj = crypto.createPrivateKey({
       key: cfg.privateKey,
@@ -2246,6 +2477,832 @@ function signRequestWithConfig(method, path, timestamp, cfg) {
 // ============================================
 
 let marketCache = { data: null, lastFetch: 0, ttl: 15000 };
+
+// ============================================
+// ORDERBOOK CACHE & FETCHING
+// ============================================
+const orderbookCache = new Map(); // ticker -> { data, timestamp }
+const ORDERBOOK_CACHE_TTL = 5000; // 5 second cache to avoid rate limits
+
+// Candlestick cache for momentum analysis
+const candlestickCache = new Map(); // ticker -> { data, timestamp }
+const CANDLESTICK_CACHE_TTL = 10000; // 10 second cache
+
+// WebSocket instance (initialized on server start)
+let kalshiWs = null;
+let wsEnabled = false;
+
+/**
+ * Initialize WebSocket connection for real-time data
+ */
+function initializeWebSocket(userConfig = null) {
+  try {
+    const cfg = userConfig || config;
+
+    kalshiWs = getKalshiWebSocket({
+      apiKeyId: cfg.apiKeyId,
+      privateKey: cfg.privateKey,
+      onTickerUpdate: (ticker, data) => {
+        // Update marketCache with real-time ticker data
+        if (marketCache.data) {
+          const market = marketCache.data.find(m => m.ticker === ticker);
+          if (market) {
+            market.yes_ask = data.yesAsk;
+            market.yes_bid = data.yesBid;
+            market.no_ask = data.noAsk;
+            market.no_bid = data.noBid;
+            market.last_price = data.lastPrice;
+            market.volume = data.volume;
+            console.log(`[WS] Updated ${ticker}: YES ${data.yesBid}/${data.yesAsk} NO ${data.noBid}/${data.noAsk}`);
+          }
+        }
+      },
+      onOrderbookUpdate: (ticker, data) => {
+        // Update orderbook cache with real-time data
+        orderbookCache.set(ticker, {
+          data: data,
+          timestamp: Date.now(),
+          source: 'websocket'
+        });
+      },
+      onConnectionChange: (connected) => {
+        wsEnabled = connected;
+        console.log(`[WS] Connection status: ${connected ? 'CONNECTED' : 'DISCONNECTED'}`);
+      },
+      onError: (msg, err) => {
+        console.error(`[WS] Error: ${msg}`, err || '');
+      }
+    });
+
+    // Connect to WebSocket
+    kalshiWs.connect().then(() => {
+      wsEnabled = true;
+      console.log('[WS] Kalshi WebSocket initialized');
+    }).catch(err => {
+      console.log('[WS] Could not connect, falling back to REST:', err.message);
+      wsEnabled = false;
+    });
+
+  } catch (err) {
+    console.log('[WS] WebSocket initialization failed:', err.message);
+    wsEnabled = false;
+  }
+}
+
+/**
+ * Fetch orderbook for a market (with caching)
+ * Returns bid/ask depth to understand true cost of entry
+ */
+async function fetchOrderbook(ticker, userConfig = null) {
+  const now = Date.now();
+  const cached = orderbookCache.get(ticker);
+
+  // Return cached data if fresh
+  if (cached && (now - cached.timestamp) < ORDERBOOK_CACHE_TTL) {
+    return cached.data;
+  }
+
+  // Try WebSocket cache first (most up-to-date)
+  if (wsEnabled && kalshiWs) {
+    const wsData = kalshiWs.getOrderbook(ticker);
+    if (wsData && (now - wsData.timestamp) < ORDERBOOK_CACHE_TTL) {
+      orderbookCache.set(ticker, { data: wsData, timestamp: now, source: 'websocket' });
+      return wsData;
+    }
+  }
+
+  // Fall back to REST API
+  try {
+    const cfg = userConfig || config;
+    const response = await kalshiRequest('GET', `/markets/${ticker}/orderbook`, null, cfg);
+
+    // Parse orderbook response
+    const orderbook = {
+      ticker,
+      // YES side
+      bestYesBid: response.yes?.bid?.[0]?.price || 0,
+      bestYesAsk: response.yes?.ask?.[0]?.price || 0,
+      yesSpread: 0,
+      yesLiquidityAtBest: response.yes?.ask?.[0]?.count || 0,
+      yesTotalDepth: (response.yes?.ask || []).reduce((sum, o) => sum + (o.count || 0), 0),
+      // NO side
+      bestNoBid: response.no?.bid?.[0]?.price || 0,
+      bestNoAsk: response.no?.ask?.[0]?.price || 0,
+      noSpread: 0,
+      noLiquidityAtBest: response.no?.ask?.[0]?.count || 0,
+      noTotalDepth: (response.no?.ask || []).reduce((sum, o) => sum + (o.count || 0), 0),
+      // Raw data
+      raw: response,
+      timestamp: now,
+      source: 'rest'
+    };
+
+    // Calculate spreads
+    if (orderbook.bestYesAsk && orderbook.bestYesBid) {
+      orderbook.yesSpread = orderbook.bestYesAsk - orderbook.bestYesBid;
+    }
+    if (orderbook.bestNoAsk && orderbook.bestNoBid) {
+      orderbook.noSpread = orderbook.bestNoAsk - orderbook.bestNoBid;
+    }
+
+    // Cache the result
+    orderbookCache.set(ticker, { data: orderbook, timestamp: now, source: 'rest' });
+    return orderbook;
+
+  } catch (error) {
+    console.log(`[Orderbook] Error fetching ${ticker}:`, error.message);
+    // Return default values if fetch fails
+    return {
+      ticker,
+      bestYesBid: 0,
+      bestYesAsk: 0,
+      yesSpread: 100, // Assume wide spread if unknown (conservative)
+      yesLiquidityAtBest: 0,
+      yesTotalDepth: 0,
+      bestNoBid: 0,
+      bestNoAsk: 0,
+      noSpread: 100,
+      noLiquidityAtBest: 0,
+      noTotalDepth: 0,
+      timestamp: now,
+      source: 'default'
+    };
+  }
+}
+
+/**
+ * Get cached orderbook (doesn't fetch if not cached)
+ */
+function getCachedOrderbook(ticker) {
+  const cached = orderbookCache.get(ticker);
+  if (cached && (Date.now() - cached.timestamp) < ORDERBOOK_CACHE_TTL * 2) {
+    return cached.data;
+  }
+  return null;
+}
+
+/**
+ * Fetch candlestick data for momentum analysis
+ * Returns OHLCV data for the specified period
+ */
+async function fetchCandlesticks(ticker, periodMinutes = 1, count = 15, userConfig = null) {
+  const now = Date.now();
+  const cacheKey = `${ticker}_${periodMinutes}`;
+  const cached = candlestickCache.get(cacheKey);
+
+  // Return cached data if fresh
+  if (cached && (now - cached.timestamp) < CANDLESTICK_CACHE_TTL) {
+    return cached.data;
+  }
+
+  try {
+    const cfg = userConfig || config;
+
+    // Build period interval string (1m, 5m, 15m, etc.)
+    const periodStr = `${periodMinutes}m`;
+
+    // Fetch candlesticks from Kalshi API
+    const response = await kalshiRequest(
+      'GET',
+      `/markets/${ticker}/candlesticks?period_interval=${periodStr}&limit=${count}`,
+      null,
+      cfg
+    );
+
+    const candles = (response.candlesticks || []).map(c => ({
+      open: c.open_price || c.open || 0,
+      high: c.high_price || c.high || 0,
+      low: c.low_price || c.low || 0,
+      close: c.close_price || c.close || 0,
+      volume: c.volume || 0,
+      timestamp: new Date(c.end_period_ts || c.timestamp).getTime()
+    }));
+
+    const result = {
+      ticker,
+      period: periodMinutes,
+      candles,
+      timestamp: now
+    };
+
+    // Cache the result
+    candlestickCache.set(cacheKey, { data: result, timestamp: now });
+    return result;
+
+  } catch (error) {
+    console.log(`[Candles] Error fetching ${ticker}:`, error.message);
+    // Return empty data if fetch fails
+    return {
+      ticker,
+      period: periodMinutes,
+      candles: [],
+      timestamp: now
+    };
+  }
+}
+
+/**
+ * Analyze market momentum from candlestick data
+ * Returns momentum direction, strength, and confirmation status
+ */
+function analyzeMarketMomentum(candleData, currentBetSide = null) {
+  const candles = candleData?.candles || [];
+
+  if (candles.length < 3) {
+    return {
+      confirmed: false,
+      direction: 'unknown',
+      strength: 0,
+      reason: 'Insufficient candle data'
+    };
+  }
+
+  // Analyze last N candles (default 5)
+  const lookback = Math.min(5, candles.length);
+  const recentCandles = candles.slice(-lookback);
+
+  // Count up/down candles
+  let upCandles = 0;
+  let downCandles = 0;
+  let totalVolume = 0;
+  let upVolume = 0;
+  let downVolume = 0;
+
+  for (const candle of recentCandles) {
+    const change = candle.close - candle.open;
+    totalVolume += candle.volume || 0;
+
+    if (change > 0) {
+      upCandles++;
+      upVolume += candle.volume || 0;
+    } else if (change < 0) {
+      downCandles++;
+      downVolume += candle.volume || 0;
+    }
+  }
+
+  // Determine direction
+  let direction = 'neutral';
+  let strength = 0;
+
+  if (upCandles > downCandles + 1) {
+    direction = 'up';
+    strength = (upCandles - downCandles) / lookback;
+    // Volume confirmation
+    if (totalVolume > 0 && upVolume > downVolume * 1.2) {
+      strength += 0.2;
+    }
+  } else if (downCandles > upCandles + 1) {
+    direction = 'down';
+    strength = (downCandles - upCandles) / lookback;
+    // Volume confirmation
+    if (totalVolume > 0 && downVolume > upVolume * 1.2) {
+      strength += 0.2;
+    }
+  }
+
+  // Clamp strength between 0 and 1
+  strength = Math.max(0, Math.min(1, strength));
+
+  // Check if momentum aligns with bet side
+  let confirmed = false;
+  let alignment = 'neutral';
+
+  if (currentBetSide) {
+    const side = currentBetSide.toUpperCase();
+    // For YES bet on "up" markets, we want upward momentum
+    // For NO bet on "up" markets, we want downward momentum
+    if (side === 'YES' && direction === 'up') {
+      confirmed = true;
+      alignment = 'aligned';
+    } else if (side === 'NO' && direction === 'down') {
+      confirmed = true;
+      alignment = 'aligned';
+    } else if (side === 'YES' && direction === 'down') {
+      alignment = 'opposed';
+    } else if (side === 'NO' && direction === 'up') {
+      alignment = 'opposed';
+    }
+  }
+
+  return {
+    confirmed,
+    direction,
+    strength,
+    alignment,
+    upCandles,
+    downCandles,
+    totalVolume,
+    reason: `${upCandles}/${lookback} up candles, ${direction} momentum`
+  };
+}
+
+/**
+ * Apply momentum adjustment to edge calculation
+ */
+function applyMomentumAdjustment(edge, momentum, momentumSettings) {
+  if (!momentumSettings?.enabled) return edge;
+
+  let adjustment = 0;
+
+  if (momentum.alignment === 'aligned' && momentum.strength > 0.3) {
+    // Momentum confirms our bet direction - add bonus
+    adjustment = momentumSettings.alignmentBonus || 2;
+    adjustment *= momentum.strength; // Scale by strength
+  } else if (momentum.alignment === 'opposed' && momentum.strength > 0.3) {
+    // Momentum opposes our bet - apply penalty
+    adjustment = momentumSettings.oppositionPenalty || -3;
+    adjustment *= momentum.strength; // Scale by strength
+  }
+
+  return edge + adjustment;
+}
+
+// ============================================
+// SMART TAKE-PROFIT EVALUATION
+// ============================================
+// Philosophy: Solidify gains when risk of losing them is high
+// Factors: Time urgency, momentum reversal, profit-at-risk, volatility
+
+/**
+ * Calculate urgency score for taking profit
+ * Higher score = more urgent to exit
+ * Returns 0-100 urgency score
+ */
+function calculateTakeProfitUrgency(position, market, momentum, profitPercent) {
+  let urgencyScore = 0;
+  const reasons = [];
+
+  // 1. TIME URGENCY (0-30 points)
+  // As expiry approaches, urgency increases dramatically
+  if (market) {
+    const timeRemaining = market.timeRemaining || (market.close_time ? new Date(market.close_time).getTime() - Date.now() : null);
+    if (timeRemaining) {
+      const minutesLeft = timeRemaining / 60000;
+      if (minutesLeft < 2) {
+        urgencyScore += 30;
+        reasons.push(`⏰ CRITICAL: Only ${minutesLeft.toFixed(1)}min left`);
+      } else if (minutesLeft < 5) {
+        urgencyScore += 20;
+        reasons.push(`⏰ Urgent: ${minutesLeft.toFixed(1)}min left`);
+      } else if (minutesLeft < 8) {
+        urgencyScore += 10;
+        reasons.push(`⏰ ${minutesLeft.toFixed(1)}min remaining`);
+      }
+    }
+  }
+
+  // 2. MOMENTUM REVERSAL (0-25 points)
+  // If momentum is turning against our position, urgency increases
+  if (momentum && momentum.direction !== 'neutral') {
+    const side = position.side || (position.position > 0 ? 'yes' : 'no');
+    let isAgainst = false;
+
+    // For YES positions on "above" markets, DOWN momentum is bad
+    // For NO positions on "above" markets, UP momentum is bad
+    if (side === 'yes' && momentum.direction === 'down') {
+      isAgainst = true;
+    } else if (side === 'no' && momentum.direction === 'up') {
+      isAgainst = true;
+    }
+
+    if (isAgainst) {
+      const momentumPenalty = Math.round(momentum.strength * 25);
+      urgencyScore += momentumPenalty;
+      reasons.push(`📉 Momentum against us: ${momentum.direction} (${(momentum.strength*100).toFixed(0)}% strength)`);
+    }
+  }
+
+  // 3. PROFIT-AT-RISK (0-25 points)
+  // Higher profits are worth protecting more aggressively
+  if (profitPercent >= 50) {
+    urgencyScore += 25;
+    reasons.push(`💰 Large profit at risk: ${profitPercent.toFixed(1)}%`);
+  } else if (profitPercent >= 30) {
+    urgencyScore += 15;
+    reasons.push(`💰 Good profit at risk: ${profitPercent.toFixed(1)}%`);
+  } else if (profitPercent >= 15) {
+    urgencyScore += 8;
+    reasons.push(`💰 Moderate profit: ${profitPercent.toFixed(1)}%`);
+  }
+
+  // 4. PRICE PROXIMITY TO STRIKE (0-20 points)
+  // If current price is close to strike, outcome is uncertain
+  if (market) {
+    const parsed = parseMarket(market);
+    if (parsed && parsed.strikePrice) {
+      const token = parsed.cryptoType;
+      const currentPrice = cryptoPrices[token]?.price || 0;
+      if (currentPrice > 0) {
+        const pctFromStrike = Math.abs((currentPrice - parsed.strikePrice) / parsed.strikePrice * 100);
+        if (pctFromStrike < 0.1) {
+          urgencyScore += 20;
+          reasons.push(`⚠️ Price very close to strike (${pctFromStrike.toFixed(2)}%)`);
+        } else if (pctFromStrike < 0.3) {
+          urgencyScore += 12;
+          reasons.push(`⚠️ Price near strike (${pctFromStrike.toFixed(2)}%)`);
+        } else if (pctFromStrike < 0.5) {
+          urgencyScore += 5;
+          reasons.push(`Price ${pctFromStrike.toFixed(2)}% from strike`);
+        }
+      }
+    }
+  }
+
+  return { urgencyScore, reasons };
+}
+
+/**
+ * Smart take-profit evaluation
+ * Considers multiple factors to decide when to lock in gains
+ */
+async function evaluateTakeProfit(position, userConfig = null) {
+  const cfg = userConfig || config;
+  const settings = cfg.takeProfitSettings || {};
+
+  if (!settings.enabled) {
+    return { shouldExit: false, reason: 'Take-profit disabled' };
+  }
+
+  const ticker = position.ticker;
+  const contracts = Math.abs(position.position || 0);
+  const avgCost = position.average_price || 0; // In cents
+
+  if (contracts === 0 || avgCost === 0) {
+    return { shouldExit: false, reason: 'No valid position data' };
+  }
+
+  // Fetch current orderbook for exit price
+  const orderbook = await fetchOrderbook(ticker, cfg);
+
+  // Determine current bid (what we can sell for)
+  const side = position.side || (position.position > 0 ? 'yes' : 'no');
+  const currentBid = side === 'yes' ? orderbook.bestYesBid : orderbook.bestNoBid;
+  const spread = side === 'yes' ? orderbook.yesSpread : orderbook.noSpread;
+
+  if (!currentBid || currentBid <= 0) {
+    return { shouldExit: false, reason: 'No valid bid price' };
+  }
+
+  // Calculate current profit WITH KALSHI FEES
+  // Kalshi charges taker fee on sells: ceil(0.07 × contracts × price × (1 - price)), capped at 2¢/contract
+  const sellPrice = currentBid / 100; // Convert to dollars for fee calc
+  const sellFeePerContract = Math.min(0.02, Math.ceil(0.07 * sellPrice * (1 - sellPrice) * 100) / 100);
+  const totalSellFee = Math.round(sellFeePerContract * contracts * 100); // In cents
+
+  const grossProfit = (currentBid - avgCost) * contracts; // In cents
+  const spreadCost = Math.round((spread / 2) * contracts); // Half-spread cost estimate
+  const netProfit = grossProfit - totalSellFee - spreadCost; // INCLUDE SELL FEE!
+
+  // True profit percent after all fees
+  const totalCostWithFees = avgCost * contracts; // Entry cost (fee already paid)
+  const netProceedsAfterSell = (currentBid * contracts) - totalSellFee - spreadCost;
+  const profitPercent = ((netProceedsAfterSell - totalCostWithFees) / totalCostWithFees) * 100;
+
+  // If we're at a loss after fees, don't take profit
+  if (netProfit <= 0) {
+    return {
+      shouldExit: false,
+      reason: `Position at ${profitPercent.toFixed(1)}% after fees (no profit to take)`,
+      analysis: { profitPercent, netProfit, currentBid, avgCost, totalSellFee, spreadCost }
+    };
+  }
+
+  // Get market data for analysis
+  const markets = marketCache.data || [];
+  const market = markets.find(m => m.ticker === ticker);
+
+  // Get momentum data
+  let momentum = null;
+  try {
+    const candleData = await fetchCandlesticks(ticker, 1, 10, cfg);
+    if (candleData?.candles?.length >= 3) {
+      momentum = analyzeMarketMomentum(candleData);
+    }
+  } catch (e) {
+    // Continue without momentum
+  }
+
+  // Calculate urgency score
+  const { urgencyScore, reasons } = calculateTakeProfitUrgency(position, market, momentum, profitPercent);
+
+  // Get our probability estimate for this market
+  let probWin = 0.5; // Default if we can't calculate
+  let parsed = null;
+  let analysis = null;
+
+  if (market) {
+    parsed = parseMarket(market);
+    analysis = analyzeCryptoMarket(parsed, orderbook, momentum, cfg);
+    if (analysis) {
+      probWin = side === 'yes'
+        ? analysis.probYesWins / 100
+        : analysis.probNoWins / 100;
+    }
+  }
+
+  // Calculate Expected Values (with proper fee accounting)
+  const totalCostPaid = avgCost * contracts; // What we paid to enter (sunk cost)
+
+  // EV(exit) = net profit from selling now (after fees)
+  const evExit = netProfit;
+
+  // EV(hold) = P(win) * payout - P(lose) * loss
+  // If we WIN: we get $1 per contract (no sell fee, market settles)
+  // If we LOSE: we lose our entire cost (already paid)
+  const payoutIfWin = contracts * 100; // $1 per contract in cents
+  const lossIfLose = totalCostPaid; // We lose what we paid
+
+  // Note: Entry fee is sunk cost - don't double count it
+  const evHold = (probWin * payoutIfWin) - ((1 - probWin) * lossIfLose);
+
+  // Apply confidence factor (model uncertainty discount)
+  const confidenceFactor = settings.confidenceFactor || 0.85;
+  const adjustedEvHold = evHold * confidenceFactor;
+
+  // ============================================
+  // SMART EXIT DECISION LOGIC
+  // ============================================
+  // We exit if ANY of these conditions are met:
+
+  let shouldExit = false;
+  let exitReason = '';
+
+  // Base profit threshold (can be lowered by urgency)
+  const baseMinProfit = settings.minProfitPercent || 10;
+
+  // 1. URGENCY-ADJUSTED THRESHOLD
+  // Higher urgency = lower profit threshold required
+  // At 50+ urgency, we'll take profits as low as 5%
+  // At 80+ urgency, we'll take any profit above 3%
+  const urgencyAdjustedMinProfit = Math.max(3, baseMinProfit - (urgencyScore / 5));
+
+  if (profitPercent >= urgencyAdjustedMinProfit && urgencyScore >= 40) {
+    shouldExit = true;
+    exitReason = `HIGH URGENCY (${urgencyScore}): Lock in ${profitPercent.toFixed(1)}% profit`;
+  }
+
+  // 2. CLASSIC EV COMPARISON (when profit meets base threshold)
+  else if (profitPercent >= baseMinProfit && evExit > adjustedEvHold) {
+    shouldExit = true;
+    exitReason = `EV exit (${evExit.toFixed(0)}¢) > EV hold (${adjustedEvHold.toFixed(0)}¢)`;
+  }
+
+  // 3. MOMENTUM REVERSAL OVERRIDE
+  // If momentum is strongly against us and we have any decent profit, exit
+  else if (momentum && momentum.strength > 0.5 && profitPercent >= 8) {
+    const momentumAgainst = (side === 'yes' && momentum.direction === 'down') ||
+                            (side === 'no' && momentum.direction === 'up');
+    if (momentumAgainst) {
+      shouldExit = true;
+      exitReason = `MOMENTUM REVERSAL: ${momentum.direction} momentum, locking in ${profitPercent.toFixed(1)}%`;
+    }
+  }
+
+  // 4. TIME CRITICAL OVERRIDE
+  // With less than 3 minutes left and any profit > 5%, take it
+  if (market && !shouldExit) {
+    const timeRemaining = market.close_time ? new Date(market.close_time).getTime() - Date.now() : null;
+    if (timeRemaining && timeRemaining < 3 * 60 * 1000 && profitPercent >= 5) {
+      shouldExit = true;
+      exitReason = `TIME CRITICAL: <3min left, securing ${profitPercent.toFixed(1)}% profit`;
+    }
+  }
+
+  // 5. BIG WINNER PROTECTION
+  // If profit is 30%+, we protect it more aggressively
+  if (!shouldExit && profitPercent >= 30) {
+    // Take profit if EV hold isn't significantly better
+    if (evExit > adjustedEvHold * 0.9) {
+      shouldExit = true;
+      exitReason = `BIG WINNER: Protecting ${profitPercent.toFixed(1)}% gain`;
+    }
+  }
+
+  // Build final reason string
+  const finalReason = shouldExit
+    ? `✅ EXIT: ${exitReason}`
+    : `⏳ HOLD: Profit ${profitPercent.toFixed(1)}%, urgency ${urgencyScore}, waiting for better exit`;
+
+  return {
+    shouldExit,
+    reason: finalReason,
+    urgencyScore,
+    urgencyReasons: reasons,
+    analysis: {
+      ticker,
+      side,
+      contracts,
+      avgCost,
+      currentBid,
+      spread,
+      profitPercent,
+      netProfit,
+      grossProfit,
+      // Fee breakdown
+      totalSellFee,
+      spreadCost,
+      feesTotal: totalSellFee + spreadCost,
+      // EV analysis
+      probWin: probWin * 100,
+      evExit,
+      evHold,
+      adjustedEvHold,
+      confidenceFactor,
+      // Urgency
+      urgencyScore,
+      urgencyAdjustedMinProfit,
+      baseMinProfit,
+      momentum: momentum ? {
+        direction: momentum.direction,
+        strength: momentum.strength
+      } : null,
+      timeRemaining: market?.close_time ? new Date(market.close_time).getTime() - Date.now() : null
+    }
+  };
+}
+
+/**
+ * Execute take-profit exit (sell position)
+ */
+async function executeTakeProfitExit(position, analysis, userConfig = null) {
+  const cfg = userConfig || config;
+  const settings = cfg.takeProfitSettings || {};
+
+  // Safety check - don't execute if logOnly mode
+  if (settings.logOnly || !settings.autoExecute) {
+    console.log(`\n💰 [TakeProfit] RECOMMENDATION (not executing - logOnly mode):`);
+    console.log(`   📊 ${position.ticker}`);
+    console.log(`   💵 Profit: ${analysis.profitPercent.toFixed(1)}% | Net: $${(analysis.netProfit/100).toFixed(2)}`);
+    console.log(`   📈 Urgency: ${analysis.urgencyScore}/100`);
+    console.log(`   📉 EV exit: ${analysis.evExit.toFixed(0)}¢ vs EV hold: ${analysis.evHold.toFixed(0)}¢`);
+    if (analysis.momentum) {
+      console.log(`   🔄 Momentum: ${analysis.momentum.direction} (${(analysis.momentum.strength*100).toFixed(0)}%)`);
+    }
+    return { executed: false, reason: 'Log only mode - would have exited' };
+  }
+
+  try {
+    const ticker = position.ticker;
+    const contracts = Math.abs(position.position || 0);
+    const side = position.side || (position.position > 0 ? 'yes' : 'no');
+
+    // Place sell order at current bid (or slightly below for faster fill)
+    const sellPrice = Math.max(1, analysis.currentBid - 1); // 1 cent below bid for faster fill
+
+    const orderRequest = {
+      ticker,
+      action: 'sell',
+      side,
+      type: 'limit',
+      count: contracts
+    };
+
+    // Set price based on side
+    if (side === 'yes') {
+      orderRequest.yes_price = sellPrice;
+    } else {
+      orderRequest.no_price = sellPrice;
+    }
+
+    console.log(`\n💰 [TakeProfit] EXECUTING EXIT:`);
+    console.log(`   📊 ${ticker} | ${contracts} contracts @ ${sellPrice}¢`);
+    console.log(`   💵 Locking in ${analysis.profitPercent.toFixed(1)}% profit ($${(analysis.netProfit/100).toFixed(2)})`);
+    console.log(`   📈 Urgency score: ${analysis.urgencyScore}/100`);
+    console.log(`   Order: ${JSON.stringify(orderRequest)}`);
+
+    const response = await kalshiRequest('POST', '/portfolio/orders', orderRequest, cfg);
+
+    if (response.order) {
+      const filledCount = response.order.filled_count || 0;
+      const fillPrice = response.order.average_fill_price || sellPrice;
+
+      console.log(`   ✅ Order ${response.order.order_id}: ${filledCount}/${contracts} filled @ ${fillPrice}¢`);
+
+      if (filledCount > 0) {
+        const actualProfit = (fillPrice - analysis.avgCost) * filledCount;
+        console.log(`   💵 Realized profit: $${(actualProfit/100).toFixed(2)}`);
+      }
+
+      return {
+        executed: true,
+        orderId: response.order.order_id,
+        filledCount,
+        fillPrice,
+        realizedProfit: (response.order.average_fill_price - analysis.avgCost) * filledCount,
+        reason: filledCount === contracts ? 'Fully filled' : `Partial fill: ${filledCount}/${contracts}`
+      };
+    }
+
+    console.log(`   ⚠️ No order in response`);
+    return { executed: false, reason: 'No order in response' };
+
+  } catch (error) {
+    console.error(`   ❌ Exit failed: ${error.message}`);
+    return { executed: false, reason: error.message };
+  }
+}
+
+/**
+ * Scan all positions for take-profit opportunities
+ * Smart scanning: evaluates all positions and executes optimal exits
+ */
+async function scanTakeProfitOpportunities(userConfig = null, userPortfolio = null) {
+  const cfg = userConfig || config;
+  const pf = userPortfolio || portfolio;
+  const settings = cfg.takeProfitSettings || {};
+
+  if (!settings.enabled) return [];
+
+  const positions = pf.positions || [];
+  if (positions.length === 0) return [];
+
+  const opportunities = [];
+  const positionStatuses = [];
+
+  for (const position of positions) {
+    if (Math.abs(position.position || 0) === 0) continue;
+
+    try {
+      const evaluation = await evaluateTakeProfit(position, cfg);
+      const analysis = evaluation.analysis || {};
+
+      // Track all position statuses for logging
+      positionStatuses.push({
+        ticker: position.ticker,
+        profit: analysis.profitPercent?.toFixed(1) || '?',
+        urgency: analysis.urgencyScore || 0,
+        shouldExit: evaluation.shouldExit,
+        reason: evaluation.reason
+      });
+
+      if (evaluation.shouldExit) {
+        opportunities.push({
+          position,
+          evaluation,
+          timestamp: new Date().toISOString()
+        });
+
+        // Execute if auto-execute is enabled
+        if (settings.autoExecute && !settings.logOnly) {
+          const result = await executeTakeProfitExit(position, evaluation.analysis, cfg);
+          opportunities[opportunities.length - 1].executionResult = result;
+        } else {
+          // Log the recommendation
+          await executeTakeProfitExit(position, evaluation.analysis, cfg);
+        }
+      }
+    } catch (error) {
+      console.log(`[TakeProfit] Error evaluating ${position.ticker}:`, error.message);
+    }
+  }
+
+  // Summary log if there are positions
+  if (positionStatuses.length > 0) {
+    const exitCount = positionStatuses.filter(p => p.shouldExit).length;
+    const holdCount = positionStatuses.filter(p => !p.shouldExit).length;
+
+    console.log(`\n📊 [TakeProfit] Position Summary:`);
+    console.log(`   ${positions.length} positions | ${exitCount} to exit | ${holdCount} to hold`);
+
+    for (const status of positionStatuses) {
+      const icon = status.shouldExit ? '🔔' : '⏳';
+      console.log(`   ${icon} ${status.ticker}: ${status.profit}% profit, urgency ${status.urgency}`);
+    }
+  }
+
+  return opportunities;
+}
+
+// Take-profit scan interval
+let takeProfitInterval = null;
+
+/**
+ * Start take-profit scanning
+ */
+function startTakeProfitScanning(intervalMs = 30000, userConfig = null) {
+  stopTakeProfitScanning();
+
+  console.log(`[TakeProfit] Starting position scanning (every ${intervalMs/1000}s)`);
+
+  takeProfitInterval = setInterval(async () => {
+    try {
+      await scanTakeProfitOpportunities(userConfig);
+    } catch (error) {
+      console.error('[TakeProfit] Scan error:', error.message);
+    }
+  }, intervalMs);
+}
+
+/**
+ * Stop take-profit scanning
+ */
+function stopTakeProfitScanning() {
+  if (takeProfitInterval) {
+    clearInterval(takeProfitInterval);
+    takeProfitInterval = null;
+  }
+}
 
 async function fetchCryptoMarkets() {
   const now = Date.now();
@@ -2379,7 +3436,8 @@ function parseMarket(market) {
 }
 
 // Analyze market and find the SAFEST side to bet (highest win probability)
-function analyzeCryptoMarket(parsed) {
+// Now incorporates orderbook data, spread penalty, and momentum confirmation
+function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConfig = null) {
   if (!parsed.cryptoType || !parsed.strikePrice || !parsed.marketType || parsed.marketType === 'between') {
     return null;
   }
@@ -2388,6 +3446,10 @@ function analyzeCryptoMarket(parsed) {
   if (!priceData || !priceData.price) {
     return null;
   }
+
+  const cfg = userConfig || config;
+  const liquiditySettings = cfg.liquiditySettings || {};
+  const momentumSettings = cfg.momentumSettings || {};
 
   const currentPrice = priceData.price;
   const volatility = priceData.volatility;
@@ -2450,9 +3512,36 @@ function analyzeCryptoMarket(parsed) {
     console.log(`   ⚠️ Market disagreement on NO: Our ${(probNoWins*100).toFixed(0)}% vs Market ${(marketProbNo*100).toFixed(0)}% → Adjusted to ${(adjustedProbNoWins*100).toFixed(0)}%`);
   }
 
-  // Use adjusted probabilities for edge calculation
-  const yesEdge = (adjustedProbYesWins - marketProbYes) * 100;
-  const noEdge = (adjustedProbNoWins - marketProbNo) * 100;
+  // ============================================
+  // SPREAD PENALTY (Phase 3 - Smart Edge)
+  // ============================================
+  // Subtract spread from edge to account for true cost of entry
+  let yesSpreadPenalty = 0;
+  let noSpreadPenalty = 0;
+
+  if (orderbook && liquiditySettings.spreadPenaltyEnabled !== false) {
+    // Calculate half-spread penalty (we pay half when entering, half when exiting)
+    const yesSpread = orderbook.yesSpread || 0; // In cents
+    const noSpread = orderbook.noSpread || 0;
+
+    yesSpreadPenalty = yesSpread / 200; // Half spread as percentage of $1
+    noSpreadPenalty = noSpread / 200;
+
+    if (yesSpreadPenalty > 0.01) {
+      console.log(`   📊 YES spread penalty: -${(yesSpreadPenalty * 100).toFixed(1)}% (spread: ${yesSpread}¢)`);
+    }
+    if (noSpreadPenalty > 0.01) {
+      console.log(`   📊 NO spread penalty: -${(noSpreadPenalty * 100).toFixed(1)}% (spread: ${noSpread}¢)`);
+    }
+  }
+
+  // Calculate edge with spread penalty
+  // New formula: yesEdge = (adjustedProbYesWins - effectiveCost - halfSpread) * 100
+  const effectiveYesCost = marketProbYes + yesSpreadPenalty;
+  const effectiveNoCost = marketProbNo + noSpreadPenalty;
+
+  let yesEdge = (adjustedProbYesWins - effectiveYesCost) * 100;
+  let noEdge = (adjustedProbNoWins - effectiveNoCost) * 100;
 
   // Build analysis description
   const momentumDesc = prediction.momentum.direction === 'up' ? '📈 UP' :
@@ -2460,45 +3549,201 @@ function analyzeCryptoMarket(parsed) {
   const timeDesc = prediction.analysis.timeDecayApplied ? '⏰ time decay' : '';
 
   // ============================================
-  // SAFETY-FIRST BET SELECTION
+  // BET SELECTION (with Swing Trade support)
   // ============================================
-  // Strategy: FAVOR HIGH-PRICED BETS (60¢+) with short time left
-  // These are safer because: 1) Market agrees with us, 2) Less time for volatility
-  // The algorithm was doing better on 80¢ bets with less time left!
+  // Default: FAVOR HIGH-PRICED BETS (40¢+) - safer, hold to expiry
+  // Swing Mode: Allow lower prices (15¢+) if momentum is favorable
 
   let bestBet = null;
+  const swingMode = cfg.swingTradeMode || {};
+  const isSwingEnabled = swingMode.enabled === true;
 
-  // Minimum price requirement: Favor bets where market agrees (higher price = higher market prob)
-  // A 60¢ bet means market thinks 60% likely - much safer than 20¢ "value" bets
-  const MIN_SAFE_PRICE = 0.40; // Minimum 40¢ (market agrees at least 40%)
+  // Determine minimum price based on mode
+  let MIN_PRICE;
+  let isSwingTrade = false;
 
-  // Evaluate YES side - require minimum price for "safe" bets
-  const yesValid = parsed.yesAsk >= MIN_SAFE_PRICE && parsed.yesAsk < 0.98 && yesEdge > 0.5;
+  if (isSwingEnabled) {
+    // Swing trade mode: allow lower prices
+    const swingMinPrice = (swingMode.minPriceCents || 15) / 100;
+    const swingMaxPrice = (swingMode.maxPriceCents || 50) / 100;
+
+    // Check if this market fits swing trade criteria
+    const yesInSwingRange = parsed.yesAsk >= swingMinPrice && parsed.yesAsk <= swingMaxPrice;
+    const noInSwingRange = parsed.noAsk >= swingMinPrice && parsed.noAsk <= swingMaxPrice;
+
+    if (yesInSwingRange || noInSwingRange) {
+      // For swing trades, require momentum confirmation
+      if (!swingMode.requireMomentum || (momentum && momentum.strength > 0.3)) {
+        MIN_PRICE = swingMinPrice;
+        isSwingTrade = true;
+        console.log(`   🔄 SWING MODE: Considering ${parsed.cryptoType} @ ${Math.round(Math.min(parsed.yesAsk, parsed.noAsk)*100)}¢`);
+      } else {
+        // No momentum confirmation, use safe price
+        MIN_PRICE = 0.40;
+      }
+    } else {
+      // Outside swing range, use safe price
+      MIN_PRICE = 0.40;
+    }
+  } else {
+    // Standard mode: minimum 40¢ (market agrees at least 40%)
+    MIN_PRICE = 0.40;
+  }
+
+  // ============================================
+  // LIQUIDITY FILTERS (Phase 3)
+  // ============================================
+  const MIN_LIQUIDITY = liquiditySettings.minContracts || 10;
+  const MAX_SPREAD_CENTS = liquiditySettings.maxSpreadCents || 8;
+
+  // Check liquidity and spread requirements
+  // Only apply filter if we have REAL orderbook data (not default/failed fetch)
+  let yesLiquidityOk = true;
+  let noLiquidityOk = true;
+
+  const hasRealOrderbook = orderbook && orderbook.source !== 'default' && liquiditySettings.enabled !== false;
+
+  if (hasRealOrderbook) {
+    const yesLiquidity = orderbook.yesLiquidityAtBest || 0;
+    const noLiquidity = orderbook.noLiquidityAtBest || 0;
+    const yesSpread = orderbook.yesSpread || 0;
+    const noSpread = orderbook.noSpread || 0;
+
+    yesLiquidityOk = yesLiquidity >= MIN_LIQUIDITY && yesSpread <= MAX_SPREAD_CENTS;
+    noLiquidityOk = noLiquidity >= MIN_LIQUIDITY && noSpread <= MAX_SPREAD_CENTS;
+
+    if (!yesLiquidityOk) {
+      console.log(`   🚫 YES liquidity filter: ${yesLiquidity} contracts (need ${MIN_LIQUIDITY}), spread ${yesSpread}¢ (max ${MAX_SPREAD_CENTS}¢)`);
+    }
+    if (!noLiquidityOk) {
+      console.log(`   🚫 NO liquidity filter: ${noLiquidity} contracts (need ${MIN_LIQUIDITY}), spread ${noSpread}¢ (max ${MAX_SPREAD_CENTS}¢)`);
+    }
+  }
+
+  // Evaluate YES side - require minimum price + liquidity
+  // For swing trades, use lower MIN_PRICE; for safe bets, use 40¢
+  const yesValid = parsed.yesAsk >= MIN_PRICE && parsed.yesAsk < 0.98 && yesEdge > 0.5 && yesLiquidityOk;
   // Evaluate NO side
-  const noValid = parsed.noAsk >= MIN_SAFE_PRICE && parsed.noAsk < 0.98 && noEdge > 0.5;
+  const noValid = parsed.noAsk >= MIN_PRICE && parsed.noAsk < 0.98 && noEdge > 0.5 && noLiquidityOk;
 
   // Pick the side with HIGHER WIN PROBABILITY (safest bet)
   if (yesValid && noValid) {
     // Both sides have positive edge - pick the one with higher probability
-    if (probYesWins >= probNoWins) {
-      bestBet = { side: 'YES', edge: yesEdge, prob: probYesWins, price: parsed.yesAsk };
+    // Use ADJUSTED probability for consistency with edge calculation
+    if (adjustedProbYesWins >= adjustedProbNoWins) {
+      bestBet = { side: 'YES', edge: yesEdge, prob: adjustedProbYesWins, price: parsed.yesAsk, spreadPenalty: yesSpreadPenalty, isSwingTrade };
     } else {
-      bestBet = { side: 'NO', edge: noEdge, prob: probNoWins, price: parsed.noAsk };
+      bestBet = { side: 'NO', edge: noEdge, prob: adjustedProbNoWins, price: parsed.noAsk, spreadPenalty: noSpreadPenalty, isSwingTrade };
     }
   } else if (yesValid) {
-    bestBet = { side: 'YES', edge: yesEdge, prob: probYesWins, price: parsed.yesAsk };
+    bestBet = { side: 'YES', edge: yesEdge, prob: adjustedProbYesWins, price: parsed.yesAsk, spreadPenalty: yesSpreadPenalty, isSwingTrade };
   } else if (noValid) {
-    bestBet = { side: 'NO', edge: noEdge, prob: probNoWins, price: parsed.noAsk };
+    bestBet = { side: 'NO', edge: noEdge, prob: adjustedProbNoWins, price: parsed.noAsk, spreadPenalty: noSpreadPenalty, isSwingTrade };
   }
 
-  // No valid bet found - log why for high-priced markets
+  // No valid bet found - return partial data so user can see the analysis
   if (!bestBet) {
-    // Log markets where prices are too high for our model
     const maxPrice = Math.max(parsed.yesAsk || 0, parsed.noAsk || 0);
-    if (maxPrice > 0.75) {
-      console.log(`   ⚠️ Skipped ${parsed.cryptoType} market: YES@${Math.round((parsed.yesAsk||0)*100)}¢ NO@${Math.round((parsed.noAsk||0)*100)}¢ | Our prob: ${(probYesWins*100).toFixed(0)}% | Need >${Math.round(maxPrice*100)}% to bet`);
+    const bestProb = Math.max(adjustedProbYesWins, adjustedProbNoWins);
+    const bestSide = adjustedProbYesWins >= adjustedProbNoWins ? 'YES' : 'NO';
+    const bestEdge = bestSide === 'YES' ? yesEdge : noEdge;
+
+    // Determine why no bet was recommended
+    let filterReason = 'No edge';
+    if (bestEdge < 0.5) {
+      filterReason = `No edge (${bestEdge.toFixed(1)}%)`;
+    } else if (bestProb < 0.50) {
+      filterReason = `Low confidence (${(bestProb*100).toFixed(0)}%)`;
+    } else if (!yesLiquidityOk && !noLiquidityOk) {
+      filterReason = 'Low liquidity';
+    } else if (parsed.yesAsk < MIN_PRICE && parsed.noAsk < MIN_PRICE) {
+      filterReason = `Price too low (<${Math.round(MIN_PRICE*100)}¢)`;
     }
-    return null;
+
+    if (maxPrice > 0.75) {
+      console.log(`   ⚠️ Skipped ${parsed.cryptoType} market: YES@${Math.round((parsed.yesAsk||0)*100)}¢ NO@${Math.round((parsed.noAsk||0)*100)}¢ | Our prob: ${(bestProb*100).toFixed(0)}% | ${filterReason}`);
+    }
+
+    // Return partial analysis so card can display probability
+    return {
+      ...parsed,
+      currentPrice,
+      volatility: (volatility * 100).toFixed(2) + '%',
+      pctFromStrike: pctFromStrike.toFixed(2),
+      zScore: prediction.zScore.toFixed(2),
+      probYesWins: probYesWins * 100,
+      probNoWins: probNoWins * 100,
+      ourProbability: bestProb * 100,
+      winProbability: (bestProb * 100).toFixed(1),
+      marketImpliedProb: maxPrice * 100,
+      yesEdge,
+      noEdge,
+      edge: bestEdge,
+      betSide: bestSide,
+      betPrice: bestSide === 'YES' ? parsed.yesAsk : parsed.noAsk,
+      betPriceCents: Math.round((bestSide === 'YES' ? parsed.yesAsk : parsed.noAsk) * 100),
+      isRecommended: false,
+      isLocked: true,
+      filterReason,
+      timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining),
+      momentum: prediction.momentum.direction,
+      momentumStrength: prediction.momentum.strength,
+      confidence: (prediction.confidence * 100).toFixed(0) + '%',
+      dataPoints: prediction.dataPoints
+    };
+  }
+
+  // ============================================
+  // MOMENTUM CONFIRMATION (Phase 4)
+  // ============================================
+  // Apply momentum bonus/penalty to edge
+  let momentumAdjustment = 0;
+  let momentumInfo = null;
+
+  if (momentum && momentumSettings.enabled !== false) {
+    // Check if momentum aligns with our bet
+    const momentumAnalysis = {
+      ...momentum,
+      alignment: 'neutral'
+    };
+
+    // For YES bets on "above" markets, upward momentum is good
+    // For NO bets on "above" markets, downward momentum is good
+    if (parsed.marketType === 'above') {
+      if (bestBet.side === 'YES' && momentum.direction === 'up') {
+        momentumAnalysis.alignment = 'aligned';
+      } else if (bestBet.side === 'NO' && momentum.direction === 'down') {
+        momentumAnalysis.alignment = 'aligned';
+      } else if (bestBet.side === 'YES' && momentum.direction === 'down') {
+        momentumAnalysis.alignment = 'opposed';
+      } else if (bestBet.side === 'NO' && momentum.direction === 'up') {
+        momentumAnalysis.alignment = 'opposed';
+      }
+    } else {
+      // For "below" markets, reverse the logic
+      if (bestBet.side === 'YES' && momentum.direction === 'down') {
+        momentumAnalysis.alignment = 'aligned';
+      } else if (bestBet.side === 'NO' && momentum.direction === 'up') {
+        momentumAnalysis.alignment = 'aligned';
+      } else if (bestBet.side === 'YES' && momentum.direction === 'up') {
+        momentumAnalysis.alignment = 'opposed';
+      } else if (bestBet.side === 'NO' && momentum.direction === 'down') {
+        momentumAnalysis.alignment = 'opposed';
+      }
+    }
+
+    momentumInfo = momentumAnalysis;
+
+    // Apply adjustment based on alignment and strength
+    if (momentumAnalysis.alignment === 'aligned' && momentum.strength > 0.3) {
+      momentumAdjustment = (momentumSettings.alignmentBonus || 2) * momentum.strength;
+      console.log(`   ✅ Momentum ALIGNED: +${momentumAdjustment.toFixed(1)}% bonus (${momentum.direction}, strength ${(momentum.strength*100).toFixed(0)}%)`);
+    } else if (momentumAnalysis.alignment === 'opposed' && momentum.strength > 0.3) {
+      momentumAdjustment = (momentumSettings.oppositionPenalty || -3) * momentum.strength;
+      console.log(`   ⚠️ Momentum OPPOSED: ${momentumAdjustment.toFixed(1)}% penalty (${momentum.direction}, strength ${(momentum.strength*100).toFixed(0)}%)`);
+    }
+
+    bestBet.edge += momentumAdjustment;
   }
 
   // Determine if this is a "safe" bet (high confidence)
@@ -2558,7 +3803,20 @@ function analyzeCryptoMarket(parsed) {
     confidence: (prediction.confidence * 100).toFixed(0) + '%',
     dataPoints: prediction.dataPoints,
     analysisMethod: prediction.analysis.method,
-    timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining)
+    timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining),
+    // Phase 3 & 4: Orderbook and momentum data
+    spreadPenalty: bestBet.spreadPenalty || 0,
+    momentumAdjustment: momentumAdjustment || 0,
+    momentumInfo: momentumInfo,
+    orderbookData: orderbook ? {
+      yesSpread: orderbook.yesSpread,
+      noSpread: orderbook.noSpread,
+      yesLiquidity: orderbook.yesLiquidityAtBest,
+      noLiquidity: orderbook.noLiquidityAtBest
+    } : null,
+    // Swing trade info
+    isSwingTrade: bestBet.isSwingTrade || false,
+    minPriceUsed: MIN_PRICE
   };
 }
 
@@ -2726,13 +3984,15 @@ app.get('/api/opportunities/all', async (req, res) => {
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
         userPortfolio.positions = posData.market_positions || posData.positions || [];
+        // Sync existing Kalshi positions to betHistory for accurate exposure tracking
+        syncKalshiPositionsToBetHistory(req.userState, userPortfolio.positions, req.userId);
       } catch (e) {
         console.log('Could not refresh positions:', e.message);
       }
     }
 
-    // Get current risk info by type
-    const riskByType = getRiskByType();
+    // Get current risk info by type (user-specific)
+    const riskByType = getRiskByType(req.userState);
 
     // Price display (BTC, ETH, SOL only)
     const priceDisplay = {
@@ -2772,7 +4032,7 @@ app.get('/api/opportunities/all', async (req, res) => {
         remainingDollars: (Math.max(0, getMaxTotalRisk(userConfig) - riskByType.total) / 100).toFixed(2),
         // Per-token limit
         maxPerToken: getMaxPerToken(userConfig),
-        byToken: getExposureByToken(),
+        byToken: getExposureByToken(req.userState),
         // Hourly pool
         hourly: {
           current: riskByType.hourly,
@@ -2801,11 +4061,17 @@ app.get('/api/opportunities/all', async (req, res) => {
 // Get current risk exposure
 app.get('/api/risk', async (req, res) => {
   try {
+    const userConfig = req.userState?.config || config;
+    const userPortfolio = req.userState?.portfolio || portfolio;
+    const userBetHistory = req.userState?.betHistory || betHistory;
+
     // Refresh portfolio if authenticated
-    if (config.isAuthenticated) {
+    if (userConfig.isAuthenticated) {
       try {
-        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
-        portfolio.positions = posData.market_positions || posData.positions || [];
+        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
+        userPortfolio.positions = posData.market_positions || posData.positions || [];
+        // Sync existing Kalshi positions to betHistory for accurate exposure tracking
+        syncKalshiPositionsToBetHistory(req.userState, userPortfolio.positions, req.userId);
       } catch (e) {
         console.log('Could not refresh positions:', e.message);
       }
@@ -2814,8 +4080,8 @@ app.get('/api/risk', async (req, res) => {
     // Calculate risk from Kalshi positions
     let kalshiRisk = 0;
     const kalshiTickers = new Set();
-    if (portfolio.positions && Array.isArray(portfolio.positions)) {
-      for (const pos of portfolio.positions) {
+    if (userPortfolio.positions && Array.isArray(userPortfolio.positions)) {
+      for (const pos of userPortfolio.positions) {
         const contracts = Math.abs(pos.position || 0);
         if (contracts > 0) {
           const avgPrice = pos.average_price || 50;
@@ -2829,7 +4095,7 @@ app.get('/api/risk', async (req, res) => {
     // Only count bets from the last 2 hours
     let localRisk = 0;
     const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
-    const unsettledBets = betHistory.filter(bet => {
+    const unsettledBets = userBetHistory.filter(bet => {
       if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') {
         return false;
       }
@@ -2848,18 +4114,19 @@ app.get('/api/risk', async (req, res) => {
     }
 
     const currentRisk = kalshiRisk + localRisk;
-    const remainingBudget = Math.max(0, getMaxTotalRisk() - currentRisk);
+    const maxRisk = getMaxTotalRisk(userConfig);
+    const remainingBudget = Math.max(0, maxRisk - currentRisk);
 
-    console.log(`📊 Risk: Kalshi=$${(kalshiRisk/100).toFixed(2)} (${kalshiTickers.size} positions), Local=$${(localRisk/100).toFixed(2)} (${unsettledBets.length} bets), Total=$${(currentRisk/100).toFixed(2)} / $${(getMaxTotalRisk()/100).toFixed(2)}`);
+    console.log(`📊 Risk: Kalshi=$${(kalshiRisk/100).toFixed(2)} (${kalshiTickers.size} positions), Local=$${(localRisk/100).toFixed(2)} (${unsettledBets.length} bets), Total=$${(currentRisk/100).toFixed(2)} / $${(maxRisk/100).toFixed(2)}`);
 
     res.json({
       success: true,
       risk: {
         current: currentRisk,
-        max: getMaxTotalRisk(),
+        max: maxRisk,
         remaining: remainingBudget,
         currentDollars: (currentRisk / 100).toFixed(2),
-        maxDollars: (getMaxTotalRisk() / 100).toFixed(2),
+        maxDollars: (maxRisk / 100).toFixed(2),
         remainingDollars: (remainingBudget / 100).toFixed(2),
         positionCount: kalshiTickers.size,
         unsettledBetCount: unsettledBets.length,
@@ -3058,238 +4325,37 @@ app.post('/api/settings/aggressive-mode', (req, res) => {
 // PROFILE ENDPOINTS
 // ============================================
 
-// Get all profiles - FILTERED BY USER
+// DEPRECATED: Profile system removed - credentials are now tied to user account
+// These endpoints return empty/success for backwards compatibility
 app.get('/api/profiles', (req, res) => {
-  // Filter profiles to only show those belonging to the current user
-  const profileList = Object.entries(profiles)
-    .filter(([id, p]) => {
-      // Only show profiles that belong to this user (or have no owner for legacy migration)
-      return p.userId === req.userId || (!p.userId && req.userId);
-    })
-    .map(([id, p]) => ({
-      id,
-      name: p.name,
-      hasCredentials: !!(p.kalshiApiKeyId && p.kalshiPrivateKey),
-      hasPin: !!p.pin,
-      isActive: id === activeProfileId,
-      lastActive: p.lastActive,
-      createdAt: p.createdAt
-    }));
-
+  // Profiles deprecated - user state is tied to logged-in account
   res.json({
     success: true,
-    profiles: profileList,
-    activeProfileId
+    profiles: [],
+    activeProfileId: null,
+    message: 'Profiles deprecated - settings are now tied to your account'
   });
 });
 
-// Create new profile - ASSOCIATED WITH USER
+// DEPRECATED: Profile endpoints - now return success for backwards compatibility
 app.post('/api/profiles', (req, res) => {
-  const { name, pin } = req.body;
-
-  if (!name || name.length < 2) {
-    return res.status(400).json({ success: false, error: 'Name must be at least 2 characters' });
-  }
-
-  if (!req.userId) {
-    return res.status(401).json({ success: false, error: 'Must be logged in to create a profile' });
-  }
-
-  const id = `profile_${Date.now()}`;
-  profiles[id] = {
-    name,
-    pin: pin || null,
-    userId: req.userId,  // Associate profile with the logged-in user
-    kalshiApiKeyId: null,
-    kalshiPrivateKey: null,
-    settings: {
-      riskLimits: { ...DEFAULT_CONFIG.riskLimits },
-      scaleIn: { ...DEFAULT_CONFIG.scaleIn },
-      aggressiveMode: { ...DEFAULT_CONFIG.aggressiveMode }
-    },
-    betHistory: [],
-    createdAt: new Date().toISOString(),
-    lastActive: new Date().toISOString()
-  };
-
-  saveProfiles();
-
-  res.json({
-    success: true,
-    profileId: id,
-    message: `Profile "${name}" created`
-  });
+  res.json({ success: true, message: 'Profiles deprecated - use account settings instead' });
 });
 
-// Switch to profile
-app.post('/api/profiles/:id/switch', async (req, res) => {
-  const { id } = req.params;
-  const { pin } = req.body;
-
-  if (!profiles[id]) {
-    return res.status(404).json({ success: false, error: 'Profile not found' });
-  }
-
-  const profile = profiles[id];
-
-  // Verify user owns this profile (or it's a legacy unowned profile)
-  if (profile.userId && profile.userId !== req.userId) {
-    return res.status(403).json({ success: false, error: 'Access denied - this profile belongs to another user' });
-  }
-
-  // Check PIN if profile has one
-  if (profile.pin) {
-    if (!pin) {
-      // PIN required but not provided - tell client to prompt for it
-      return res.json({ success: false, requiresPin: true, profileName: profile.name });
-    }
-    if (profile.pin !== pin) {
-      // Wrong PIN
-      return res.status(401).json({ success: false, error: 'Invalid PIN', requiresPin: true });
-    }
-  }
-
-  // Save current profile state before switching
-  if (activeProfileId && profiles[activeProfileId]) {
-    saveToActiveProfile();
-  }
-
-  // Switch to new profile
-  activeProfileId = id;
-
-  // Load profile credentials
-  if (profile.kalshiApiKeyId && profile.kalshiPrivateKey) {
-    config.apiKeyId = profile.kalshiApiKeyId;
-    config.privateKey = profile.kalshiPrivateKey;
-    config.isAuthenticated = true;
-
-    // Verify credentials with Kalshi
-    try {
-      const balanceData = await kalshiRequest('GET', '/portfolio/balance');
-      portfolio.balance = balanceData.balance / 100;
-      console.log(`✅ Kalshi verified for ${profile.name}! Balance: $${portfolio.balance.toFixed(2)}`);
-    } catch (err) {
-      console.log(`⚠️ Kalshi verification failed: ${err.message}`);
-    }
-  } else {
-    config.isAuthenticated = false;
-  }
-
-  // Restore settings
-  if (profile.settings) {
-    if (profile.settings.riskLimits) config.riskLimits = { ...config.riskLimits, ...profile.settings.riskLimits };
-    if (profile.settings.scaleIn) config.scaleIn = { ...config.scaleIn, ...profile.settings.scaleIn };
-    if (profile.settings.aggressiveMode) config.aggressiveMode = { ...config.aggressiveMode, ...profile.settings.aggressiveMode };
-  }
-
-  // Restore bet history
-  betHistory = profile.betHistory || [];
-
-  // Update last active
-  profile.lastActive = new Date().toISOString();
-  saveProfiles();
-
-  // Restore auto-bet if was enabled
-  if (profile.settings?.autoBetEnabled && !config.autoBetEnabled) {
-    config.autoBetEnabled = true;
-    console.log(`🤖 Restoring auto-bet for ${profile.name}...`);
-  }
-
-  res.json({
-    success: true,
-    profile: {
-      id,
-      name: profile.name,
-      hasCredentials: config.isAuthenticated
-    },
-    balance: portfolio.balance,
-    isAuthenticated: config.isAuthenticated
-  });
+app.post('/api/profiles/:id/switch', (req, res) => {
+  res.json({ success: true, message: 'Profiles deprecated - settings tied to your account' });
 });
 
-// Save credentials to profile
 app.post('/api/profiles/save-credentials', (req, res) => {
-  if (!activeProfileId || !profiles[activeProfileId]) {
-    return res.status(400).json({ success: false, error: 'No active profile' });
-  }
-
-  profiles[activeProfileId].kalshiApiKeyId = config.apiKeyId;
-  profiles[activeProfileId].kalshiPrivateKey = config.privateKey;
-  saveProfiles();
-
-  res.json({ success: true, message: 'Credentials saved to profile' });
+  res.json({ success: true, message: 'Profiles deprecated - use Kalshi settings instead' });
 });
 
-// Logout from profile
 app.post('/api/profiles/logout', (req, res) => {
-  if (activeProfileId && profiles[activeProfileId]) {
-    // Save current state to profile before logout
-    saveToActiveProfile();
-  }
-
-  // Fully deactivate - clear profile selection AND credentials
-  activeProfileId = null;
-  config.apiKeyId = null;
-  config.privateKey = null;
-  config.isAuthenticated = false;
-  config.autoBetEnabled = false;
-
-  // Stop auto-bet if running
-  if (autoBetInterval) {
-    clearInterval(autoBetInterval);
-    autoBetInterval = null;
-  }
-
-  betHistory = [];
-
-  // Save the cleared active profile state
-  saveProfiles();
-
-  res.json({ success: true, message: 'Logged out - no active profile' });
+  res.json({ success: true, message: 'Use account logout instead' });
 });
 
-// Delete a profile
 app.delete('/api/profiles/:id', (req, res) => {
-  const { id } = req.params;
-  const { pin } = req.body;
-
-  if (!profiles[id]) {
-    return res.status(404).json({ success: false, error: 'Profile not found' });
-  }
-
-  const profile = profiles[id];
-
-  // Verify user owns this profile
-  if (profile.userId && profile.userId !== req.userId) {
-    return res.status(403).json({ success: false, error: 'Access denied - this profile belongs to another user' });
-  }
-
-  // Require PIN to delete if profile has one
-  if (profile.pin && profile.pin !== pin) {
-    return res.status(401).json({ success: false, error: 'Invalid PIN - required to delete profile' });
-  }
-
-  // If deleting active profile, logout first
-  if (activeProfileId === id) {
-    activeProfileId = null;
-    config.apiKeyId = null;
-    config.privateKey = null;
-    config.isAuthenticated = false;
-    config.autoBetEnabled = false;
-    if (autoBetInterval) {
-      clearInterval(autoBetInterval);
-      autoBetInterval = null;
-    }
-    betHistory = [];
-  }
-
-  // Delete the profile
-  const profileName = profile.name;
-  delete profiles[id];
-  saveProfiles();
-
-  console.log(`🗑️ Deleted profile: ${profileName}`);
-  res.json({ success: true, message: `Profile "${profileName}" deleted` });
+  res.json({ success: true, message: 'Profiles deprecated' });
 });
 
 // ============================================
@@ -3413,6 +4479,8 @@ app.post('/api/bet', async (req, res) => {
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
         userPortfolio.positions = posData.market_positions || posData.positions || [];
+        // Sync existing Kalshi positions to betHistory for accurate exposure tracking
+        syncKalshiPositionsToBetHistory(req.userState, userPortfolio.positions, req.userId);
       } catch (e) {
         console.log('Could not refresh positions before bet:', e.message);
       }
@@ -3466,11 +4534,11 @@ app.post('/api/bet', async (req, res) => {
     // Calculate bet size based on configurable limits
     const isHourly = isHourlyMarket(ticker);
     const poolType = isHourly ? 'hourly' : 'other';
-    const remainingBudget = getRemainingRiskBudget(ticker);
-    const remainingTokenBudget = getRemainingTokenBudget(ticker, market.assetType);
-    const poolMax = getMaxRisk(poolType);
-    const maxPerBet = getMaxPerBet(poolType);
-    const maxPerToken = getMaxPerToken();
+    const remainingBudget = getRemainingRiskBudget(ticker, req.userState, userConfig);
+    const remainingTokenBudget = getRemainingTokenBudget(ticker, market.assetType, req.userState, userConfig);
+    const poolMax = getMaxRisk(poolType, userConfig);
+    const maxPerBet = getMaxPerBet(poolType, userConfig);
+    const maxPerToken = getMaxPerToken(userConfig);
 
     // Take minimum of: max per bet, pool budget, and token budget
     const TARGET_BET_CENTS = Math.min(maxPerBet, remainingBudget, remainingTokenBudget);
@@ -3523,6 +4591,7 @@ app.post('/api/bet', async (req, res) => {
       // Track for performance analysis
       trackBet({
         ...betRecord,
+        userId: req.userId,
         token: market.assetType || getTokenFromTicker(ticker),
         predictedProb: parseFloat(req.body.winProbability) || 60,
         edge: parseFloat(req.body.edge) || 5,
@@ -3596,6 +4665,7 @@ app.post('/api/bet', async (req, res) => {
       // Track for performance analysis
       trackBet({
         ...betRecord,
+        userId: req.userId,
         count: filledCount,
         token: market.assetType || getTokenFromTicker(ticker),
         predictedProb: parseFloat(req.body.winProbability) || 60,
@@ -3618,7 +4688,7 @@ app.post('/api/bet', async (req, res) => {
         console.log('Could not refresh positions after bet:', e.message);
       }
 
-      const riskByType = getRiskByType();
+      const riskByType = getRiskByType(req.userState);
 
       // Save user state after successful bet
       if (req.userId) saveUserState(req.userId);
@@ -3632,27 +4702,27 @@ app.post('/api/bet', async (req, res) => {
         newBalance: userPortfolio.balance / 100,
         risk: {
           current: riskByType.total,
-          max: getMaxTotalRisk(),
-          remaining: getTotalRemainingBudget(),
+          max: getMaxTotalRisk(userConfig),
+          remaining: getTotalRemainingBudget(req.userState, userConfig),
           currentDollars: (riskByType.total / 100).toFixed(2),
-          maxDollars: (getMaxTotalRisk() / 100).toFixed(2),
-          remainingDollars: (getTotalRemainingBudget() / 100).toFixed(2),
+          maxDollars: (getMaxTotalRisk(userConfig) / 100).toFixed(2),
+          remainingDollars: (getTotalRemainingBudget(req.userState, userConfig) / 100).toFixed(2),
           hourly: {
             current: riskByType.hourly,
-            max: getMaxRisk('hourly'),
+            max: getMaxRisk('hourly', userConfig),
             currentDollars: (riskByType.hourly / 100).toFixed(2),
-            maxDollars: (getMaxRisk('hourly') / 100).toFixed(2)
+            maxDollars: (getMaxRisk('hourly', userConfig) / 100).toFixed(2)
           },
           other: {
             current: riskByType.other,
-            max: getMaxRisk('other'),
+            max: getMaxRisk('other', userConfig),
             currentDollars: (riskByType.other / 100).toFixed(2),
-            maxDollars: (getMaxRisk('other') / 100).toFixed(2)
+            maxDollars: (getMaxRisk('other', userConfig) / 100).toFixed(2)
           }
         }
       });
 
-      console.log(`✅ Bet placed. Risk now: $${(riskByType.total / 100).toFixed(2)} / $${(getMaxTotalRisk() / 100).toFixed(2)}`);
+      console.log(`✅ Bet placed. Risk now: $${(riskByType.total / 100).toFixed(2)} / $${(getMaxTotalRisk(userConfig) / 100).toFixed(2)}`);
     } catch (orderError) {
       console.error('Kalshi order error:', orderError.message);
       res.status(400).json({ success: false, error: `Kalshi: ${orderError.message}` });
@@ -3667,11 +4737,17 @@ app.post('/api/bet', async (req, res) => {
 // Auto-bet on best opportunity (Place Best Bet button) - now supports all markets
 app.post('/api/crypto/auto-bet', async (req, res) => {
   try {
+    const userConfig = req.userState?.config || config;
+    const userPortfolio = req.userState?.portfolio || portfolio;
+    const userBetHistory = req.userState?.betHistory || betHistory;
+
     // CRITICAL: Refresh positions from Kalshi FIRST to get accurate risk
-    if (config.isAuthenticated) {
+    if (userConfig.isAuthenticated) {
       try {
-        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
-        portfolio.positions = posData.market_positions || posData.positions || [];
+        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
+        userPortfolio.positions = posData.market_positions || posData.positions || [];
+        // Sync existing Kalshi positions to betHistory for accurate exposure tracking
+        syncKalshiPositionsToBetHistory(req.userState, userPortfolio.positions, req.userId);
       } catch (e) {
         console.log('Could not refresh positions before auto-bet:', e.message);
       }
@@ -3730,8 +4806,8 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
 
     // Check risk limit for this market's pool
     const isHourly = isHourlyMarket(best.ticker);
-    const remainingBudget = getRemainingRiskBudget(best.ticker);
-    const poolMax = isHourly ? getMaxRisk('hourly') : getMaxRisk('other');
+    const remainingBudget = getRemainingRiskBudget(best.ticker, req.userState, userConfig);
+    const poolMax = isHourly ? getMaxRisk('hourly', userConfig) : getMaxRisk('other', userConfig);
     const poolName = isHourly ? 'hourly' : 'other';
 
     if (remainingBudget < 10) { // Less than 10 cents remaining in this pool
@@ -3739,23 +4815,23 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
         success: true,
         message: `Risk limit reached for ${poolName} markets ($${(poolMax/100).toFixed(2)} max). Wait for positions to settle.`,
         bet: null,
-        risk: getRiskByType()
+        risk: getRiskByType(req.userState)
       });
     }
     const category = best.marketCategory || 'crypto';
-    const maxPerBet = getMaxPerBet(poolName === 'HOURLY' ? 'hourly' : 'other');
-    const remainingTokenBudget = getRemainingTokenBudget(best.ticker, best.assetType || best.cryptoType);
+    const maxPerBet = getMaxPerBet(poolName === 'HOURLY' ? 'hourly' : 'other', userConfig);
+    const remainingTokenBudget = getRemainingTokenBudget(best.ticker, best.assetType || best.cryptoType, req.userState, userConfig);
     console.log(`Auto-bet found [${category}]: ${best.title} | Win prob: ${best.winProbability}% | Side: ${best.betSide}`);
 
     // Check per-token limit first
     if (remainingTokenBudget < 10) {
       const token = getTokenFromTicker(best.ticker) || best.assetType || best.cryptoType || 'token';
-      console.log(`⚠️ Token limit reached for ${token} - $${(getMaxPerToken()/100).toFixed(2)} max per token`);
+      console.log(`⚠️ Token limit reached for ${token} - $${(getMaxPerToken(userConfig)/100).toFixed(2)} max per token`);
       return res.json({
         success: true,
-        message: `Token limit reached for ${token}. Max $${(getMaxPerToken()/100).toFixed(2)} per token.`,
+        message: `Token limit reached for ${token}. Max $${(getMaxPerToken(userConfig)/100).toFixed(2)} per token.`,
         bet: null,
-        risk: getRiskByType()
+        risk: getRiskByType(req.userState)
       });
     }
 
@@ -3809,15 +4885,16 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       console.log(`📈 Scale-in bet #${newBetCount} on ${best.ticker} at ${best.winProbability}%`);
     }
 
-    if (!config.isAuthenticated) {
+    if (!userConfig.isAuthenticated) {
       betRecord.status = 'simulated';
       betRecord.orderId = 'SIM-' + Date.now();
-      betHistory.unshift(betRecord);
-      config.bankroll -= betRecord.totalCost;
+      userBetHistory.unshift(betRecord);
+      userConfig.bankroll -= betRecord.totalCost;
 
       // Track for performance analysis
       trackBet({
         ...betRecord,
+        userId: req.userId,
         token: best.assetType || best.cryptoType || getTokenFromTicker(best.ticker),
         predictedProb: parseFloat(best.winProbability),
         marketPrice: priceCents,
@@ -3825,12 +4902,15 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
         expiryTime: best.expiry || best.close_time
       });
 
+      // Save user state
+      if (req.userId) saveUserState(req.userId);
+
       return res.json({
         success: true,
         simulated: true,
         bet: betRecord,
         opportunity: best,
-        newBalance: config.bankroll / 100
+        newBalance: userConfig.bankroll / 100
       });
     }
 
@@ -3855,7 +4935,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     console.log(`Auto-bet placing order (ask: ${priceCents}¢, bid: ${fillPrice}¢):`, JSON.stringify(orderRequest));
 
     try {
-      const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
+      const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest, userConfig);
       console.log('Auto-bet order response:', JSON.stringify(orderResponse));
 
       const order = orderResponse.order;
@@ -3882,11 +4962,12 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       betRecord.filledCount = filledCount;
       betRecord.avgPrice = order.average_fill_price || priceCents;
       betRecord.totalCost = filledCount * (order.average_fill_price || priceCents);
-      betHistory.unshift(betRecord);
+      userBetHistory.unshift(betRecord);
 
       // Track for performance analysis
       trackBet({
         ...betRecord,
+        userId: req.userId,
         count: filledCount,
         token: best.assetType || best.cryptoType || getTokenFromTicker(best.ticker),
         predictedProb: parseFloat(best.winProbability),
@@ -3895,19 +4976,22 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
         expiryTime: best.expiry || best.close_time
       });
 
-      const balanceData = await kalshiRequest('GET', '/portfolio/balance');
-      portfolio.balance = balanceData.balance || 0;
-      config.bankroll = portfolio.balance;
+      const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
+      userPortfolio.balance = balanceData.balance || 0;
+      userConfig.bankroll = userPortfolio.balance;
 
       // Refresh positions for accurate risk calculation
       try {
-        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open');
-        portfolio.positions = posData.market_positions || posData.positions || [];
+        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
+        userPortfolio.positions = posData.market_positions || posData.positions || [];
       } catch (e) {
         console.log('Could not refresh positions after auto-bet:', e.message);
       }
 
-      const riskByType = getRiskByType();
+      const riskByType = getRiskByType(req.userState);
+
+      // Save user state after successful bet
+      if (req.userId) saveUserState(req.userId);
 
       res.json({
         success: true,
@@ -3916,25 +5000,25 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
         avgPrice: betRecord.avgPrice,
         bet: betRecord,
         opportunity: best,
-        newBalance: portfolio.balance / 100,
+        newBalance: userPortfolio.balance / 100,
         risk: {
           current: riskByType.total,
-          max: getMaxTotalRisk(),
-          remaining: getTotalRemainingBudget(),
+          max: getMaxTotalRisk(userConfig),
+          remaining: getTotalRemainingBudget(req.userState, userConfig),
           currentDollars: (riskByType.total / 100).toFixed(2),
-          maxDollars: (getMaxTotalRisk() / 100).toFixed(2),
-          remainingDollars: (getTotalRemainingBudget() / 100).toFixed(2),
+          maxDollars: (getMaxTotalRisk(userConfig) / 100).toFixed(2),
+          remainingDollars: (getTotalRemainingBudget(req.userState, userConfig) / 100).toFixed(2),
           hourly: {
             current: riskByType.hourly,
-            max: getMaxRisk('hourly'),
+            max: getMaxRisk('hourly', userConfig),
             currentDollars: (riskByType.hourly / 100).toFixed(2),
-            maxDollars: (getMaxRisk('hourly') / 100).toFixed(2)
+            maxDollars: (getMaxRisk('hourly', userConfig) / 100).toFixed(2)
           },
           other: {
             current: riskByType.other,
-            max: getMaxRisk('other'),
+            max: getMaxRisk('other', userConfig),
             currentDollars: (riskByType.other / 100).toFixed(2),
-            maxDollars: (getMaxRisk('other') / 100).toFixed(2)
+            maxDollars: (getMaxRisk('other', userConfig) / 100).toFixed(2)
           }
         }
       });
@@ -3994,6 +5078,8 @@ async function runAutoBet(userId = null) {
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
         userPortfolio.positions = posData.market_positions || posData.positions || [];
+        // Sync existing Kalshi positions to betHistory for accurate exposure tracking
+        syncKalshiPositionsToBetHistory(userState, userPortfolio.positions, userId);
         console.log(`📊 Refreshed positions: ${userPortfolio.positions.length} open positions from Kalshi`);
         if (userPortfolio.positions.length > 0) {
           userPortfolio.positions.forEach(p => {
@@ -4001,14 +5087,33 @@ async function runAutoBet(userId = null) {
             console.log(`   Position: ${p.ticker} (${token}) | contracts=${p.position} | avg_price=${p.average_price} | market_exposure=${p.market_exposure}`);
           });
           // Log calculated exposure by token
-          const tokenExposure = getExposureByToken();
+          const tokenExposure = getExposureByToken(userState);
           console.log(`📊 Calculated token exposure:`);
           for (const [token, exposure] of Object.entries(tokenExposure)) {
-            console.log(`   💵 ${token}: $${(exposure/100).toFixed(2)} exposure (max $${(getMaxPerToken()/100).toFixed(2)})`);
+            console.log(`   💵 ${token}: $${(exposure/100).toFixed(2)} exposure (max $${(getMaxPerToken(userConfig)/100).toFixed(2)})`);
           }
         }
       } catch (e) {
         console.log('⚠️ Could not refresh positions:', e.message);
+      }
+
+      // ============================================
+      // TAKE-PROFIT SCAN (Phase 5)
+      // ============================================
+      // Scan existing positions for take-profit opportunities
+      if (userConfig.takeProfitSettings?.enabled && userPortfolio.positions?.length > 0) {
+        console.log(`\n📈 Scanning ${userPortfolio.positions.length} positions for take-profit...`);
+        try {
+          const takeProfitOpps = await scanTakeProfitOpportunities(userConfig, userPortfolio);
+          if (takeProfitOpps.length > 0) {
+            console.log(`   Found ${takeProfitOpps.length} take-profit opportunities`);
+            takeProfitOpps.forEach(opp => {
+              console.log(`   💰 ${opp.position.ticker}: ${opp.evaluation.analysis.profitPercent.toFixed(1)}% profit`);
+            });
+          }
+        } catch (e) {
+          console.log('⚠️ Take-profit scan error:', e.message);
+        }
       }
     }
 
@@ -4029,14 +5134,48 @@ async function runAutoBet(userId = null) {
     console.log(`📊 Fetched: ${cryptoMarkets.length} crypto markets (BTC, ETH, SOL)`);
     console.log(`   Recent bets tracking: ${recentBets.size} markets`);
 
-    // Analyze crypto opportunities
-    const allOpps = cryptoMarkets
-      .map(m => {
-        const analyzed = analyzeCryptoMarket(parseMarket(m));
-        if (analyzed) analyzed.marketCategory = 'crypto';
-        return analyzed;
-      })
-      .filter(m => m !== null);
+    // Subscribe to WebSocket updates for these markets
+    if (wsEnabled && kalshiWs) {
+      const tickers = cryptoMarkets.map(m => m.ticker);
+      kalshiWs.subscribeTickers(tickers);
+      kalshiWs.subscribeOrderbooks(tickers);
+    }
+
+    // Analyze crypto opportunities with enhanced data (orderbook + momentum)
+    const analysisPromises = cryptoMarkets.map(async (m) => {
+      const parsed = parseMarket(m);
+
+      // Fetch orderbook for spread/liquidity awareness (Phase 2)
+      let orderbook = null;
+      if (userConfig.liquiditySettings?.enabled !== false) {
+        try {
+          orderbook = await fetchOrderbook(m.ticker, userConfig);
+        } catch (e) {
+          // Continue without orderbook data if fetch fails
+        }
+      }
+
+      // Fetch candlesticks for momentum confirmation (Phase 4)
+      let momentum = null;
+      if (userConfig.momentumSettings?.enabled !== false) {
+        try {
+          const candleData = await fetchCandlesticks(m.ticker, 1, 15, userConfig);
+          if (candleData?.candles?.length >= 3) {
+            momentum = analyzeMarketMomentum(candleData);
+          }
+        } catch (e) {
+          // Continue without momentum data if fetch fails
+        }
+      }
+
+      // Analyze with enhanced data
+      const analyzed = analyzeCryptoMarket(parsed, orderbook, momentum, userConfig);
+      if (analyzed) analyzed.marketCategory = 'crypto';
+      return analyzed;
+    });
+
+    const allOppsRaw = await Promise.all(analysisPromises);
+    const allOpps = allOppsRaw.filter(m => m !== null);
     const withEdge = allOpps.filter(m => m.edge > 0);
     const above50 = allOpps.filter(m => parseFloat(m.winProbability) >= 50);
     const above60 = allOpps.filter(m => parseFloat(m.winProbability) >= 60);
@@ -4189,13 +5328,13 @@ async function runAutoBet(userId = null) {
 
     // Check risk limit for this market's pool
     const isHourly = isHourlyMarket(best.ticker);
-    const remainingBudget = getRemainingRiskBudget(best.ticker);
-    const riskByType = getRiskByType();
-    const poolMax = isHourly ? getMaxRisk('hourly') : getMaxRisk('other');
+    const remainingBudget = getRemainingRiskBudget(best.ticker, userState, userConfig);
+    const riskByType = getRiskByType(userState);
+    const poolMax = isHourly ? getMaxRisk('hourly', userConfig) : getMaxRisk('other', userConfig);
     const poolCurrent = isHourly ? riskByType.hourly : riskByType.other;
     const poolName = isHourly ? 'HOURLY' : 'OTHER';
 
-    console.log(`💰 Risk [${poolName}]: $${(poolCurrent/100).toFixed(2)} / $${(poolMax/100).toFixed(2)} | Total: $${(riskByType.total/100).toFixed(2)} / $${(getMaxTotalRisk()/100).toFixed(2)}`);
+    console.log(`💰 Risk [${poolName}]: $${(poolCurrent/100).toFixed(2)} / $${(poolMax/100).toFixed(2)} | Total: $${(riskByType.total/100).toFixed(2)} / $${(getMaxTotalRisk(userConfig)/100).toFixed(2)}`);
 
     console.log(`\n💰 BEST OPPORTUNITY [${category.toUpperCase()}]:`);
     console.log(`   ${best.title}`);
@@ -4221,15 +5360,15 @@ async function runAutoBet(userId = null) {
     }
 
     // Check per-token limit
-    const remainingTokenBudget = getRemainingTokenBudget(best.ticker, best.assetType || best.cryptoType);
+    const remainingTokenBudget = getRemainingTokenBudget(best.ticker, best.assetType || best.cryptoType, userState, userConfig);
     const tokenName = getTokenFromTicker(best.ticker) || best.assetType || best.cryptoType || 'token';
     if (remainingTokenBudget < 10) {
-      console.log(`⚠️ Token limit reached for ${tokenName} ($${(getMaxPerToken()/100).toFixed(2)} max) - skipping...`);
+      console.log(`⚠️ Token limit reached for ${tokenName} ($${(getMaxPerToken(userConfig)/100).toFixed(2)} max) - skipping...`);
       console.log('========================================\n');
 
       lastScanStatus.status = 'token_limit';
       lastScanStatus.statusMessage = `Token limit reached for ${tokenName}`;
-      lastScanStatus.blockedReasons.push(`${tokenName} limit: $${(getMaxPerToken()/100).toFixed(2)} max per token`);
+      lastScanStatus.blockedReasons.push(`${tokenName} limit: $${(getMaxPerToken(userConfig)/100).toFixed(2)} max per token`);
       return;
     }
 
@@ -4237,7 +5376,7 @@ async function runAutoBet(userId = null) {
     console.log(`   Token budget for ${tokenName}: $${(remainingTokenBudget/100).toFixed(2)} remaining`);
 
     // Cap bet at remaining risk budget, max per bet, OR token budget - whichever is lowest
-    const maxPerBet = getMaxPerBet(isHourly ? 'hourly' : 'other');
+    const maxPerBet = getMaxPerBet(isHourly ? 'hourly' : 'other', userConfig);
     const MAX_BET_CENTS = Math.min(maxPerBet, remainingBudget, remainingTokenBudget);
 
     const priceCents = Math.round(best.betPrice * 100);
@@ -4272,7 +5411,7 @@ async function runAutoBet(userId = null) {
       edge: best.edge,
       winProbability: best.winProbability,
       timestamp: new Date().toISOString(),
-      status: config.isAuthenticated ? 'pending' : 'simulated',
+      status: userConfig.isAuthenticated ? 'pending' : 'simulated',
       auto: true,
       isScaleIn: best.isScaleIn || false,
       scaleInNumber: newBetCount
@@ -4289,14 +5428,15 @@ async function runAutoBet(userId = null) {
       console.log(`📈 SCALE-IN: Adding bet #${newBetCount} on ${best.ticker} (prob increased to ${best.winProbability}%)`);
     }
 
-    if (!config.isAuthenticated) {
+    if (!userConfig.isAuthenticated) {
       betRecord.orderId = 'SIM-' + Date.now();
-      betHistory.unshift(betRecord);
-      config.bankroll -= betRecord.totalCost;
+      userBetHistory.unshift(betRecord);
+      userConfig.bankroll -= betRecord.totalCost;
 
       // Track for performance analysis
       trackBet({
         ...betRecord,
+        userId: userId,
         token: best.assetType || best.cryptoType || getTokenFromTicker(best.ticker),
         predictedProb: parseFloat(best.winProbability),
         marketPrice: priceCents,
@@ -4306,11 +5446,14 @@ async function runAutoBet(userId = null) {
         expiryTime: best.expiry || best.close_time
       });
 
+      // Save user state
+      if (userId) saveUserState(userId);
+
       console.log(`\n🎰 SIMULATED BET PLACED:`);
       console.log(`   ${betRecord.side.toUpperCase()} on ${assetName}`);
       console.log(`   ${count} contracts @ ${priceCents}¢ = $${(betRecord.totalCost/100).toFixed(2)}`);
       console.log(`   Edge: +${best.edge.toFixed(1)}% | Win prob: ${best.winProbability}%`);
-      console.log(`   New balance: $${(config.bankroll/100).toFixed(2)}`);
+      console.log(`   New balance: $${(userConfig.bankroll/100).toFixed(2)}`);
       console.log('========================================\n');
 
       lastScanStatus.status = 'bet_placed';
@@ -4349,7 +5492,7 @@ async function runAutoBet(userId = null) {
     }
     console.log(`   Order (ask: ${priceCents}¢, bid: ${fillPrice}¢): ${JSON.stringify(orderRequest)}`);
 
-    const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest);
+    const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest, userConfig);
     console.log(`   Response: ${JSON.stringify(orderResponse)}`);
 
     const order = orderResponse.order;
@@ -4377,11 +5520,12 @@ async function runAutoBet(userId = null) {
     betRecord.filledCount = filledCount;
     betRecord.avgPrice = order.average_fill_price || priceCents;
     betRecord.totalCost = filledCount * (order.average_fill_price || priceCents);
-    betHistory.unshift(betRecord);
+    userBetHistory.unshift(betRecord);
 
     // Track for performance analysis
     trackBet({
       ...betRecord,
+      userId: userId,
       count: filledCount,
       token: best.assetType || best.cryptoType || getTokenFromTicker(best.ticker),
       predictedProb: parseFloat(best.winProbability),
@@ -4392,13 +5536,16 @@ async function runAutoBet(userId = null) {
       expiryTime: best.expiry || best.close_time
     });
 
-    const balanceData = await kalshiRequest('GET', '/portfolio/balance');
-    config.bankroll = balanceData.balance || 0;
+    const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
+    userConfig.bankroll = balanceData.balance || 0;
+
+    // Save user state after successful bet
+    if (userId) saveUserState(userId);
 
     console.log(`\n✅ REAL BET FILLED:`);
     console.log(`   ${betRecord.side.toUpperCase()} on ${best.cryptoType || best.assetType}`);
     console.log(`   ${filledCount} contracts @ ${betRecord.avgPrice}¢`);
-    console.log(`   Edge: +${best.edge.toFixed(1)}% | New balance: $${(config.bankroll/100).toFixed(2)}`);
+    console.log(`   Edge: +${best.edge.toFixed(1)}% | New balance: $${(userConfig.bankroll/100).toFixed(2)}`);
     console.log('========================================\n');
 
     const assetName = best.cryptoType || best.assetType || getTokenFromTicker(best.ticker) || 'unknown';
@@ -4502,6 +5649,326 @@ app.get('/api/auto-bet/status', (req, res) => {
 });
 
 // ============================================
+// WEBSOCKET STATUS API (Phase 1)
+// ============================================
+
+// Get WebSocket connection status
+app.get('/api/websocket/status', (req, res) => {
+  const status = kalshiWs ? kalshiWs.getStatus() : {
+    connected: false,
+    authenticated: false,
+    subscriptions: 0,
+    tickersCached: 0,
+    orderbooksCached: 0
+  };
+
+  res.json({
+    success: true,
+    enabled: wsEnabled,
+    ...status
+  });
+});
+
+// ============================================
+// ORDERBOOK API (Phase 2)
+// ============================================
+
+// Get orderbook for a specific market
+app.get('/api/orderbook/:ticker', async (req, res) => {
+  try {
+    const { ticker } = req.params;
+    const userConfig = req.userState?.config || config;
+
+    const orderbook = await fetchOrderbook(ticker, userConfig);
+
+    res.json({
+      success: true,
+      orderbook,
+      cached: orderbookCache.has(ticker)
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================
+// MOMENTUM/CANDLESTICK API (Phase 4)
+// ============================================
+
+// Get candlestick data for a market
+app.get('/api/candlesticks/:ticker', async (req, res) => {
+  try {
+    const { ticker } = req.params;
+    const { period = 1, count = 15 } = req.query;
+    const userConfig = req.userState?.config || config;
+
+    const candleData = await fetchCandlesticks(ticker, parseInt(period), parseInt(count), userConfig);
+    const momentum = candleData?.candles?.length >= 3 ? analyzeMarketMomentum(candleData) : null;
+
+    res.json({
+      success: true,
+      candlesticks: candleData,
+      momentum
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================
+// TAKE-PROFIT API (Phase 5)
+// ============================================
+
+// Get take-profit settings
+app.get('/api/take-profit/settings', (req, res) => {
+  const userConfig = req.userState?.config || config;
+  res.json({
+    success: true,
+    settings: userConfig.takeProfitSettings || {}
+  });
+});
+
+// Update take-profit settings
+app.post('/api/take-profit/settings', (req, res) => {
+  if (!req.userId) {
+    return res.status(401).json({ success: false, error: 'Please login first' });
+  }
+
+  const userConfig = req.userState.config;
+  const updates = req.body;
+
+  // Merge updates into takeProfitSettings
+  userConfig.takeProfitSettings = {
+    ...userConfig.takeProfitSettings,
+    ...updates
+  };
+
+  saveUserState(req.userId);
+
+  res.json({
+    success: true,
+    message: 'Take-profit settings updated',
+    settings: userConfig.takeProfitSettings
+  });
+});
+
+// Manually scan for take-profit opportunities
+app.post('/api/take-profit/scan', async (req, res) => {
+  if (!req.userId) {
+    return res.status(401).json({ success: false, error: 'Please login first' });
+  }
+
+  const userConfig = req.userState.config;
+  const userPortfolio = req.userState.portfolio;
+
+  try {
+    const opportunities = await scanTakeProfitOpportunities(userConfig, userPortfolio);
+    res.json({
+      success: true,
+      opportunities,
+      scannedPositions: userPortfolio.positions?.length || 0
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Evaluate take-profit for a specific position
+app.get('/api/take-profit/evaluate/:ticker', async (req, res) => {
+  if (!req.userId) {
+    return res.status(401).json({ success: false, error: 'Please login first' });
+  }
+
+  const { ticker } = req.params;
+  const userConfig = req.userState.config;
+  const userPortfolio = req.userState.portfolio;
+
+  const position = userPortfolio.positions?.find(p => p.ticker === ticker);
+  if (!position) {
+    return res.status(404).json({ success: false, error: 'Position not found' });
+  }
+
+  try {
+    const evaluation = await evaluateTakeProfit(position, userConfig);
+    res.json({
+      success: true,
+      ...evaluation
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Execute take-profit for a specific position
+app.post('/api/take-profit/execute/:ticker', async (req, res) => {
+  if (!req.userId) {
+    return res.status(401).json({ success: false, error: 'Please login first' });
+  }
+
+  const { ticker } = req.params;
+  const userConfig = req.userState.config;
+  const userPortfolio = req.userState.portfolio;
+
+  const position = userPortfolio.positions?.find(p => p.ticker === ticker);
+  if (!position) {
+    return res.status(404).json({ success: false, error: 'Position not found' });
+  }
+
+  try {
+    // First evaluate
+    const evaluation = await evaluateTakeProfit(position, userConfig);
+    if (!evaluation.shouldExit) {
+      return res.json({
+        success: false,
+        message: 'Take-profit criteria not met',
+        evaluation
+      });
+    }
+
+    // Execute the exit
+    const result = await executeTakeProfitExit(position, evaluation.analysis, userConfig);
+    res.json({
+      success: result.executed,
+      ...result,
+      evaluation
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ============================================
+// LIQUIDITY SETTINGS API (Phase 3)
+// ============================================
+
+// Get liquidity settings
+app.get('/api/liquidity/settings', (req, res) => {
+  const userConfig = req.userState?.config || config;
+  res.json({
+    success: true,
+    settings: userConfig.liquiditySettings || {}
+  });
+});
+
+// Update liquidity settings
+app.post('/api/liquidity/settings', (req, res) => {
+  if (!req.userId) {
+    return res.status(401).json({ success: false, error: 'Please login first' });
+  }
+
+  const userConfig = req.userState.config;
+  const updates = req.body;
+
+  userConfig.liquiditySettings = {
+    ...userConfig.liquiditySettings,
+    ...updates
+  };
+
+  saveUserState(req.userId);
+
+  res.json({
+    success: true,
+    message: 'Liquidity settings updated',
+    settings: userConfig.liquiditySettings
+  });
+});
+
+// ============================================
+// MOMENTUM SETTINGS API (Phase 4)
+// ============================================
+
+// Get momentum settings
+app.get('/api/momentum/settings', (req, res) => {
+  const userConfig = req.userState?.config || config;
+  res.json({
+    success: true,
+    settings: userConfig.momentumSettings || {}
+  });
+});
+
+// Update momentum settings
+app.post('/api/momentum/settings', (req, res) => {
+  if (!req.userId) {
+    return res.status(401).json({ success: false, error: 'Please login first' });
+  }
+
+  const userConfig = req.userState.config;
+  const updates = req.body;
+
+  userConfig.momentumSettings = {
+    ...userConfig.momentumSettings,
+    ...updates
+  };
+
+  saveUserState(req.userId);
+
+  res.json({
+    success: true,
+    message: 'Momentum settings updated',
+    settings: userConfig.momentumSettings
+  });
+});
+
+// ============================================
+// SWING TRADE MODE API
+// ============================================
+
+// Get swing trade settings
+app.get('/api/swing-trade/settings', (req, res) => {
+  const userConfig = req.userState?.config || config;
+  res.json({
+    success: true,
+    settings: userConfig.swingTradeMode || {}
+  });
+});
+
+// Update swing trade settings
+app.post('/api/swing-trade/settings', (req, res) => {
+  if (!req.userId) {
+    return res.status(401).json({ success: false, error: 'Please login first' });
+  }
+
+  const userConfig = req.userState.config;
+  const updates = req.body;
+
+  userConfig.swingTradeMode = {
+    ...userConfig.swingTradeMode,
+    ...updates
+  };
+
+  saveUserState(req.userId);
+
+  res.json({
+    success: true,
+    message: 'Swing trade settings updated',
+    settings: userConfig.swingTradeMode
+  });
+});
+
+// Quick toggle for swing trade mode
+app.post('/api/swing-trade/toggle', (req, res) => {
+  if (!req.userId) {
+    return res.status(401).json({ success: false, error: 'Please login first' });
+  }
+
+  const userConfig = req.userState.config;
+  const { enabled } = req.body;
+
+  if (!userConfig.swingTradeMode) {
+    userConfig.swingTradeMode = {};
+  }
+
+  userConfig.swingTradeMode.enabled = enabled === true;
+  saveUserState(req.userId);
+
+  res.json({
+    success: true,
+    message: `Swing trade mode ${enabled ? 'ENABLED' : 'DISABLED'}`,
+    enabled: userConfig.swingTradeMode.enabled
+  });
+});
+
+// ============================================
 // USER AUTHENTICATION (Email/Password)
 // ============================================
 
@@ -4531,31 +5998,20 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Support legacy password-only login for backwards compatibility
-    if (password && !email) {
-      // Legacy mode - just check if password is not empty (old behavior)
-      res.json({ success: true, message: 'Legacy login' });
-      return;
-    }
-
     if (!email || !password) {
       return res.status(400).json({ success: false, error: 'Email and password required' });
     }
 
     const result = await auth.loginUser(email, password);
 
-    // If user has a linked profile, auto-activate it
-    if (result.profileId && profiles[result.profileId]) {
-      activeProfileId = result.profileId;
-      restoreActiveProfile();
-      console.log(`🔐 Auto-activated profile for ${email}`);
-    }
+    // User state is automatically loaded via middleware when they make authenticated requests
+    console.log(`🔐 User logged in: ${email}`);
 
     res.json({
       success: true,
       message: 'Logged in successfully',
       token: result.token,
-      user: { id: result.userId, email: result.email, profileId: result.profileId }
+      user: { id: result.userId, email: result.email }
     });
   } catch (error) {
     res.status(401).json({ success: false, error: error.message });
@@ -4583,32 +6039,13 @@ app.get('/api/auth/me', (req, res) => {
 
   res.json({
     success: true,
-    user: userInfo,
-    activeProfile: activeProfileId ? profiles[activeProfileId]?.name : null
+    user: userInfo
   });
 });
 
-// Link profile to user account
+// DEPRECATED: Profile linking - settings now tied directly to user account
 app.post('/api/auth/link-profile', (req, res) => {
-  const authHeader = req.headers.authorization;
-  const token = authHeader?.replace('Bearer ', '');
-
-  if (!token) {
-    return res.status(401).json({ success: false, error: 'Not authenticated' });
-  }
-
-  const userId = auth.verifyToken(token);
-  if (!userId) {
-    return res.status(401).json({ success: false, error: 'Invalid token' });
-  }
-
-  const { profileId } = req.body;
-  if (!profileId || !profiles[profileId]) {
-    return res.status(400).json({ success: false, error: 'Invalid profile ID' });
-  }
-
-  auth.linkProfileToUser(userId, profileId);
-  res.json({ success: true, message: 'Profile linked to account' });
+  res.json({ success: true, message: 'Profiles deprecated - settings tied to your account' });
 });
 
 // Kalshi API auth endpoints
@@ -4683,7 +6120,7 @@ app.get('/api/portfolio', async (req, res) => {
       // Fetch recent fills (completed trades) - last 20
       let realBetHistory = [];
       try {
-        const fillsData = await kalshiRequest('GET', '/portfolio/fills?limit=20');
+        const fillsData = await kalshiRequest('GET', '/portfolio/fills?limit=20', null, userConfig);
         const fills = fillsData.fills || [];
 
         // Transform fills into our bet history format
@@ -4881,16 +6318,22 @@ app.get('/api/settings', (req, res) => {
 app.post('/api/settings', (req, res) => {
   const { bankroll, minEdge, maxBetPercent } = req.body;
 
-  if (bankroll !== undefined) config.bankroll = Math.round(bankroll * 100);
-  if (minEdge !== undefined) config.minEdge = minEdge;
-  if (maxBetPercent !== undefined) config.maxBetPercent = maxBetPercent;
+  // Use user-specific config if authenticated, otherwise fall back to global
+  const userConfig = req.userState?.config || config;
+
+  if (bankroll !== undefined) userConfig.bankroll = Math.round(bankroll * 100);
+  if (minEdge !== undefined) userConfig.minEdge = minEdge;
+  if (maxBetPercent !== undefined) userConfig.maxBetPercent = maxBetPercent;
+
+  // Save user state if authenticated
+  if (req.userId) saveUserState(req.userId);
 
   res.json({
     success: true,
     settings: {
-      bankroll: config.bankroll / 100,
-      minEdge: config.minEdge,
-      maxBetPercent: config.maxBetPercent
+      bankroll: userConfig.bankroll / 100,
+      minEdge: userConfig.minEdge,
+      maxBetPercent: userConfig.maxBetPercent
     }
   });
 });
@@ -4899,34 +6342,153 @@ app.post('/api/settings', (req, res) => {
 // PERFORMANCE TRACKING ENDPOINTS
 // ============================================
 
-// Get performance summary
-app.get('/api/performance', (req, res) => {
-  // Check for pending settlements first
-  checkPendingSettlements();
+// Get performance summary - pulls from Kalshi portfolio history when authenticated
+app.get('/api/performance', async (req, res) => {
+  try {
+    const userConfig = req.userState?.config || config;
 
-  const settled = performanceData.bets.filter(b => b.outcome !== 'pending');
-  const pending = performanceData.bets.filter(b => b.outcome === 'pending');
+    // If authenticated, fetch real performance from Kalshi fills
+    if (userConfig.isAuthenticated) {
+      try {
+        // Fetch fills from Kalshi (up to 100 recent trades)
+        const fillsData = await kalshiRequest('GET', '/portfolio/fills?limit=100', null, userConfig);
+        const fills = fillsData.fills || [];
 
-  res.json({
-    success: true,
-    summary: {
-      ...performanceData.summary,
-      totalBets: performanceData.bets.length,
-      settledBets: settled.length,
-      pendingBets: pending.length,
-      winRate: settled.length > 0 ? ((performanceData.summary.wins / settled.length) * 100).toFixed(1) : '0.0',
-      totalWageredDollars: (performanceData.summary.totalWagered / 100).toFixed(2),
-      totalProfitDollars: (performanceData.summary.totalProfit / 100).toFixed(2),
-      roi: performanceData.summary.totalWagered > 0
-        ? ((performanceData.summary.totalProfit / performanceData.summary.totalWagered) * 100).toFixed(1)
-        : '0.0'
-    },
-    byToken: performanceData.byToken,
-    byProbBucket: performanceData.byProbBucket,
-    byMarketType: performanceData.byMarketType,
-    calibration: performanceData.summary.calibration,
-    recentBets: performanceData.bets.slice(-20).reverse()  // Last 20 bets, newest first
-  });
+        // Get unique tickers to fetch market results
+        const uniqueTickers = [...new Set(fills.map(f => f.ticker))].slice(0, 50);
+        const marketData = {};
+
+        // Fetch market data in parallel
+        const marketPromises = uniqueTickers.map(async (ticker) => {
+          try {
+            const data = await kalshiRequest('GET', `/markets/${ticker}`, null, userConfig);
+            if (data.market) {
+              return { ticker, result: data.market.result, status: data.market.status };
+            }
+          } catch (e) { /* ignore */ }
+          return { ticker, result: null, status: 'unknown' };
+        });
+
+        const marketResults = await Promise.all(marketPromises);
+        marketResults.forEach(m => { if (m) marketData[m.ticker] = m; });
+
+        // Process fills into bet records with outcomes
+        const bets = fills.map(fill => {
+          const count = fill.count || 1;
+          let priceCents = fill.price || 0;
+          if (priceCents > 0 && priceCents <= 1) priceCents = Math.round(priceCents * 100);
+          const totalCost = count * priceCents;
+
+          const market = marketData[fill.ticker] || {};
+          const result = market.result;
+          const betSide = fill.side?.toLowerCase();
+          const isBuy = fill.action?.toLowerCase() !== 'sell';
+
+          let outcome = 'pending';
+          let profit = 0;
+
+          if (result && isBuy) {
+            const won = betSide === result;
+            outcome = won ? 'won' : 'lost';
+            profit = won ? (count * 100 - totalCost) : -totalCost;
+          }
+
+          return {
+            ticker: fill.ticker,
+            side: betSide,
+            count,
+            price: priceCents,
+            totalCost,
+            timestamp: fill.created_time || fill.ts,
+            outcome,
+            profit,
+            token: getTokenFromTicker(fill.ticker)
+          };
+        });
+
+        // Calculate stats
+        const settled = bets.filter(b => b.outcome !== 'pending');
+        const pending = bets.filter(b => b.outcome === 'pending');
+        const wins = settled.filter(b => b.outcome === 'won').length;
+        const totalWagered = bets.reduce((sum, b) => sum + (b.totalCost || 0), 0);
+        const totalProfit = settled.reduce((sum, b) => sum + (b.profit || 0), 0);
+
+        // Group by token
+        const byToken = {};
+        for (const bet of settled) {
+          const token = bet.token || 'OTHER';
+          if (!byToken[token]) byToken[token] = { wins: 0, losses: 0, profit: 0, wagered: 0 };
+          byToken[token].wagered += bet.totalCost;
+          byToken[token].profit += bet.profit;
+          if (bet.outcome === 'won') byToken[token].wins++;
+          else byToken[token].losses++;
+        }
+
+        return res.json({
+          success: true,
+          source: 'kalshi',
+          summary: {
+            totalBets: bets.length,
+            settledBets: settled.length,
+            pendingBets: pending.length,
+            wins,
+            losses: settled.length - wins,
+            winRate: settled.length > 0 ? ((wins / settled.length) * 100).toFixed(1) : '0.0',
+            totalWagered,
+            totalWageredDollars: (totalWagered / 100).toFixed(2),
+            totalProfit,
+            totalProfitDollars: (totalProfit / 100).toFixed(2),
+            roi: totalWagered > 0 ? ((totalProfit / totalWagered) * 100).toFixed(1) : '0.0'
+          },
+          byToken,
+          recentBets: bets.slice(0, 20)
+        });
+      } catch (kalshiErr) {
+        console.log('Could not fetch Kalshi performance:', kalshiErr.message);
+        // Fall through to local data
+      }
+    }
+
+    // Fall back to local performanceData
+    checkPendingSettlements();
+
+    const userBets = req.userId
+      ? performanceData.bets.filter(b => b.userId === req.userId)
+      : performanceData.bets;
+
+    const settled = userBets.filter(b => b.outcome !== 'pending');
+    const pending = userBets.filter(b => b.outcome === 'pending');
+    const userWins = settled.filter(b => b.outcome === 'won').length;
+    const userTotalWagered = userBets.reduce((sum, b) => sum + (b.stake || 0), 0);
+    const userTotalProfit = settled.reduce((sum, b) => sum + (b.profit || 0), 0);
+
+    res.json({
+      success: true,
+      source: 'local',
+      summary: {
+        totalBets: userBets.length,
+        settledBets: settled.length,
+        pendingBets: pending.length,
+        wins: userWins,
+        losses: settled.length - userWins,
+        winRate: settled.length > 0 ? ((userWins / settled.length) * 100).toFixed(1) : '0.0',
+        totalWagered: userTotalWagered,
+        totalWageredDollars: (userTotalWagered / 100).toFixed(2),
+        totalProfit: userTotalProfit,
+        totalProfitDollars: (userTotalProfit / 100).toFixed(2),
+        roi: userTotalWagered > 0
+          ? ((userTotalProfit / userTotalWagered) * 100).toFixed(1)
+          : '0.0'
+      },
+      byToken: performanceData.byToken,
+      byProbBucket: performanceData.byProbBucket,
+      byMarketType: performanceData.byMarketType,
+      calibration: performanceData.summary.calibration,
+      recentBets: userBets.slice(-20).reverse()
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 // Get detailed bet history
@@ -4935,7 +6497,11 @@ app.get('/api/performance/bets', (req, res) => {
   const offset = parseInt(req.query.offset) || 0;
   const status = req.query.status; // 'pending', 'won', 'lost', or undefined for all
 
-  let bets = performanceData.bets;
+  // Filter bets to only show current user's bets (security fix)
+  let bets = req.userId
+    ? performanceData.bets.filter(b => b.userId === req.userId)
+    : performanceData.bets;
+
   if (status) {
     bets = bets.filter(b => b.outcome === status);
   }
@@ -5086,6 +6652,14 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
   // Auto-load Kalshi credentials from environment
   await loadCredentialsFromEnv();
 
+  // Initialize WebSocket for real-time market data (Phase 1)
+  console.log(`🔌 Initializing Kalshi WebSocket connection...`);
+  try {
+    initializeWebSocket();
+  } catch (err) {
+    console.log(`⚠️ WebSocket initialization failed (falling back to REST): ${err.message}`);
+  }
+
   // Check pending settlements every 2 minutes
   setInterval(async () => {
     try {
@@ -5094,6 +6668,14 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
       console.log('Settlement check error:', err.message);
     }
   }, 2 * 60 * 1000);
+
+  // Keep-alive: Self-ping every 10 minutes to prevent Render free tier from spinning down
+  const RENDER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+  setInterval(() => {
+    fetch(`${RENDER_URL}/api/health`)
+      .then(() => console.log('🔄 Keep-alive ping successful'))
+      .catch(() => {}); // Silently ignore errors
+  }, 10 * 60 * 1000);
 });
 
 server.on('error', (err) => {
