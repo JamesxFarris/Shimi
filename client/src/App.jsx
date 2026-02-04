@@ -585,6 +585,11 @@ function App() {
     minProfitPercent: 10,
     logOnly: false
   })
+  // Limit order settings for automatic stop-loss and take-profit via Kalshi
+  const [limitOrderSettings, setLimitOrderSettings] = useState({
+    stopLoss: { enabled: true, threshold: -40 },
+    takeProfit: { enabled: false, threshold: 25 }
+  })
   const [settingsSaved, setSettingsSaved] = useState(false)
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [marketFilter, setMarketFilter] = useState('all') // 'all', 'crypto', 'index'
@@ -770,6 +775,7 @@ function App() {
     fetchAutoBetStatus()  // Get current auto-bet state
     fetchSwingTradeSettings()  // Get swing trade settings
     fetchTakeProfitSettings()  // Get take-profit settings
+    fetchLimitOrderSettings()  // Get limit order settings (stop-loss/take-profit via Kalshi)
     fetchRiskSettings()     // Get saved risk settings
     checkAuth()
 
@@ -994,6 +1000,38 @@ function App() {
       }
     } catch (err) {
       console.error('Error fetching take-profit settings:', err)
+    }
+  }
+
+  // Fetch limit order settings (stop-loss and take-profit via Kalshi)
+  const fetchLimitOrderSettings = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/limit-order-settings`)
+      const data = await res.json()
+      if (data.success && data.limitOrderSettings) {
+        setLimitOrderSettings(data.limitOrderSettings)
+      }
+    } catch (err) {
+      console.error('Error fetching limit order settings:', err)
+    }
+  }
+
+  // Update limit order settings
+  const updateLimitOrderSettings = async (newSettings) => {
+    setLimitOrderSettings(newSettings)
+    try {
+      const res = await authFetch(`${API_BASE}/api/limit-order-settings`, {
+        method: 'POST',
+        body: JSON.stringify(newSettings)
+      })
+      const data = await res.json()
+      if (data.success && data.limitOrderSettings) {
+        setLimitOrderSettings(data.limitOrderSettings)
+        setSettingsSaved(true)
+        setTimeout(() => setSettingsSaved(false), 3000)
+      }
+    } catch (err) {
+      console.error('Error saving limit order settings:', err)
     }
   }
 
@@ -2089,6 +2127,112 @@ function App() {
                       <span className="stat-label">Requires Momentum:</span>
                       <span className="stat-value">{swingTradeMode.requireMomentum ? '✓ Yes' : '✗ No'}</span>
                     </div>
+                  </div>
+                </div>
+
+                {/* Limit Order Settings - Stop-Loss & Take-Profit via Kalshi */}
+                <div className="settings-card">
+                  <h3 className="settings-card-title">Auto Stop-Loss & Take-Profit</h3>
+                  <p className="settings-description">
+                    Automatic limit orders placed on Kalshi when you buy. Kalshi executes them for you.
+                  </p>
+
+                  {/* Stop-Loss Toggle + Threshold */}
+                  <div className="limit-order-setting">
+                    <div className="feature-toggle">
+                      <div className="feature-info">
+                        <span className="feature-icon">🛡️</span>
+                        <div className="feature-text">
+                          <span className="feature-name">Auto Stop-Loss</span>
+                          <span className="feature-desc">Sell automatically if position drops below threshold</span>
+                        </div>
+                      </div>
+                      <button
+                        className={`toggle-btn ${limitOrderSettings.stopLoss?.enabled ? 'active' : ''}`}
+                        onClick={() => updateLimitOrderSettings({
+                          ...limitOrderSettings,
+                          stopLoss: { ...limitOrderSettings.stopLoss, enabled: !limitOrderSettings.stopLoss?.enabled }
+                        })}
+                      >
+                        {limitOrderSettings.stopLoss?.enabled ? 'ON' : 'OFF'}
+                      </button>
+                    </div>
+                    {limitOrderSettings.stopLoss?.enabled && (
+                      <div className="threshold-input">
+                        <label>Stop-Loss Threshold:</label>
+                        <div className="threshold-controls">
+                          <button
+                            className="threshold-btn"
+                            onClick={() => updateLimitOrderSettings({
+                              ...limitOrderSettings,
+                              stopLoss: { ...limitOrderSettings.stopLoss, threshold: Math.max(-90, (limitOrderSettings.stopLoss?.threshold || -40) - 5) }
+                            })}
+                          >−</button>
+                          <span className="threshold-value">{limitOrderSettings.stopLoss?.threshold || -40}%</span>
+                          <button
+                            className="threshold-btn"
+                            onClick={() => updateLimitOrderSettings({
+                              ...limitOrderSettings,
+                              stopLoss: { ...limitOrderSettings.stopLoss, threshold: Math.min(-5, (limitOrderSettings.stopLoss?.threshold || -40) + 5) }
+                            })}
+                          >+</button>
+                        </div>
+                        <span className="threshold-example">
+                          Buy at 50¢ → Sell at {Math.round(50 * (1 + (limitOrderSettings.stopLoss?.threshold || -40) / 100))}¢
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Take-Profit Toggle + Threshold */}
+                  <div className="limit-order-setting" style={{ marginTop: '16px' }}>
+                    <div className="feature-toggle">
+                      <div className="feature-info">
+                        <span className="feature-icon">💎</span>
+                        <div className="feature-text">
+                          <span className="feature-name">Auto Take-Profit</span>
+                          <span className="feature-desc">Sell automatically if position rises above threshold</span>
+                        </div>
+                      </div>
+                      <button
+                        className={`toggle-btn ${limitOrderSettings.takeProfit?.enabled ? 'active' : ''}`}
+                        onClick={() => updateLimitOrderSettings({
+                          ...limitOrderSettings,
+                          takeProfit: { ...limitOrderSettings.takeProfit, enabled: !limitOrderSettings.takeProfit?.enabled }
+                        })}
+                      >
+                        {limitOrderSettings.takeProfit?.enabled ? 'ON' : 'OFF'}
+                      </button>
+                    </div>
+                    {limitOrderSettings.takeProfit?.enabled && (
+                      <div className="threshold-input">
+                        <label>Take-Profit Threshold:</label>
+                        <div className="threshold-controls">
+                          <button
+                            className="threshold-btn"
+                            onClick={() => updateLimitOrderSettings({
+                              ...limitOrderSettings,
+                              takeProfit: { ...limitOrderSettings.takeProfit, threshold: Math.max(5, (limitOrderSettings.takeProfit?.threshold || 25) - 5) }
+                            })}
+                          >−</button>
+                          <span className="threshold-value">+{limitOrderSettings.takeProfit?.threshold || 25}%</span>
+                          <button
+                            className="threshold-btn"
+                            onClick={() => updateLimitOrderSettings({
+                              ...limitOrderSettings,
+                              takeProfit: { ...limitOrderSettings.takeProfit, threshold: Math.min(100, (limitOrderSettings.takeProfit?.threshold || 25) + 5) }
+                            })}
+                          >+</button>
+                        </div>
+                        <span className="threshold-example">
+                          Buy at 50¢ → Sell at {Math.round(50 * (1 + (limitOrderSettings.takeProfit?.threshold || 25) / 100))}¢
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="limit-order-note" style={{ marginTop: '12px', fontSize: '12px', color: '#888' }}>
+                    Limit orders are placed immediately when you buy. Kalshi executes them automatically.
                   </div>
                 </div>
 

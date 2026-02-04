@@ -2931,6 +2931,81 @@ body {
   box-shadow: var(--glow-cyan);
 }
 
+/* Limit Order Settings Styles */
+.limit-order-setting {
+  margin-bottom: 8px;
+}
+
+.threshold-input {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.threshold-input label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.threshold-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.threshold-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.threshold-btn:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--neon-cyan);
+  color: var(--neon-cyan);
+}
+
+.threshold-value {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--neon-cyan);
+  min-width: 60px;
+  text-align: center;
+}
+
+.threshold-example {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+.limit-order-note {
+  font-family: var(--font-mono);
+  padding: 8px;
+  background: rgba(0, 240, 255, 0.05);
+  border-radius: 4px;
+  border-left: 2px solid var(--neon-cyan);
+}
+
 .settings-card.degen-card {
   border-color: rgba(255, 100, 50, 0.4);
   background: linear-gradient(135deg, rgba(255, 100, 50, 0.1) 0%, var(--bg-card) 100%);
