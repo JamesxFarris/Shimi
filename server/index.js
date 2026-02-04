@@ -94,17 +94,26 @@ const DEFAULT_CONFIG = {
       critical: 80               // At this: take any profit > 3%
     }
   },
-  // Limit Order Settings: Automatic stop-loss and take-profit via Kalshi limit orders
-  // These are placed immediately after purchase - Kalshi handles execution
+  // Limit Order Settings - DISABLED: Kalshi doesn't support limit orders for crypto markets
+  // These settings are kept for reference but the feature is disabled
+  // Stop-loss is now handled by active monitoring in evaluateTakeProfit()
   limitOrderSettings: {
     stopLoss: {
-      enabled: true,             // Place stop-loss limit sell on purchase
-      threshold: -40             // Sell if position is down 40% (e.g., bought at 50¢, sell at 30¢)
+      enabled: false,            // DISABLED - Kalshi rejects limit orders for crypto markets
+      threshold: -40             // Used by active monitoring for stop-loss threshold
     },
     takeProfit: {
-      enabled: false,            // Place take-profit limit sell on purchase
-      threshold: 25              // Sell if position is up 25% (e.g., bought at 50¢, sell at 62¢)
+      enabled: false,            // DISABLED - Kalshi rejects limit orders for crypto markets
+      threshold: 25              // Used by active monitoring for take-profit threshold
     }
+  },
+  // Active monitoring settings (runs every 15 seconds when auto-bet is on)
+  activeMonitoring: {
+    stopLossEnabled: true,       // Cut losses at threshold
+    stopLossThreshold: -40,      // Exit if position is down 40%
+    easyProfitEnabled: true,     // Take "free money" on high-confidence positions
+    easyProfitMinPrice: 75,      // Minimum price for easy profit (75¢ = 75% implied prob)
+    easyProfitThreshold: 10      // Take profit at 10%+ for high-confidence positions
   }
 };
 
@@ -3146,7 +3155,8 @@ function calculateTakeProfitUrgency(position, market, momentum, profitPercent) {
  */
 function calculateSmartStopLoss(position, market, profitPercent, userConfig) {
   const cfg = userConfig || config;
-  const defaultStopLoss = cfg.limitOrderSettings?.stopLoss?.threshold || -40;
+  // Use activeMonitoring settings, fall back to limitOrderSettings for backwards compatibility
+  const defaultStopLoss = cfg.activeMonitoring?.stopLossThreshold || cfg.limitOrderSettings?.stopLoss?.threshold || -40;
 
   // Need market data for smart decisions
   if (!market || !market.close_time) {
@@ -3439,26 +3449,41 @@ async function evaluateTakeProfit(position, userConfig = null) {
   // Base profit threshold (can be lowered by urgency)
   const baseMinProfit = settings.minProfitPercent || 10;
 
-  // 1. URGENCY-ADJUSTED THRESHOLD
+  // Get active monitoring settings
+  const activeMonitoring = cfg.activeMonitoring || {};
+
+  // 1. EASY PROFIT - Take "free money" on high-confidence positions
+  // If we bought at 75-85¢ (high implied probability), take smaller profits
+  // These positions have low variance - the profit is more reliable
+  const easyProfitEnabled = activeMonitoring.easyProfitEnabled !== false; // Default true
+  const easyProfitMinPrice = activeMonitoring.easyProfitMinPrice || 75;   // 75¢ = 75% implied prob
+  const easyProfitThreshold = activeMonitoring.easyProfitThreshold || 10; // Take 10%+ profit
+
+  if (easyProfitEnabled && avgCost >= easyProfitMinPrice && profitPercent >= easyProfitThreshold) {
+    shouldExit = true;
+    exitReason = `EASY PROFIT: High-confidence position (${avgCost}¢) at +${profitPercent.toFixed(1)}% - taking the free money`;
+  }
+
+  // 2. URGENCY-ADJUSTED THRESHOLD
   // Higher urgency = lower profit threshold required
   // At 50+ urgency, we'll take profits as low as 5%
   // At 80+ urgency, we'll take any profit above 3%
   const urgencyAdjustedMinProfit = Math.max(3, baseMinProfit - (urgencyScore / 5));
 
-  if (profitPercent >= urgencyAdjustedMinProfit && urgencyScore >= 40) {
+  if (!shouldExit && profitPercent >= urgencyAdjustedMinProfit && urgencyScore >= 40) {
     shouldExit = true;
     exitReason = `HIGH URGENCY (${urgencyScore}): Lock in ${profitPercent.toFixed(1)}% profit`;
   }
 
-  // 2. CLASSIC EV COMPARISON (when profit meets base threshold)
-  else if (profitPercent >= baseMinProfit && evExit > adjustedEvHold) {
+  // 4. CLASSIC EV COMPARISON (when profit meets base threshold)
+  else if (!shouldExit && profitPercent >= baseMinProfit && evExit > adjustedEvHold) {
     shouldExit = true;
     exitReason = `EV exit (${evExit.toFixed(0)}¢) > EV hold (${adjustedEvHold.toFixed(0)}¢)`;
   }
 
-  // 3. MOMENTUM REVERSAL OVERRIDE
+  // 5. MOMENTUM REVERSAL OVERRIDE
   // If momentum is strongly against us and we have any decent profit, exit
-  else if (momentum && momentum.strength > 0.5 && profitPercent >= 8) {
+  if (!shouldExit && momentum && momentum.strength > 0.5 && profitPercent >= 8) {
     const momentumAgainst = (side === 'yes' && momentum.direction === 'down') ||
                             (side === 'no' && momentum.direction === 'up');
     if (momentumAgainst) {
@@ -3467,7 +3492,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
     }
   }
 
-  // 4. TIME CRITICAL OVERRIDE
+  // 6. TIME CRITICAL OVERRIDE
   // With less than 3 minutes left and profit > 5%, consider exit
   // BUT: If probability is high (>75%), let it ride to expiration - expected payout is better
   if (market && !shouldExit) {
@@ -3488,7 +3513,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
     }
   }
 
-  // 5. BIG WINNER PROTECTION
+  // 7. BIG WINNER PROTECTION
   // If profit is 30%+, we protect it more aggressively
   if (!shouldExit && profitPercent >= 30) {
     // Take profit if EV hold isn't significantly better
@@ -5113,80 +5138,9 @@ app.post('/api/bet', async (req, res) => {
         marketType: isHourlyMarket(ticker) ? 'hourly' : ticker?.includes('15M') ? '15min' : 'daily'
       });
 
-      // ============================================
-      // PLACE LIMIT ORDERS (Stop-Loss & Take-Profit)
-      // ============================================
-      const limitSettings = userConfig.limitOrderSettings || DEFAULT_CONFIG.limitOrderSettings;
-      const buyPrice = betRecord.avgPrice; // The price we bought at
-      const betSide = side.toLowerCase();
-
-      // Place stop-loss limit order if enabled
-      if (limitSettings.stopLoss?.enabled && buyPrice > 0) {
-        try {
-          // Stop-loss threshold is negative (e.g., -40 means sell at 60% of buy price)
-          const stopLossPercent = limitSettings.stopLoss.threshold; // e.g., -40
-          const stopLossPrice = Math.round(buyPrice * (1 + stopLossPercent / 100));
-          const clampedStopLoss = Math.max(1, Math.min(99, stopLossPrice));
-
-          const stopLossOrder = {
-            ticker,
-            action: 'sell',
-            side: betSide,
-            type: 'limit',
-            count: filledCount
-          };
-
-          // Set price based on side
-          if (betSide === 'yes') {
-            stopLossOrder.yes_price = clampedStopLoss;
-          } else {
-            stopLossOrder.no_price = clampedStopLoss;
-          }
-
-          console.log(`📉 Placing stop-loss @ ${clampedStopLoss}¢ (${stopLossPercent}% from ${buyPrice}¢):`, JSON.stringify(stopLossOrder));
-          const slResponse = await kalshiRequest('POST', '/portfolio/orders', stopLossOrder, userConfig);
-          console.log(`✅ Stop-loss order placed: ${slResponse?.order?.order_id || 'unknown'}`);
-          betRecord.stopLossOrderId = slResponse?.order?.order_id;
-          betRecord.stopLossPrice = clampedStopLoss;
-        } catch (slError) {
-          console.error('⚠️ Failed to place stop-loss order:', slError.message);
-          // Don't fail the bet if stop-loss fails - it's not critical
-        }
-      }
-
-      // Place take-profit limit order if enabled
-      if (limitSettings.takeProfit?.enabled && buyPrice > 0) {
-        try {
-          // Take-profit threshold is positive (e.g., 25 means sell at 125% of buy price)
-          const takeProfitPercent = limitSettings.takeProfit.threshold; // e.g., 25
-          const takeProfitPrice = Math.round(buyPrice * (1 + takeProfitPercent / 100));
-          const clampedTakeProfit = Math.max(1, Math.min(99, takeProfitPrice));
-
-          const takeProfitOrder = {
-            ticker,
-            action: 'sell',
-            side: betSide,
-            type: 'limit',
-            count: filledCount
-          };
-
-          // Set price based on side
-          if (betSide === 'yes') {
-            takeProfitOrder.yes_price = clampedTakeProfit;
-          } else {
-            takeProfitOrder.no_price = clampedTakeProfit;
-          }
-
-          console.log(`📈 Placing take-profit @ ${clampedTakeProfit}¢ (+${takeProfitPercent}% from ${buyPrice}¢):`, JSON.stringify(takeProfitOrder));
-          const tpResponse = await kalshiRequest('POST', '/portfolio/orders', takeProfitOrder, userConfig);
-          console.log(`✅ Take-profit order placed: ${tpResponse?.order?.order_id || 'unknown'}`);
-          betRecord.takeProfitOrderId = tpResponse?.order?.order_id;
-          betRecord.takeProfitPrice = clampedTakeProfit;
-        } catch (tpError) {
-          console.error('⚠️ Failed to place take-profit order:', tpError.message);
-          // Don't fail the bet if take-profit fails - it's not critical
-        }
-      }
+      // NOTE: Limit orders removed - Kalshi doesn't support them for crypto markets
+      // Stop-loss and take-profit are now handled by active monitoring (evaluateTakeProfit)
+      // which runs every 15 seconds and executes market sells when thresholds are hit
 
       const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
       userPortfolio.balance = balanceData.balance || 0;
@@ -5501,74 +5455,8 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
         expiryTime: best.expiry || best.close_time
       });
 
-      // ============================================
-      // PLACE LIMIT ORDERS (Stop-Loss & Take-Profit) - AUTO-BET
-      // ============================================
-      const limitSettings = userConfig.limitOrderSettings || DEFAULT_CONFIG.limitOrderSettings;
-      const buyPrice = betRecord.avgPrice;
-      const betSide = best.betSide.toLowerCase();
-
-      // Place stop-loss limit order if enabled
-      if (limitSettings.stopLoss?.enabled && buyPrice > 0) {
-        try {
-          const stopLossPercent = limitSettings.stopLoss.threshold;
-          const stopLossPrice = Math.round(buyPrice * (1 + stopLossPercent / 100));
-          const clampedStopLoss = Math.max(1, Math.min(99, stopLossPrice));
-
-          const stopLossOrder = {
-            ticker: best.ticker,
-            action: 'sell',
-            side: betSide,
-            type: 'limit',
-            count: filledCount
-          };
-
-          if (betSide === 'yes') {
-            stopLossOrder.yes_price = clampedStopLoss;
-          } else {
-            stopLossOrder.no_price = clampedStopLoss;
-          }
-
-          console.log(`📉 [Auto-bet] Placing stop-loss @ ${clampedStopLoss}¢ (${stopLossPercent}% from ${buyPrice}¢)`);
-          const slResponse = await kalshiRequest('POST', '/portfolio/orders', stopLossOrder, userConfig);
-          console.log(`✅ [Auto-bet] Stop-loss order placed: ${slResponse?.order?.order_id || 'unknown'}`);
-          betRecord.stopLossOrderId = slResponse?.order?.order_id;
-          betRecord.stopLossPrice = clampedStopLoss;
-        } catch (slError) {
-          console.error('⚠️ [Auto-bet] Failed to place stop-loss order:', slError.message);
-        }
-      }
-
-      // Place take-profit limit order if enabled
-      if (limitSettings.takeProfit?.enabled && buyPrice > 0) {
-        try {
-          const takeProfitPercent = limitSettings.takeProfit.threshold;
-          const takeProfitPrice = Math.round(buyPrice * (1 + takeProfitPercent / 100));
-          const clampedTakeProfit = Math.max(1, Math.min(99, takeProfitPrice));
-
-          const takeProfitOrder = {
-            ticker: best.ticker,
-            action: 'sell',
-            side: betSide,
-            type: 'limit',
-            count: filledCount
-          };
-
-          if (betSide === 'yes') {
-            takeProfitOrder.yes_price = clampedTakeProfit;
-          } else {
-            takeProfitOrder.no_price = clampedTakeProfit;
-          }
-
-          console.log(`📈 [Auto-bet] Placing take-profit @ ${clampedTakeProfit}¢ (+${takeProfitPercent}% from ${buyPrice}¢)`);
-          const tpResponse = await kalshiRequest('POST', '/portfolio/orders', takeProfitOrder, userConfig);
-          console.log(`✅ [Auto-bet] Take-profit order placed: ${tpResponse?.order?.order_id || 'unknown'}`);
-          betRecord.takeProfitOrderId = tpResponse?.order?.order_id;
-          betRecord.takeProfitPrice = clampedTakeProfit;
-        } catch (tpError) {
-          console.error('⚠️ [Auto-bet] Failed to place take-profit order:', tpError.message);
-        }
-      }
+      // NOTE: Limit orders removed - Kalshi doesn't support them for crypto markets
+      // Stop-loss and take-profit handled by active monitoring (evaluateTakeProfit)
 
       const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
       userPortfolio.balance = balanceData.balance || 0;
@@ -6149,74 +6037,8 @@ async function runAutoBet(userId = null) {
       expiryTime: best.expiry || best.close_time
     });
 
-    // ============================================
-    // PLACE LIMIT ORDERS (Stop-Loss & Take-Profit) - runAutoBet
-    // ============================================
-    const limitSettings = userConfig.limitOrderSettings || DEFAULT_CONFIG.limitOrderSettings;
-    const buyPrice = betRecord.avgPrice;
-    const betSide = best.betSide.toLowerCase();
-
-    // Place stop-loss limit order if enabled
-    if (limitSettings.stopLoss?.enabled && buyPrice > 0) {
-      try {
-        const stopLossPercent = limitSettings.stopLoss.threshold;
-        const stopLossPrice = Math.round(buyPrice * (1 + stopLossPercent / 100));
-        const clampedStopLoss = Math.max(1, Math.min(99, stopLossPrice));
-
-        const stopLossOrder = {
-          ticker: best.ticker,
-          action: 'sell',
-          side: betSide,
-          type: 'limit',
-          count: filledCount
-        };
-
-        if (betSide === 'yes') {
-          stopLossOrder.yes_price = clampedStopLoss;
-        } else {
-          stopLossOrder.no_price = clampedStopLoss;
-        }
-
-        console.log(`   📉 Placing stop-loss @ ${clampedStopLoss}¢ (${stopLossPercent}% from ${buyPrice}¢)`);
-        const slResponse = await kalshiRequest('POST', '/portfolio/orders', stopLossOrder, userConfig);
-        console.log(`   ✅ Stop-loss order placed: ${slResponse?.order?.order_id || 'unknown'}`);
-        betRecord.stopLossOrderId = slResponse?.order?.order_id;
-        betRecord.stopLossPrice = clampedStopLoss;
-      } catch (slError) {
-        console.error('   ⚠️ Failed to place stop-loss order:', slError.message);
-      }
-    }
-
-    // Place take-profit limit order if enabled
-    if (limitSettings.takeProfit?.enabled && buyPrice > 0) {
-      try {
-        const takeProfitPercent = limitSettings.takeProfit.threshold;
-        const takeProfitPrice = Math.round(buyPrice * (1 + takeProfitPercent / 100));
-        const clampedTakeProfit = Math.max(1, Math.min(99, takeProfitPrice));
-
-        const takeProfitOrder = {
-          ticker: best.ticker,
-          action: 'sell',
-          side: betSide,
-          type: 'limit',
-          count: filledCount
-        };
-
-        if (betSide === 'yes') {
-          takeProfitOrder.yes_price = clampedTakeProfit;
-        } else {
-          takeProfitOrder.no_price = clampedTakeProfit;
-        }
-
-        console.log(`   📈 Placing take-profit @ ${clampedTakeProfit}¢ (+${takeProfitPercent}% from ${buyPrice}¢)`);
-        const tpResponse = await kalshiRequest('POST', '/portfolio/orders', takeProfitOrder, userConfig);
-        console.log(`   ✅ Take-profit order placed: ${tpResponse?.order?.order_id || 'unknown'}`);
-        betRecord.takeProfitOrderId = tpResponse?.order?.order_id;
-        betRecord.takeProfitPrice = clampedTakeProfit;
-      } catch (tpError) {
-        console.error('   ⚠️ Failed to place take-profit order:', tpError.message);
-      }
-    }
+    // NOTE: Limit orders removed - Kalshi doesn't support them for crypto markets
+    // Stop-loss and take-profit handled by active monitoring (evaluateTakeProfit)
 
     const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
     userConfig.bankroll = balanceData.balance || 0;
