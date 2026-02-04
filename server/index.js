@@ -3590,17 +3590,25 @@ async function executeTakeProfitExit(position, analysis, userConfig = null) {
   const cfg = userConfig || config;
   const settings = cfg.takeProfitSettings || {};
 
-  // Safety check - don't execute if logOnly mode
-  if (settings.logOnly || !settings.autoExecute) {
+  // ALWAYS execute stop-loss - it's critical for protecting positions
+  // Only apply logOnly mode to take-profit (profitable exits)
+  const isStopLoss = analysis.stopLossTriggered || analysis.profitPercent < 0;
+
+  // Safety check - don't execute if logOnly mode (but ALWAYS execute stop-loss)
+  if (!isStopLoss && (settings.logOnly || !settings.autoExecute)) {
     console.log(`\n💰 [TakeProfit] RECOMMENDATION (not executing - logOnly mode):`);
     console.log(`   📊 ${position.ticker}`);
     console.log(`   💵 Profit: ${analysis.profitPercent.toFixed(1)}% | Net: $${(analysis.netProfit/100).toFixed(2)}`);
     console.log(`   📈 Urgency: ${analysis.urgencyScore}/100`);
-    console.log(`   📉 EV exit: ${analysis.evExit.toFixed(0)}¢ vs EV hold: ${analysis.evHold.toFixed(0)}¢`);
+    console.log(`   📉 EV exit: ${analysis.evExit?.toFixed(0) || '?'}¢ vs EV hold: ${analysis.evHold?.toFixed(0) || '?'}¢`);
     if (analysis.momentum) {
       console.log(`   🔄 Momentum: ${analysis.momentum.direction} (${(analysis.momentum.strength*100).toFixed(0)}%)`);
     }
     return { executed: false, reason: 'Log only mode - would have exited' };
+  }
+
+  if (isStopLoss) {
+    console.log(`\n🛑 [STOP-LOSS] EXECUTING (bypassing logOnly - protecting position):`);
   }
 
   try {
