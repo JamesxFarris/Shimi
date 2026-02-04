@@ -112,8 +112,9 @@ const DEFAULT_CONFIG = {
     stopLossEnabled: true,       // Cut losses at threshold
     stopLossThreshold: -40,      // Exit if position is down 40%
     easyProfitEnabled: true,     // Take "free money" on high-confidence positions
-    easyProfitMinPrice: 75,      // Minimum price for easy profit (75¢ = 75% implied prob)
-    easyProfitThreshold: 10      // Take profit at 10%+ for high-confidence positions
+    easyProfitMinPrice: 75,      // Minimum buy price for easy profit (75¢ = 75% implied prob)
+    easyProfitThreshold: 12      // Near expiry (<5min): take 12%+ profit (accounts for fees)
+    // Note: Early exits (>5min left) require 18%+ profit to justify fees
   }
 };
 
@@ -3454,14 +3455,30 @@ async function evaluateTakeProfit(position, userConfig = null) {
 
   // 1. EASY PROFIT - Take "free money" on high-confidence positions
   // If we bought at 75-85¢ (high implied probability), take smaller profits
-  // These positions have low variance - the profit is more reliable
+  // BUT: Don't sell too early - wait for time pressure OR higher profit to justify fees
+  // Kalshi fees (~2-3¢ round trip) eat into small profits significantly
   const easyProfitEnabled = activeMonitoring.easyProfitEnabled !== false; // Default true
   const easyProfitMinPrice = activeMonitoring.easyProfitMinPrice || 75;   // 75¢ = 75% implied prob
-  const easyProfitThreshold = activeMonitoring.easyProfitThreshold || 10; // Take 10%+ profit
+  const easyProfitThreshold = activeMonitoring.easyProfitThreshold || 12; // Take 12%+ profit (accounts for fees)
+  const easyProfitEarlyThreshold = 18; // If taking early (>5min left), need higher profit to justify fees
 
-  if (easyProfitEnabled && avgCost >= easyProfitMinPrice && profitPercent >= easyProfitThreshold) {
-    shouldExit = true;
-    exitReason = `EASY PROFIT: High-confidence position (${avgCost}¢) at +${profitPercent.toFixed(1)}% - taking the free money`;
+  if (easyProfitEnabled && avgCost >= easyProfitMinPrice) {
+    const timeRemainingMs = marketForStopLoss?.close_time
+      ? new Date(marketForStopLoss.close_time).getTime() - Date.now()
+      : null;
+    const timeRemainingMin = timeRemainingMs ? timeRemainingMs / 60000 : null;
+
+    // Two modes:
+    // A) Near expiry (<5 min): Take smaller profits (12%+) - time pressure justifies it
+    // B) Early (>5 min): Need higher profit (18%+) to justify fees and opportunity cost
+    if (timeRemainingMin !== null && timeRemainingMin < 5 && profitPercent >= easyProfitThreshold) {
+      shouldExit = true;
+      exitReason = `EASY PROFIT: High-confidence (${avgCost}¢) at +${profitPercent.toFixed(1)}% with ${timeRemainingMin.toFixed(1)}min left - securing gains`;
+    } else if (profitPercent >= easyProfitEarlyThreshold) {
+      // Higher profit justifies early exit even with fees
+      shouldExit = true;
+      exitReason = `EASY PROFIT: High-confidence (${avgCost}¢) at +${profitPercent.toFixed(1)}% - profit high enough to justify fees`;
+    }
   }
 
   // 2. URGENCY-ADJUSTED THRESHOLD
