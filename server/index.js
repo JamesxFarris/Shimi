@@ -6644,11 +6644,12 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 50, userConfig 
     let page = 0;
 
     // Paginate through all events for this token
+    // Note: Kalshi uses "settled" not "closed" for finalized events
     while (page < maxPages) {
       try {
         const url = cursor
-          ? `/events?limit=100&series_ticker=${series}&status=closed&cursor=${cursor}`
-          : `/events?limit=100&series_ticker=${series}&status=closed`;
+          ? `/events?limit=100&series_ticker=${series}&status=settled&cursor=${cursor}`
+          : `/events?limit=100&series_ticker=${series}&status=settled`;
 
         const response = await kalshiRequest('GET', url, null, cfg);
 
@@ -6671,9 +6672,20 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 50, userConfig 
 
     console.log(`   📋 Fetching market details for ${allEvents.length} ${t} events...`);
 
+    // Sample events to avoid hitting rate limits (max 800 per token for ~2400 total)
+    const maxEventsPerToken = 800;
+    const eventsToProcess = allEvents.length > maxEventsPerToken
+      ? allEvents.slice(0, maxEventsPerToken) // Most recent events
+      : allEvents;
+
+    if (allEvents.length > maxEventsPerToken) {
+      console.log(`   📉 Sampling ${maxEventsPerToken}/${allEvents.length} events to respect rate limits`);
+    }
+
     // For each event, fetch the market to get settlement data
     let processedCount = 0;
-    for (const event of allEvents) {
+    let consecutiveErrors = 0;
+    for (const event of eventsToProcess) {
       try {
         const marketData = await kalshiRequest('GET', `/markets?event_ticker=${event.event_ticker}`, null, cfg);
         const market = marketData.markets?.[0];
@@ -6692,16 +6704,23 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 50, userConfig 
         }
 
         processedCount++;
-        if (processedCount % 50 === 0) {
-          console.log(`   Processed ${processedCount}/${allEvents.length} ${t} markets...`);
+        consecutiveErrors = 0; // Reset on success
+        if (processedCount % 100 === 0) {
+          console.log(`   Processed ${processedCount}/${eventsToProcess.length} ${t} markets (${allSettlements.filter(s => s.token === t).length} valid)...`);
         }
 
-        await sleep(100); // Rate limit between market fetches
+        await sleep(250); // Rate limit between market fetches (4 req/sec)
       } catch (err) {
-        // Skip individual market errors, continue with others
-        if (!err.message.includes('404')) {
+        // Handle rate limiting with exponential backoff
+        if (err.message.includes('429')) {
+          consecutiveErrors++;
+          const backoffMs = Math.min(5000, 500 * Math.pow(2, consecutiveErrors));
+          console.log(`   ⏳ Rate limited, backing off ${backoffMs}ms...`);
+          await sleep(backoffMs);
+        } else if (!err.message.includes('404')) {
           console.error(`   Error fetching market for ${event.event_ticker}:`, err.message);
         }
+        processedCount++;
       }
     }
 
@@ -7408,9 +7427,20 @@ app.get('/api/historical/analyze', async (req, res) => {
 // POST /api/historical/learn
 app.post('/api/historical/learn', async (req, res) => {
   try {
-    const userConfig = req.userState?.config || config;
+    // Allow userId query param for admin/CLI access (one-time table building)
+    let userConfig = req.userState?.config || config;
+    const queryUserId = req.query.userId;
+    console.log(`📚 Learn request: queryUserId=${queryUserId}, reqUserAuth=${req.userState?.config?.isAuthenticated}`);
+    if (queryUserId) {
+      const state = getUserState(queryUserId);
+      console.log(`📚 Loaded state for ${queryUserId}: isAuth=${state?.config?.isAuthenticated}, hasKey=${!!state?.config?.apiKeyId}`);
+      if (state?.config?.isAuthenticated && state?.config?.apiKeyId) {
+        userConfig = state.config;
+        console.log(`📚 Using credentials from user ${queryUserId}`);
+      }
+    }
 
-    console.log('📚 Manual learning triggered via API');
+    console.log(`📚 Manual learning triggered via API (auth=${userConfig.isAuthenticated}, key=${!!userConfig.apiKeyId})`);
 
     const result = await updateLearnedParameters(userConfig);
 
