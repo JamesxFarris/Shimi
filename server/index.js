@@ -7901,6 +7901,9 @@ app.get('/api/auth/status', (req, res) => {
 
 app.get('/api/portfolio', async (req, res) => {
   try {
+    // Check for pending settlements on every portfolio refresh
+    await checkPendingSettlements();
+
     const userConfig = req.userState?.config || config;
     const userPortfolio = req.userState?.portfolio || portfolio;
     const userBetHistory = req.userState?.betHistory || betHistory;
@@ -7948,14 +7951,14 @@ app.get('/api/portfolio', async (req, res) => {
             status: 'pending', // Will be updated below
             action: fill.action || 'buy',
             orderId: fill.order_id,
-            outcome: null, // Will be 'won', 'lost', or null (pending)
+            outcome: 'pending', // Will be updated to 'won' or 'lost' when market settles
             payout: 0,
             profit: 0
           };
         });
 
         // Get market data including settlement results - FETCH IN PARALLEL for speed
-        const uniqueTickers = [...new Set(realBetHistory.map(b => b.ticker))].slice(0, 10);
+        const uniqueTickers = [...new Set(realBetHistory.map(b => b.ticker))].slice(0, 50);
         const marketData = {};
 
         // Fetch all market data in parallel
@@ -7989,7 +7992,7 @@ app.get('/api/portfolio', async (req, res) => {
           const result = market.result; // 'yes' or 'no' if settled
           const marketStatus = market.status;
 
-          let outcome = null;
+          let outcome = 'pending';
           let status = 'open';
           let payout = 0;
           let profit = 0;
@@ -8051,7 +8054,7 @@ app.get('/api/portfolio', async (req, res) => {
       combinedHistory.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
       // Calculate totals
-      const settled = combinedHistory.filter(b => b.outcome);
+      const settled = combinedHistory.filter(b => b.outcome === 'won' || b.outcome === 'lost');
       const totalProfit = settled.reduce((sum, b) => sum + (b.profit || 0), 0);
       const wins = settled.filter(b => b.outcome === 'won').length;
       const losses = settled.filter(b => b.outcome === 'lost').length;
@@ -8392,6 +8395,55 @@ app.delete('/api/performance', (req, res) => {
   };
   savePerformanceData();
   res.json({ success: true, message: 'Performance data cleared' });
+});
+
+// Debug endpoint to see raw Kalshi data
+app.get('/api/debug/kalshi-fills', async (req, res) => {
+  try {
+    const userConfig = req.userState?.config || config;
+    if (!userConfig.isAuthenticated) {
+      return res.json({ success: false, error: 'Not authenticated' });
+    }
+
+    // Fetch raw fills from Kalshi
+    const fillsData = await kalshiRequest('GET', '/portfolio/fills?limit=30', null, userConfig);
+    const fills = fillsData.fills || [];
+
+    // Fetch market data for each unique ticker
+    const uniqueTickers = [...new Set(fills.map(f => f.ticker))];
+    const marketResults = {};
+
+    for (const ticker of uniqueTickers.slice(0, 20)) {
+      try {
+        const market = await kalshiRequest('GET', `/markets/${ticker}`, null, userConfig);
+        marketResults[ticker] = {
+          result: market.market?.result,
+          status: market.market?.status,
+          close_time: market.market?.close_time
+        };
+      } catch (e) {
+        marketResults[ticker] = { error: e.message };
+      }
+    }
+
+    res.json({
+      success: true,
+      fillCount: fills.length,
+      fills: fills.map(f => ({
+        trade_id: f.trade_id,
+        order_id: f.order_id,
+        ticker: f.ticker,
+        side: f.side,
+        action: f.action,
+        count: f.count,
+        price: f.price,
+        created_time: f.created_time
+      })),
+      marketResults
+    });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
 });
 
 app.get('/api/health', (req, res) => {
