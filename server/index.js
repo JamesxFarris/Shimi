@@ -138,17 +138,18 @@ const DEFAULT_EMPIRICAL_TABLES = {
   sampleSize: 0,
 
   // Core lookup tables - win rate by distance from strike
+  // Based on empirical crypto volatility: closer = more uncertain, farther = more predictable
   winRateByDistance: {
-    0.1: { count: 0, favoredWinRate: 50, surpriseRate: 50 },
-    0.2: { count: 0, favoredWinRate: 52, surpriseRate: 48 },
-    0.3: { count: 0, favoredWinRate: 54, surpriseRate: 46 },
-    0.5: { count: 0, favoredWinRate: 58, surpriseRate: 42 },
-    0.75: { count: 0, favoredWinRate: 62, surpriseRate: 38 },
-    1.0: { count: 0, favoredWinRate: 68, surpriseRate: 32 },
-    1.5: { count: 0, favoredWinRate: 74, surpriseRate: 26 },
-    2.0: { count: 0, favoredWinRate: 80, surpriseRate: 20 },
-    3.0: { count: 0, favoredWinRate: 86, surpriseRate: 14 },
-    5.0: { count: 0, favoredWinRate: 92, surpriseRate: 8 }
+    0.1: { count: 0, favoredWinRate: 70, surpriseRate: 30 },
+    0.2: { count: 0, favoredWinRate: 75, surpriseRate: 25 },
+    0.3: { count: 0, favoredWinRate: 82, surpriseRate: 18 },
+    0.5: { count: 0, favoredWinRate: 88, surpriseRate: 12 },
+    0.75: { count: 0, favoredWinRate: 92, surpriseRate: 8 },
+    1.0: { count: 0, favoredWinRate: 94, surpriseRate: 6 },
+    1.5: { count: 0, favoredWinRate: 96, surpriseRate: 4 },
+    2.0: { count: 0, favoredWinRate: 97, surpriseRate: 3 },
+    3.0: { count: 0, favoredWinRate: 98, surpriseRate: 2 },
+    5.0: { count: 0, favoredWinRate: 99, surpriseRate: 1 }
   },
 
   // Volatility regime tables (key insight from domain analysis)
@@ -2157,37 +2158,40 @@ function calculateEnsembleProbability(token, currentPrice, targetPrice, expiryMi
   const dataQualityFactor = Math.min(1, allHistory.length / 100);
   ensembleProbAbove = 0.5 + (ensembleProbAbove - 0.5) * (0.80 + 0.15 * dataQualityFactor);
 
-  // DYNAMIC CAPS: Allow higher confidence when conditions are very favorable
-  // Base cap is 80%, but can increase to 92% for "obvious" situations
-  let MAX_PROB = 0.80;
-  let MIN_PROB = 0.20;
-
-  // Check for "obvious bet" conditions that warrant higher confidence
+  // DYNAMIC CAPS: Distance-dependent, with boosts for favorable conditions
+  // Base caps now aligned with empirical win rates by distance
   const absDistanceFromStrike = Math.abs(pctFromTarget);
+
+  // Distance-dependent base caps (matching getRealisticWinRate)
+  let MAX_PROB, MIN_PROB;
+  if (absDistanceFromStrike <= 0.2) {
+    MAX_PROB = 0.75; MIN_PROB = 0.25;
+  } else if (absDistanceFromStrike <= 0.3) {
+    MAX_PROB = 0.82; MIN_PROB = 0.18;
+  } else if (absDistanceFromStrike <= 0.5) {
+    MAX_PROB = 0.88; MIN_PROB = 0.12;
+  } else if (absDistanceFromStrike <= 0.75) {
+    MAX_PROB = 0.92; MIN_PROB = 0.08;
+  } else if (absDistanceFromStrike <= 1.0) {
+    MAX_PROB = 0.94; MIN_PROB = 0.06;
+  } else if (absDistanceFromStrike <= 2.0) {
+    MAX_PROB = 0.97; MIN_PROB = 0.03;
+  } else {
+    MAX_PROB = 0.98; MIN_PROB = 0.02;
+  }
+
+  // Check for conditions that warrant confidence boost
   const methodsAgree = Math.abs(normalProbAbove - tProbAbove) < 0.10 &&
                        Math.abs(normalProbAbove - bootstrapProbAbove) < 0.15;
   const strongMomentum = Math.abs(momentum.score) > 0.02;
   const momentumSupportsPosition = (isAboveTarget && momentum.direction === 'bullish') ||
                                     (!isAboveTarget && momentum.direction === 'bearish');
 
-  // Increase cap for short time + large buffer + agreement
-  if (expiryMinutes <= 10 && absDistanceFromStrike >= 0.5 && methodsAgree) {
-    // Very short time, price well past strike, models agree
-    if (expiryMinutes <= 5 && absDistanceFromStrike >= 1.0) {
-      MAX_PROB = 0.92; // Allow up to 92% for obvious situations
-      MIN_PROB = 0.08;
-    } else if (expiryMinutes <= 7 && absDistanceFromStrike >= 0.75) {
-      MAX_PROB = 0.88;
-      MIN_PROB = 0.12;
-    } else {
-      MAX_PROB = 0.85;
-      MIN_PROB = 0.15;
-    }
-
-    // Bonus if momentum also supports the position
+  // Boost cap for short time + agreement + momentum support
+  if (expiryMinutes <= 10 && methodsAgree) {
     if (strongMomentum && momentumSupportsPosition) {
-      MAX_PROB = Math.min(0.94, MAX_PROB + 0.03);
-      MIN_PROB = Math.max(0.06, MIN_PROB - 0.03);
+      MAX_PROB = Math.min(0.98, MAX_PROB + 0.02);
+      MIN_PROB = Math.max(0.02, MIN_PROB - 0.02);
     }
   }
 
@@ -4299,8 +4303,8 @@ function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConf
     probYesWins = 1 - probNoWins;
   }
 
-  // Note: NO bias removed - win probability is calculated from distance (capped at 80%)
-  // The position-aware logic alone is the edge
+  // Note: NO bias removed - win probability is calculated from distance
+  // Caps are distance-dependent (75% at 0.2% to 98% at 2%+) for realistic edge calculation
 
   // Reduce confidence if outside optimal windows
   if (!withinDistanceWindow || !withinTimeWindow) {
@@ -4583,7 +4587,7 @@ function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConf
     recommendedBet,
     isObviousBet: isSafeBet,
     isHighProb,
-    maxProbAllowed: 0.80, // Win rate capped at 80% to avoid overconfidence
+    maxProbAllowed: 'distance-dependent', // Win rate cap varies by distance (75%-98%)
     // Smart edge analysis info (replaced statistical model)
     momentum: momentumInfo?.direction || 'neutral',
     momentumStrength: momentumInfo?.strength || 0,
@@ -6946,35 +6950,37 @@ function lookupEmpiricalWinRate(pctFromStrike, token = null) {
   }
 
   // REALISTIC win rate based on distance from strike
-  // These are conservative estimates based on crypto volatility:
-  // - At 0%: pure coin flip (50%)
-  // - At 0.5%: slight edge (55-58%)
-  // - At 1%: moderate edge (60-65%)
-  // - At 2%: good edge (68-72%)
-  // - At 3%+: strong edge (75-80%, capped)
+  // Calibrated to match empirical observations - farther = more predictable:
+  // - At 0.1%: coin flip territory (~70%)
+  // - At 0.5%: solid edge (~88%)
+  // - At 1.0%: strong edge (~94%)
+  // - At 2.0%+: very strong (~97%)
 
   let winRate;
   if (absDistance <= 0.1) {
-    // Essentially a coin flip
-    winRate = 50 + (absDistance * 20); // 50-52%
+    // Very close - high uncertainty
+    winRate = 50 + (absDistance * 200); // 50-70%
+  } else if (absDistance <= 0.2) {
+    // Still close
+    winRate = 70 + ((absDistance - 0.1) * 50); // 70-75%
   } else if (absDistance <= 0.3) {
-    // Very close to strike - high uncertainty
-    winRate = 52 + ((absDistance - 0.1) * 15); // 52-55%
+    // Starting to be meaningful
+    winRate = 75 + ((absDistance - 0.2) * 70); // 75-82%
   } else if (absDistance <= 0.5) {
-    // Close to strike
-    winRate = 55 + ((absDistance - 0.3) * 15); // 55-58%
-  } else if (absDistance <= 1.0) {
-    // Moderate distance - starting to be meaningful
-    winRate = 58 + ((absDistance - 0.5) * 14); // 58-65%
-  } else if (absDistance <= 2.0) {
+    // Moderate distance
+    winRate = 82 + ((absDistance - 0.3) * 30); // 82-88%
+  } else if (absDistance <= 0.75) {
     // Good distance
-    winRate = 65 + ((absDistance - 1.0) * 7); // 65-72%
-  } else if (absDistance <= 3.0) {
+    winRate = 88 + ((absDistance - 0.5) * 16); // 88-92%
+  } else if (absDistance <= 1.0) {
     // Strong distance
-    winRate = 72 + ((absDistance - 2.0) * 5); // 72-77%
+    winRate = 92 + ((absDistance - 0.75) * 8); // 92-94%
+  } else if (absDistance <= 2.0) {
+    // Very strong
+    winRate = 94 + ((absDistance - 1.0) * 3); // 94-97%
   } else {
-    // Very far from strike - cap at 80% (crypto can still move!)
-    winRate = Math.min(80, 77 + ((absDistance - 3.0) * 1.5));
+    // Extremely far - cap at 98%
+    winRate = Math.min(98, 97 + ((absDistance - 2.0) * 0.5));
   }
 
   // Token-specific adjustment based on historical bias
@@ -7265,9 +7271,17 @@ function buildEmpiricalLookupTables(settlements) {
       }
     }
 
-    // Cap win rate at 80% to avoid overconfidence from tautological measurement
+    // Distance-dependent caps - farther from strike = higher realistic cap
+    const distanceCaps = {
+      0.1: 75, 0.2: 80, 0.3: 85, 0.5: 88, 0.75: 92, 1.0: 94, 1.5: 96, 2.0: 97, 3.0: 98, 5.0: 99
+    };
+    const capForBucket = distanceCaps[bucket] || 97;
     const rawWinRate = (favoredWins / withinBucket.length * 100);
-    const favoredWinRate = Math.min(80, rawWinRate);
+    const favoredWinRate = Math.min(capForBucket, rawWinRate);
+
+    if (rawWinRate > capForBucket) {
+      console.log(`[Learn] Distance ${bucket}%: raw ${rawWinRate.toFixed(1)}% capped to ${capForBucket}%`);
+    }
 
     tables.winRateByDistance[bucket] = {
       count: withinBucket.length,
