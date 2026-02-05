@@ -92,9 +92,9 @@
         "distanceMin": 0.1,
         "distanceMax": 5,
         "timeMin": 2,
-        "timeMax": 12,
-        "priceMin": 35,
-        "priceMax": 75
+        "timeMax": 7,
+        "priceMin": 60,
+        "priceMax": 92
       },
       "coinFlipThreshold": 0.05,
       "coinFlipPct": 16.6
@@ -111,9 +111,9 @@
         "distanceMin": 0.1,
         "distanceMax": 5,
         "timeMin": 2,
-        "timeMax": 12,
-        "priceMin": 35,
-        "priceMax": 75
+        "timeMax": 7,
+        "priceMin": 60,
+        "priceMax": 92
       },
       "coinFlipThreshold": 0.1,
       "coinFlipPct": 25
@@ -129,20 +129,20 @@
       "optimalEntryWindows": {
         "distanceMin": 0.1,
         "distanceMax": 5,
-        "timeMin": 3,
-        "timeMax": 10,
-        "priceMin": 40,
-        "priceMax": 70
+        "timeMin": 2,
+        "timeMax": 7,
+        "priceMin": 60,
+        "priceMax": 92
       },
       "coinFlipThreshold": 0.1,
       "coinFlipPct": 22.9
     }
   },
   "selectivityRules": {
-    "minSignalStrength": 70,
-    "minEmpiricalWinRate": 68,
-    "minEdgeAfterFees": 5,
-    "maxBetsPerHour": 6,
+    "minSignalStrength": 50,
+    "minEmpiricalWinRate": 55,
+    "minEdgeAfterFees": 1,
+    "maxBetsPerHour": 999,
     "maxBetsPerToken": 3,
     "requireRegimeCheck": true
   },

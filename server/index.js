@@ -6732,7 +6732,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const withinDistanceWindow = absDistance >= (entryWindows.distanceMin || 0.5) &&
                                absDistance <= (entryWindows.distanceMax || 3.0);
   const withinTimeWindow = timeRemaining >= (entryWindows.timeMin || 2) &&
-                           timeRemaining <= (entryWindows.timeMax || 12);
+                           timeRemaining <= (entryWindows.timeMax || 7);
 
   // Determine bet side based on price position
   const isAboveStrike = currentPrice > strikePrice;
@@ -6764,18 +6764,29 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const withinPriceWindow = marketPriceCents >= (entryWindows.priceMin || 35) &&
                             marketPriceCents <= (entryWindows.priceMax || 75);
 
-  // Apply regime multiplier to win rate (cap at 99.5% - can't exceed 100%)
-  let adjustedWinRate = Math.min(99.5, empirical.winRate * (regime.multiplier || 1.0));
+  // CORRECT APPROACH: Market price IS the probability. Our edge comes from known biases.
+  // Start with market implied probability as the base win rate
+  const marketImpliedBase = marketPrice * 100; // e.g., 80 cent = 80%
 
   // Apply token-specific YES/NO bias from empirical data
   // BTC/ETH/SOL all show ~8% NO bias (NO wins 54%, YES wins 46%)
+  // This bias IS our edge - the market underprices NO slightly
   const tokenBias = tokenData?.noBias || 0; // e.g., 8 means NO wins 8% more often
+  let adjustedWinRate = marketImpliedBase;
+
   if (betSide === 'NO' && tokenBias > 0) {
-    // NO side is historically favored - boost win rate
-    adjustedWinRate = Math.min(99.5, adjustedWinRate + (tokenBias / 2));
+    // NO side is historically favored - our actual win rate is higher than market thinks
+    adjustedWinRate = Math.min(99.5, marketImpliedBase + (tokenBias / 2));
   } else if (betSide === 'YES' && tokenBias > 0) {
-    // YES side is historically disfavored - reduce win rate
-    adjustedWinRate = Math.max(50, adjustedWinRate - (tokenBias / 2));
+    // YES side is historically disfavored - our actual win rate is lower than market thinks
+    adjustedWinRate = Math.max(0.5, marketImpliedBase - (tokenBias / 2));
+  }
+
+  // Apply regime multiplier (reduces edge in high volatility)
+  if (regime.multiplier && regime.multiplier < 1) {
+    // In high vol, our bias edge shrinks - adjust toward market price
+    const biasEdge = adjustedWinRate - marketImpliedBase;
+    adjustedWinRate = marketImpliedBase + (biasEdge * regime.multiplier);
   }
 
   // Calculate edge: our win rate - market implied probability - fees
