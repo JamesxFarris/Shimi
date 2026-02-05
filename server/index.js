@@ -8175,7 +8175,15 @@ app.get('/api/portfolio', async (req, res) => {
       let realBetHistory = [];
       try {
         const fillsData = await kalshiRequest('GET', '/portfolio/fills?limit=20', null, userConfig);
-        const fills = fillsData.fills || [];
+        let fills = fillsData.fills || [];
+
+        // Filter out old fills - only show bets from today onwards
+        // This gives users a "fresh start" without deleting Kalshi history
+        const historyStartDate = userConfig.historyStartDate || '2026-02-04T00:00:00Z';
+        fills = fills.filter(fill => {
+          const fillTime = new Date(fill.created_time || fill.ts || 0);
+          return fillTime >= new Date(historyStartDate);
+        });
 
         // Transform fills into our bet history format
         realBetHistory = fills.map(fill => {
@@ -8413,7 +8421,14 @@ app.get('/api/performance', async (req, res) => {
       try {
         // Fetch fills from Kalshi (up to 100 recent trades)
         const fillsData = await kalshiRequest('GET', '/portfolio/fills?limit=100', null, userConfig);
-        const fills = fillsData.fills || [];
+        let fills = fillsData.fills || [];
+
+        // Filter out old fills - only show bets from historyStartDate onwards
+        const historyStartDate = userConfig.historyStartDate || '2026-02-04T00:00:00Z';
+        fills = fills.filter(fill => {
+          const fillTime = new Date(fill.created_time || fill.ts || 0);
+          return fillTime >= new Date(historyStartDate);
+        });
 
         // Get unique tickers to fetch market results
         const uniqueTickers = [...new Set(fills.map(f => f.ticker))].slice(0, 50);
