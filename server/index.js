@@ -8226,7 +8226,7 @@ app.get('/api/portfolio', async (req, res) => {
 
         // Filter out old fills - only show bets from today onwards
         // This gives users a "fresh start" without deleting Kalshi history
-        const historyStartDate = userConfig.historyStartDate || '2026-02-05T02:00:00Z';
+        const historyStartDate = userConfig.historyStartDate || '2026-02-05T03:00:00Z';
         fills = fills.filter(fill => {
           const fillTime = new Date(fill.created_time || fill.ts || 0);
           return fillTime >= new Date(historyStartDate);
@@ -8471,7 +8471,7 @@ app.get('/api/performance', async (req, res) => {
         let fills = fillsData.fills || [];
 
         // Filter out old fills - only show bets from historyStartDate onwards
-        const historyStartDate = userConfig.historyStartDate || '2026-02-05T02:00:00Z';
+        const historyStartDate = userConfig.historyStartDate || '2026-02-05T03:00:00Z';
         fills = fills.filter(fill => {
           const fillTime = new Date(fill.created_time || fill.ts || 0);
           return fillTime >= new Date(historyStartDate);
