@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, memo } from 'react'
+import { useState, useEffect, useCallback, useRef, memo } from 'react'
 import './index.css'
 
 const API_BASE = import.meta.env.PROD ? '' : 'http://localhost:3001'
@@ -57,6 +57,9 @@ const LoginScreen = ({ onLogin }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
       })
+      if (!res.ok) {
+        throw new Error(`Server error: ${res.status}`)
+      }
       const data = await res.json()
 
       if (data.success) {
@@ -482,6 +485,7 @@ function App() {
   const [currentUser, setCurrentUser] = useState(getStoredUser())
 
   const [tab, setTab] = useState('dashboard')
+  const tabRef = useRef('dashboard') // Ref to avoid stale closure in intervals
   const [opportunities, setOpportunities] = useState([])
   const [prices, setPrices] = useState({})
   const [prevPrices, setPrevPrices] = useState({})
@@ -490,9 +494,11 @@ function App() {
   const [balanceLoading, setBalanceLoading] = useState(true)
   const [balanceRefreshing, setBalanceRefreshing] = useState(false)
   const [betHistory, setBetHistory] = useState([])
+  const betHistoryRef = useRef([]) // Ref to avoid stale closure in intervals
   const [betStats, setBetStats] = useState({ totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 })
   const [newBetsCount, setNewBetsCount] = useState(0)
   const [lastSeenBetId, setLastSeenBetId] = useState(null) // Track by ID, not count
+  const lastSeenBetIdRef = useRef(null) // Ref to avoid stale closure in intervals
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [autoBetEnabled, setAutoBetEnabled] = useState(false)
@@ -505,6 +511,10 @@ function App() {
   const [betStatus, setBetStatus] = useState(null)
   const [placingBet, setPlacingBet] = useState(null)
   const [tickerTime, setTickerTime] = useState(Date.now())
+
+  // Keep refs in sync with state for use in callbacks with [] deps
+  useEffect(() => { tabRef.current = tab }, [tab])
+  useEffect(() => { lastSeenBetIdRef.current = lastSeenBetId }, [lastSeenBetId])
 
   // Check if authentication is required on mount
   useEffect(() => {
@@ -585,6 +595,10 @@ function App() {
   })
   const [settingsSaved, setSettingsSaved] = useState(false)
   const [settingsSaving, setSettingsSaving] = useState(false)
+  // Model monitoring state
+  const [prospectiveData, setProspectiveData] = useState(null)
+  const [takeProfitHistory, setTakeProfitHistory] = useState({ history: [], stats: {} })
+  const [selectivityRules, setSelectivityRules] = useState({ minEdgeAfterFees: 5, minSignalStrength: 70, minEmpiricalWinRate: 62 })
   const [marketFilter, setMarketFilter] = useState('all') // 'all', 'crypto', 'index'
   const [marketStats, setMarketStats] = useState({ totalAnalyzed: 0, recommended: 0, filteredNoEdge: 0, filteredLowProb: 0 })
   // Performance tracking
@@ -594,6 +608,7 @@ function App() {
   const fetchPrices = useCallback(async () => {
     try {
       const res = await authFetch(`${API_BASE}/api/crypto/prices`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
 
       if (data.success && data.prices) {
@@ -621,6 +636,7 @@ function App() {
   const fetchOpportunities = useCallback(async () => {
     try {
       const res = await authFetch(`${API_BASE}/api/opportunities/all?showAll=true`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
 
       if (data.success) {
@@ -629,14 +645,14 @@ function App() {
         const newOpps = data.opportunities || []
         if (newOpps.length > 0) {
           setOpportunities(newOpps)
-        } else if (opportunities.length > 0) {
-          // API returned empty but we have existing - mark them as stale/expired
-          setOpportunities(prev => prev.map(opp => ({
+        } else {
+          // API returned empty - mark existing as stale/expired (if any exist)
+          setOpportunities(prev => prev.length > 0 ? prev.map(opp => ({
             ...opp,
             isRecommended: false,
             filterReason: 'Market expired - waiting for next cycle',
             isStale: true
-          })))
+          })) : prev)
         }
         if (data.stats) setMarketStats(data.stats)
         // Update risk info
@@ -655,30 +671,33 @@ function App() {
     } finally {
       setLoading(false)
     }
-  }, [opportunities.length])
+  }, []) // No dependencies - uses functional updates for state
 
   // Fetch portfolio
   const fetchPortfolio = useCallback(async () => {
     try {
       const res = await authFetch(`${API_BASE}/api/portfolio`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
 
       if (data.success) {
         setBalance(data.balance || 0)
         const newHistory = data.betHistory || []
         setBetHistory(newHistory)
+        betHistoryRef.current = newHistory // Keep ref in sync
         setBetStats(data.stats || { totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 })
         setIsAuthenticated(!data.simulated)
         // Track new bets for notification badge using bet IDs
         // Only show badge for NEW bets placed AFTER initial load
+        // Using refs to avoid stale closures since this callback has [] deps
         if (newHistory.length > 0) {
           const latestBetId = newHistory[0]?.id
-          if (lastSeenBetId === null) {
+          if (lastSeenBetIdRef.current === null) {
             // First load - initialize to current latest (no badge)
             setLastSeenBetId(latestBetId)
-          } else if (latestBetId !== lastSeenBetId && tab !== 'history') {
+          } else if (latestBetId !== lastSeenBetIdRef.current && tabRef.current !== 'history') {
             // New bet detected - count how many are new
-            const lastSeenIndex = newHistory.findIndex(b => b.id === lastSeenBetId)
+            const lastSeenIndex = newHistory.findIndex(b => b.id === lastSeenBetIdRef.current)
             if (lastSeenIndex > 0) {
               setNewBetsCount(lastSeenIndex)
             } else if (lastSeenIndex === -1) {
@@ -700,6 +719,7 @@ function App() {
     setBalanceRefreshing(true)
     try {
       const res = await authFetch(`${API_BASE}/api/balance/refresh`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       if (data.success) {
         setBalance(data.balance)
@@ -715,6 +735,7 @@ function App() {
   const fetchPortfolioWorth = useCallback(async () => {
     try {
       const res = await authFetch(`${API_BASE}/api/portfolio/worth`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       if (data.success) {
         setPortfolioWorth(data)
@@ -728,6 +749,7 @@ function App() {
   const fetchPerformance = useCallback(async () => {
     try {
       const res = await authFetch(`${API_BASE}/api/performance`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       if (data.success) {
         setPerformance(data)
@@ -741,6 +763,7 @@ function App() {
   const fetchScanStatus = useCallback(async () => {
     try {
       const res = await authFetch(`${API_BASE}/api/auto-bet/status`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       if (data.success) {
         setScanStatus(data)
@@ -754,9 +777,12 @@ function App() {
   const checkAuth = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/api/auth/status`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       setIsAuthenticated(data.isAuthenticated)
-    } catch (err) {}
+    } catch (err) {
+      console.error('Auth check failed:', err)
+    }
   }, [])
 
   // Initial load - runs once
@@ -769,6 +795,7 @@ function App() {
     fetchTakeProfitSettings()  // Get take-profit settings
     fetchLimitOrderSettings()  // Get limit order settings (stop-loss/take-profit via Kalshi)
     fetchRiskSettings()     // Get saved risk settings
+    fetchModelMonitoring()  // Get prospective data, take-profit history, selectivity rules
     checkAuth()
 
     // Refresh opportunities every 10 seconds (includes prices and risk/exposure)
@@ -779,7 +806,8 @@ function App() {
 
     // Faster exposure updates: poll every 3 seconds when there are pending bets
     const fastExposureInterval = setInterval(() => {
-      const hasPendingBets = betHistory.some(b => b.outcome !== 'won' && b.outcome !== 'lost')
+      // Use ref to get current value (avoids stale closure)
+      const hasPendingBets = betHistoryRef.current.some(b => b.outcome !== 'won' && b.outcome !== 'lost')
       if (hasPendingBets) {
         fetchOpportunities() // This updates exposure/risk
       }
@@ -809,7 +837,7 @@ function App() {
       const scanInterval = setInterval(fetchScanStatus, 5000) // Poll every 5 seconds
       return () => clearInterval(scanInterval)
     }
-  }, [autoBetEnabled, fetchScanStatus])
+  }, [autoBetEnabled]) // Note: fetchScanStatus has [] deps, safe to exclude
 
   // Rotate trading quotes every 30 seconds
   useEffect(() => {
@@ -842,6 +870,9 @@ function App() {
       })
 
       clearTimeout(timeoutId)
+      if (!res.ok) {
+        throw new Error(`Server error: ${res.status}`)
+      }
       const data = await res.json()
 
       if (data.success) {
@@ -906,6 +937,9 @@ function App() {
       })
 
       clearTimeout(timeoutId)
+      if (!res.ok) {
+        throw new Error(`Server error: ${res.status}`)
+      }
       const data = await res.json()
 
       if (data.success && data.bet) {
@@ -941,6 +975,7 @@ function App() {
   const fetchAutoBetStatus = async () => {
     try {
       const res = await authFetch(`${API_BASE}/api/auto-bet/status`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       if (data.success) {
         setAutoBetEnabled(data.autoBetEnabled)
@@ -955,6 +990,7 @@ function App() {
   const fetchTakeProfitSettings = async () => {
     try {
       const res = await authFetch(`${API_BASE}/api/take-profit/settings`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       if (data.success && data.settings) {
         setTakeProfitSettings(data.settings)
@@ -968,6 +1004,7 @@ function App() {
   const fetchLimitOrderSettings = async () => {
     try {
       const res = await authFetch(`${API_BASE}/api/limit-order-settings`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       if (data.success && data.limitOrderSettings) {
         setLimitOrderSettings(data.limitOrderSettings)
@@ -985,6 +1022,7 @@ function App() {
         method: 'POST',
         body: JSON.stringify(newSettings)
       })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       if (data.success && data.limitOrderSettings) {
         setLimitOrderSettings(data.limitOrderSettings)
@@ -1005,12 +1043,86 @@ function App() {
         method: 'POST',
         body: JSON.stringify({ enabled: newEnabled })
       })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       if (data.success && data.settings) {
         setTakeProfitSettings(data.settings)
       }
     } catch (err) {
       console.error('Error toggling take-profit:', err)
+    }
+  }
+
+  // Fetch model monitoring data (prospective data, take-profit history, selectivity rules)
+  const fetchModelMonitoring = async () => {
+    try {
+      // Fetch all monitoring data in parallel
+      const [prospectiveRes, historyRes, selectivityRes] = await Promise.all([
+        authFetch(`${API_BASE}/api/historical/prospective`),
+        authFetch(`${API_BASE}/api/take-profit/history?limit=20`),
+        authFetch(`${API_BASE}/api/model/selectivity`)
+      ])
+
+      if (prospectiveRes.ok) {
+        const data = await prospectiveRes.json()
+        if (data.success) {
+          setProspectiveData(data)
+        }
+      }
+
+      if (historyRes.ok) {
+        const data = await historyRes.json()
+        if (data.success) {
+          setTakeProfitHistory(data)
+        }
+      }
+
+      if (selectivityRes.ok) {
+        const data = await selectivityRes.json()
+        if (data.success && data.selectivityRules) {
+          setSelectivityRules(data.selectivityRules)
+        }
+      }
+    } catch (err) {
+      console.error('Error fetching model monitoring data:', err)
+    }
+  }
+
+  // Update selectivity rules (min edge threshold)
+  const updateSelectivityRules = async (field, value) => {
+    const newRules = { ...selectivityRules, [field]: value }
+    setSelectivityRules(newRules)
+    try {
+      const res = await authFetch(`${API_BASE}/api/model/selectivity`, {
+        method: 'POST',
+        body: JSON.stringify({ [field]: value })
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      if (data.success && data.selectivityRules) {
+        setSelectivityRules(data.selectivityRules)
+        setSettingsSaved(true)
+        setTimeout(() => setSettingsSaved(false), 3000)
+      }
+    } catch (err) {
+      console.error('Error updating selectivity rules:', err)
+    }
+  }
+
+  // Retrain model with prospective data
+  const retrainModel = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/historical/learn`, { method: 'POST' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      if (data.success) {
+        alert(`Model retrained successfully! Win rate buckets: ${Object.keys(data.empiricalTables?.winRateByDistance || {}).length}`)
+        fetchModelMonitoring() // Refresh data
+      } else {
+        alert(`Retrain failed: ${data.error || 'Unknown error'}`)
+      }
+    } catch (err) {
+      alert(`Retrain error: ${err.message}`)
     }
   }
 
@@ -1021,6 +1133,7 @@ function App() {
         method: 'POST',
         body: JSON.stringify({ enabled: !autoBetEnabled, intervalSeconds: 10 })
       })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       if (data.success) setAutoBetEnabled(data.autoBetEnabled)
     } catch (err) {
@@ -1032,6 +1145,7 @@ function App() {
   const fetchRiskSettings = async () => {
     try {
       const res = await authFetch(`${API_BASE}/api/settings/risk`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       if (data.success && data.riskLimits) {
         setRiskSettings(data.riskLimits)
@@ -1064,6 +1178,7 @@ function App() {
         method: 'POST',
         body: JSON.stringify(riskSettings)
       })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       if (data.success) {
         const totalMax = data.riskLimits.maxTotal || 1500
@@ -1101,6 +1216,7 @@ function App() {
         method: 'POST',
         body: JSON.stringify(scaleInSettings)
       })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       if (data.success) {
         setScaleInSettings(data.scaleIn)
@@ -1123,6 +1239,7 @@ function App() {
         method: 'POST',
         body: JSON.stringify(authForm)
       })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
 
       if (data.success) {
@@ -1146,6 +1263,7 @@ function App() {
       const res = await authFetch(`${API_BASE}/api/auth/disconnect`, {
         method: 'POST'
       })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       if (data.success) {
         setIsAuthenticated(false)
@@ -1979,6 +2097,126 @@ function App() {
                   </div>
                 </div>
 
+                {/* Model Monitoring */}
+                <div className="settings-card wide">
+                  <h3 className="settings-card-title">Model Monitoring</h3>
+                  <p className="settings-description">Monitor model performance and adjust betting thresholds</p>
+
+                  {/* Selectivity Rules */}
+                  <div className="model-section" style={{ marginBottom: '20px' }}>
+                    <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', color: '#ccc' }}>Betting Thresholds</h4>
+                    <div className="threshold-controls-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px' }}>
+                      <div className="threshold-control">
+                        <label style={{ fontSize: '12px', color: '#888' }}>Min Edge After Fees</label>
+                        <div className="threshold-controls">
+                          <button className="threshold-btn" onClick={() => updateSelectivityRules('minEdgeAfterFees', Math.max(1, selectivityRules.minEdgeAfterFees - 1))}>-</button>
+                          <span className="threshold-value">{selectivityRules.minEdgeAfterFees}%</span>
+                          <button className="threshold-btn" onClick={() => updateSelectivityRules('minEdgeAfterFees', Math.min(20, selectivityRules.minEdgeAfterFees + 1))}>+</button>
+                        </div>
+                        <span style={{ fontSize: '10px', color: '#666' }}>Recommended: 5-8%</span>
+                      </div>
+                      <div className="threshold-control">
+                        <label style={{ fontSize: '12px', color: '#888' }}>Min Win Rate</label>
+                        <div className="threshold-controls">
+                          <button className="threshold-btn" onClick={() => updateSelectivityRules('minEmpiricalWinRate', Math.max(50, selectivityRules.minEmpiricalWinRate - 2))}>-</button>
+                          <span className="threshold-value">{selectivityRules.minEmpiricalWinRate}%</span>
+                          <button className="threshold-btn" onClick={() => updateSelectivityRules('minEmpiricalWinRate', Math.min(90, selectivityRules.minEmpiricalWinRate + 2))}>+</button>
+                        </div>
+                        <span style={{ fontSize: '10px', color: '#666' }}>Recommended: 62%</span>
+                      </div>
+                      <div className="threshold-control">
+                        <label style={{ fontSize: '12px', color: '#888' }}>Min Signal Strength</label>
+                        <div className="threshold-controls">
+                          <button className="threshold-btn" onClick={() => updateSelectivityRules('minSignalStrength', Math.max(50, selectivityRules.minSignalStrength - 5))}>-</button>
+                          <span className="threshold-value">{selectivityRules.minSignalStrength}</span>
+                          <button className="threshold-btn" onClick={() => updateSelectivityRules('minSignalStrength', Math.min(95, selectivityRules.minSignalStrength + 5))}>+</button>
+                        </div>
+                        <span style={{ fontSize: '10px', color: '#666' }}>Recommended: 70</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Prospective Data Collection */}
+                  <div className="model-section" style={{ marginBottom: '20px' }}>
+                    <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', color: '#ccc' }}>Prospective Data Collection</h4>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '12px' }}>
+                      <div style={{ textAlign: 'center', padding: '12px', background: '#1a1a2e', borderRadius: '8px' }}>
+                        <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#4fc3f7' }}>{prospectiveData?.totalSnapshots || 0}</div>
+                        <div style={{ fontSize: '11px', color: '#888' }}>Total Snapshots</div>
+                      </div>
+                      <div style={{ textAlign: 'center', padding: '12px', background: '#1a1a2e', borderRadius: '8px' }}>
+                        <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#81c784' }}>{prospectiveData?.settledCount || 0}</div>
+                        <div style={{ fontSize: '11px', color: '#888' }}>Settled</div>
+                      </div>
+                      <div style={{ textAlign: 'center', padding: '12px', background: '#1a1a2e', borderRadius: '8px' }}>
+                        <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#ffb74d' }}>{prospectiveData?.pendingCount || 0}</div>
+                        <div style={{ fontSize: '11px', color: '#888' }}>Pending</div>
+                      </div>
+                    </div>
+                    {prospectiveData?.settledCount >= 100 && (
+                      <button className="save-settings-btn" onClick={retrainModel} style={{ width: '100%' }}>
+                        Retrain Model ({prospectiveData?.settledCount} samples)
+                      </button>
+                    )}
+                    {prospectiveData?.settledCount < 100 && (
+                      <div style={{ fontSize: '12px', color: '#888', textAlign: 'center' }}>
+                        Need {100 - (prospectiveData?.settledCount || 0)} more settled snapshots to retrain
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Take-Profit Execution History */}
+                  <div className="model-section">
+                    <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', color: '#ccc' }}>Auto-Sell Execution History</h4>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '12px' }}>
+                      <div style={{ textAlign: 'center', padding: '8px', background: '#1a1a2e', borderRadius: '6px' }}>
+                        <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#4fc3f7' }}>{takeProfitHistory?.stats?.totalExecutions || 0}</div>
+                        <div style={{ fontSize: '10px', color: '#888' }}>Total</div>
+                      </div>
+                      <div style={{ textAlign: 'center', padding: '8px', background: '#1a1a2e', borderRadius: '6px' }}>
+                        <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#81c784' }}>{takeProfitHistory?.stats?.takeProfitCount || 0}</div>
+                        <div style={{ fontSize: '10px', color: '#888' }}>Take Profit</div>
+                      </div>
+                      <div style={{ textAlign: 'center', padding: '8px', background: '#1a1a2e', borderRadius: '6px' }}>
+                        <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#ef5350' }}>{takeProfitHistory?.stats?.stopLossCount || 0}</div>
+                        <div style={{ fontSize: '10px', color: '#888' }}>Stop Loss</div>
+                      </div>
+                      <div style={{ textAlign: 'center', padding: '8px', background: '#1a1a2e', borderRadius: '6px' }}>
+                        <div style={{ fontSize: '18px', fontWeight: 'bold', color: takeProfitHistory?.stats?.totalRealizedCents >= 0 ? '#81c784' : '#ef5350' }}>
+                          ${((takeProfitHistory?.stats?.totalRealizedCents || 0) / 100).toFixed(2)}
+                        </div>
+                        <div style={{ fontSize: '10px', color: '#888' }}>Realized</div>
+                      </div>
+                    </div>
+                    {takeProfitHistory?.history?.length > 0 && (
+                      <div style={{ maxHeight: '150px', overflowY: 'auto', fontSize: '11px' }}>
+                        {takeProfitHistory.history.slice(0, 10).map((h, i) => (
+                          <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px', borderBottom: '1px solid #2a2a3e' }}>
+                            <span style={{ color: h.type === 'stop-loss' ? '#ef5350' : '#81c784' }}>
+                              {h.type === 'stop-loss' ? '🛑' : '💰'} {h.ticker?.split('-')[0]}
+                            </span>
+                            <span style={{ color: h.profitPercent >= 0 ? '#81c784' : '#ef5350' }}>
+                              {h.profitPercent >= 0 ? '+' : ''}{h.profitPercent?.toFixed(1)}%
+                            </span>
+                            <span style={{ color: '#888' }}>
+                              {new Date(h.timestamp).toLocaleTimeString()}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {!takeProfitHistory?.history?.length && (
+                      <div style={{ fontSize: '12px', color: '#888', textAlign: 'center', padding: '20px' }}>
+                        No executions yet. Auto-sell will trigger when conditions are met.
+                      </div>
+                    )}
+                  </div>
+
+                  <button onClick={fetchModelMonitoring} style={{ marginTop: '16px', padding: '8px 16px', background: '#2a2a3e', border: 'none', borderRadius: '6px', color: '#ccc', cursor: 'pointer' }}>
+                    Refresh Data
+                  </button>
+                </div>
+
                 {/* Tracked Tokens */}
                 <div className="settings-card wide">
                   <h3 className="settings-card-title">Tracked Cryptocurrencies</h3>
@@ -2027,13 +2265,9 @@ function App() {
             <span>Home</span>
           </button>
           <button className={`mobile-nav-item ${tab === 'history' ? 'active' : ''}`} onClick={() => { setTab('history'); fetchPerformance(); setNewBetsCount(0); setLastSeenBetId(betHistory[0]?.id); }}>
-            <span>📜</span>
+            <span>📈</span>
             <span>History</span>
             {newBetsCount > 0 && <span className="nav-badge mobile">{newBetsCount}</span>}
-          </button>
-          <button className={`mobile-nav-item ${tab === 'performance' ? 'active' : ''}`} onClick={() => { setTab('performance'); fetchPerformance(); }}>
-            <span>📈</span>
-            <span>Stats</span>
           </button>
           <button className={`mobile-nav-item ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>
             <span>⚙️</span>

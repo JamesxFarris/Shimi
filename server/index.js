@@ -6392,6 +6392,9 @@ async function runAutoBet(userId = null) {
       console.log(`📈 SCALE-IN: Adding bet #${newBetCount} on ${best.ticker} (signal increased to ${best.signalStrength})`);
     }
 
+    // Define assetName early - used in both simulated and real bet logging
+    const assetName = best.cryptoType || best.assetType || getTokenFromTicker(best.ticker) || 'unknown';
+
     if (!userConfig.isAuthenticated) {
       betRecord.orderId = 'SIM-' + Date.now();
       userBetHistory.unshift(betRecord);
@@ -6524,7 +6527,7 @@ async function runAutoBet(userId = null) {
     console.log(`   Edge: +${best.edge.toFixed(1)}% | New balance: $${(userConfig.bankroll/100).toFixed(2)}`);
     console.log('========================================\n');
 
-    const assetName = best.cryptoType || best.assetType || getTokenFromTicker(best.ticker) || 'unknown';
+    // assetName already defined above
     lastScanStatus.status = 'bet_placed';
     lastScanStatus.statusMessage = `LIVE ${best.betSide} on ${assetName} (${filledCount}x @ ${betRecord.avgPrice}¢)`;
     lastScanStatus.lastBet = {
@@ -9070,6 +9073,69 @@ app.get('/api/portfolio', async (req, res) => {
       stats: { totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 },
       error: error.message
     });
+  }
+});
+
+// Quick balance refresh - fetches only balance from Kalshi
+app.get('/api/balance/refresh', async (req, res) => {
+  const userConfig = req.userState?.config || config;
+  const userPortfolio = req.userState?.portfolio || portfolio;
+
+  try {
+    if (userConfig.isAuthenticated) {
+      const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
+      const newBalance = balanceData.balance || 0;
+      userPortfolio.balance = newBalance;
+      if (req.userId) saveUserState(req.userId);
+      res.json({ success: true, balance: newBalance / 100 });
+    } else {
+      res.json({ success: true, balance: userConfig.bankroll / 100 });
+    }
+  } catch (error) {
+    console.error('Balance refresh error:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Calculate portfolio worth (balance + positions value)
+app.get('/api/portfolio/worth', async (req, res) => {
+  const userConfig = req.userState?.config || config;
+  const userPortfolio = req.userState?.portfolio || portfolio;
+
+  try {
+    let cashBalance = userConfig.bankroll;
+    let positionsValue = 0;
+
+    if (userConfig.isAuthenticated) {
+      // Fetch balance
+      const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
+      cashBalance = balanceData.balance || 0;
+      userPortfolio.balance = cashBalance;
+
+      // Calculate positions value
+      if (userPortfolio.positions?.length > 0) {
+        for (const position of userPortfolio.positions) {
+          // Use market bid price as liquidation value
+          const contracts = position.yes_count || position.no_count || position.count || 0;
+          const avgCost = position.average_price || position.avg_price || 0;
+          positionsValue += contracts * avgCost;
+        }
+      }
+
+      if (req.userId) saveUserState(req.userId);
+    }
+
+    const totalWorth = cashBalance + positionsValue;
+    res.json({
+      success: true,
+      worth: totalWorth / 100,
+      cashBalance: cashBalance / 100,
+      positionsValue: positionsValue / 100,
+      positionCount: userPortfolio.positions?.length || 0
+    });
+  } catch (error) {
+    console.error('Portfolio worth error:', error.message);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
