@@ -1313,9 +1313,9 @@ function App() {
               <span className="cyber-bracket">]</span>
             </div>
             <div className="cyber-center">
-              <span className="cyber-divider">\\</span>
+              <span className="cyber-divider">//</span>
               <span className="cyber-title">SHIMI NEURAL TRADING</span>
-              <span className="cyber-divider">\\</span>
+              <span className="cyber-divider">//</span>
             </div>
             <div className="cyber-right">
               <span className="cyber-bracket">[</span>
