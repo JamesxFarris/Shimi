@@ -195,7 +195,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
         distanceMin: 0.5,   // Minimum % from strike to bet
         distanceMax: 3.0,   // Maximum % (beyond this, edge eaten by fees)
         timeMin: 2,         // Minimum minutes remaining
-        timeMax: 7,         // Maximum minutes (too early = unpredictable)
+        timeMax: 10,        // Expanded to catch momentum before fully priced in
         priceMin: 35,       // Minimum bet price in cents
         priceMax: 97        // Allow high-confidence bets up to 97¢
       }
@@ -212,7 +212,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
         distanceMin: 0.5,
         distanceMax: 3.0,
         timeMin: 2,
-        timeMax: 7,
+        timeMax: 10,        // Expanded to catch momentum before fully priced in
         priceMin: 35,
         priceMax: 97        // Allow high-confidence bets up to 97¢
       }
@@ -228,8 +228,8 @@ const DEFAULT_EMPIRICAL_TABLES = {
       optimalEntryWindows: {
         distanceMin: 0.75,  // Need more buffer for SOL
         distanceMax: 4.0,
-        timeMin: 3,
-        timeMax: 7,
+        timeMin: 2,         // Lowered to catch earlier opportunities
+        timeMax: 10,        // Expanded to catch momentum before fully priced in
         priceMin: 40,
         priceMax: 97        // Allow high-confidence bets up to 97¢
       }
@@ -7047,7 +7047,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const withinDistanceWindow = absDistance >= (entryWindows.distanceMin || 0.5) &&
                                absDistance <= (entryWindows.distanceMax || 3.0);
   const withinTimeWindow = timeRemaining >= (entryWindows.timeMin || 2) &&
-                           timeRemaining <= (entryWindows.timeMax || 7);
+                           timeRemaining <= (entryWindows.timeMax || 10);
 
   // Determine bet side based on price position
   const isAboveStrike = currentPrice > strikePrice;
@@ -7081,6 +7081,22 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // Check price window - allow up to 97¢ for high-confidence near-expiry bets
   const withinPriceWindow = marketPriceCents >= (entryWindows.priceMin || 35) &&
                             marketPriceCents <= (entryWindows.priceMax || 97);
+
+  // STALE MOMENTUM FILTER: Skip markets where momentum already happened and is fully priced in
+  // If market is > 90¢ with > 5 min left, the opportunity window has passed - no edge possible
+  const isStaleMomentum = marketPriceCents > 90 && timeRemaining > 5;
+  if (isStaleMomentum) {
+    return {
+      shouldBet: false,
+      signalStrength: 0,
+      side: betSide,
+      edge: 0,
+      marketPrice,
+      marketPriceCents,
+      reasons: [`Stale momentum: market at ${marketPriceCents}¢ with ${timeRemaining.toFixed(1)}min left - opportunity already priced in`],
+      staleMomentum: true
+    };
+  }
 
   // EDGE CALCULATION: Use distance-based empirical win rate vs market implied probability
   // Our win rate comes from how often the favored side wins at this distance from strike
