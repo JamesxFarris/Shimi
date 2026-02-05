@@ -5245,6 +5245,53 @@ app.post('/api/bet', async (req, res) => {
   }
 });
 
+// Cancel all open/resting orders on Kalshi
+app.post('/api/cancel-all-orders', async (req, res) => {
+  try {
+    const userConfig = req.userState?.config || config;
+
+    if (!userConfig.isAuthenticated) {
+      return res.json({ success: true, message: 'Not authenticated - no orders to cancel', cancelled: 0 });
+    }
+
+    // Fetch all open orders
+    const ordersData = await kalshiRequest('GET', '/portfolio/orders?status=resting', null, userConfig);
+    const orders = ordersData.orders || [];
+
+    if (orders.length === 0) {
+      return res.json({ success: true, message: 'No open orders to cancel', cancelled: 0 });
+    }
+
+    console.log(`Cancelling ${orders.length} open orders...`);
+
+    // Cancel each order
+    let cancelled = 0;
+    let failed = 0;
+    for (const order of orders) {
+      try {
+        await kalshiRequest('DELETE', `/portfolio/orders/${order.order_id}`, null, userConfig);
+        console.log(`  Cancelled order ${order.order_id} (${order.ticker})`);
+        cancelled++;
+      } catch (err) {
+        console.log(`  Failed to cancel order ${order.order_id}: ${err.message}`);
+        failed++;
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Cancelled ${cancelled} orders${failed > 0 ? `, ${failed} failed` : ''}`,
+      cancelled,
+      failed,
+      total: orders.length
+    });
+
+  } catch (error) {
+    console.error('Error cancelling orders:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Auto-bet on best opportunity (Place Best Bet button) - now supports all markets
 app.post('/api/crypto/auto-bet', async (req, res) => {
   try {
