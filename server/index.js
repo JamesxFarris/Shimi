@@ -7078,33 +7078,24 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const withinPriceWindow = marketPriceCents >= (entryWindows.priceMin || 35) &&
                             marketPriceCents <= (entryWindows.priceMax || 75);
 
-  // CORRECT APPROACH: Market price IS the probability. Our edge comes from known biases.
-  // Start with market implied probability as the base win rate
-  const marketImpliedBase = marketPrice * 100; // e.g., 80 cent = 80%
+  // EDGE CALCULATION: Use distance-based empirical win rate vs market implied probability
+  // Our win rate comes from how often the favored side wins at this distance from strike
+  // Market price reflects what others are willing to pay - our edge is when we have better data
 
-  // Apply token-specific YES/NO bias from empirical data
-  // BTC/ETH/SOL all show ~8% NO bias (NO wins 54%, YES wins 46%)
-  // This bias IS our edge - the market underprices NO slightly
-  const tokenBias = tokenData?.noBias || 0; // e.g., 8 means NO wins 8% more often
-  let adjustedWinRate = marketImpliedBase;
+  const marketImpliedProb = marketPrice * 100; // Market price as probability (e.g., 80¢ = 80%)
 
-  if (betSide === 'NO' && tokenBias > 0) {
-    // NO side is historically favored - our actual win rate is higher than market thinks
-    adjustedWinRate = Math.min(99.5, marketImpliedBase + (tokenBias / 2));
-  } else if (betSide === 'YES' && tokenBias > 0) {
-    // YES side is historically disfavored - our actual win rate is lower than market thinks
-    adjustedWinRate = Math.max(0.5, marketImpliedBase - (tokenBias / 2));
-  }
+  // Use our empirical win rate based on distance from strike
+  // This is the key insight: at 0.5% from strike, favored side wins ~88%, not what market implies
+  let adjustedWinRate = empirical.winRate;
 
-  // Apply regime multiplier (reduces edge in high volatility)
+  // Apply regime multiplier (reduces confidence in high volatility)
   if (regime.multiplier && regime.multiplier < 1) {
-    // In high vol, our bias edge shrinks - adjust toward market price
-    const biasEdge = adjustedWinRate - marketImpliedBase;
-    adjustedWinRate = marketImpliedBase + (biasEdge * regime.multiplier);
+    // In high vol, shrink our edge estimate toward market price
+    const empiricalEdge = adjustedWinRate - marketImpliedProb;
+    adjustedWinRate = marketImpliedProb + (empiricalEdge * regime.multiplier);
   }
 
-  // Calculate edge: our win rate - market implied probability - fees
-  const marketImpliedProb = marketPrice * 100; // Market price as probability
+  console.log(`    📊 Edge calc: empirical=${empirical.winRate.toFixed(1)}% vs market=${marketImpliedProb.toFixed(0)}% @ distance=${absDistance.toFixed(2)}%`);
 
   // DYNAMIC FEE CALCULATION - Kalshi formula: ceil(0.07 × contracts × price × (1-price))
   // Fee is capped at 2¢ per contract. For edge calculation, use per-contract fee as percentage.
