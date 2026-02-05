@@ -3263,11 +3263,15 @@ async function evaluateTakeProfit(position, userConfig = null) {
 
   // Determine current bid (what we can sell for)
   const side = position.side || (position.position > 0 ? 'yes' : 'no');
-  const currentBid = side === 'yes' ? orderbook.bestYesBid : orderbook.bestNoBid;
+  let currentBid = side === 'yes' ? orderbook.bestYesBid : orderbook.bestNoBid;
   const spread = side === 'yes' ? orderbook.yesSpread : orderbook.noSpread;
 
+  // CRITICAL FIX: If no bid exists, use 1¢ as emergency exit price
+  // This allows stop-loss to trigger even when market has no buyers
+  // Getting 1¢ is better than $0 when market expires worthless
   if (!currentBid || currentBid <= 0) {
-    return { shouldExit: false, reason: 'No valid bid price' };
+    console.log(`[StopLoss] ${ticker}: NO BID in orderbook! Using emergency price of 1¢`);
+    currentBid = 1; // Minimum price - at least try to exit
   }
 
   // Calculate current profit WITH KALSHI FEES
@@ -3285,24 +3289,30 @@ async function evaluateTakeProfit(position, userConfig = null) {
   const netProceedsAfterSell = (currentBid * contracts) - totalSellFee - spreadCost;
   const profitPercent = ((netProceedsAfterSell - totalCostWithFees) / totalCostWithFees) * 100;
 
+  // Log position status for debugging
+  console.log(`[StopLoss] ${ticker}: avgCost=${avgCost}¢, bid=${currentBid}¢, profit=${profitPercent.toFixed(1)}%`);
+
   // Get market for stop-loss calculations (needed before stop-loss check)
   const marketsForStopLoss = marketCache.data || [];
   const marketForStopLoss = marketsForStopLoss.find(m => m.ticker === ticker);
 
   // ============================================
   // STOP-LOSS CHECK - Cut losses before they get worse
-  // Uses smart empirical-based threshold calculation
+  // Simple threshold: exit at -40% or worse
   // ============================================
-  const stopLossPercent = calculateSmartStopLoss(position, marketForStopLoss, profitPercent, cfg);
+  const stopLossThreshold = cfg.activeMonitoring?.stopLossThreshold || -40;
 
-  if (profitPercent <= stopLossPercent) {
+  console.log(`[StopLoss] ${ticker}: Checking ${profitPercent.toFixed(1)}% vs threshold ${stopLossThreshold}%`);
+
+  if (profitPercent <= stopLossThreshold) {
     // Loss exceeds threshold - cut it now
+    console.log(`🛑 [StopLoss] TRIGGERED for ${ticker}: ${profitPercent.toFixed(1)}% <= ${stopLossThreshold}%`);
     return {
       shouldExit: true,
-      reason: `🛑 STOP-LOSS: Position at ${profitPercent.toFixed(1)}% (smart threshold: ${stopLossPercent}%)`,
+      reason: `🛑 STOP-LOSS: Position at ${profitPercent.toFixed(1)}% (threshold: ${stopLossThreshold}%)`,
       urgencyScore: 100,
-      urgencyReasons: [`Stop-loss triggered at ${profitPercent.toFixed(1)}% (threshold: ${stopLossPercent}%)`],
-      analysis: { profitPercent, netProfit, currentBid, avgCost, totalSellFee, spreadCost, stopLossTriggered: true, smartThreshold: stopLossPercent }
+      urgencyReasons: [`Stop-loss triggered at ${profitPercent.toFixed(1)}% (threshold: ${stopLossThreshold}%)`],
+      analysis: { profitPercent, netProfit, currentBid, avgCost, totalSellFee, spreadCost, stopLossTriggered: true, stopLossThreshold }
     };
   }
 
