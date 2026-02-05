@@ -7511,19 +7511,23 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 1000, userConfi
           for (const market of response.markets) {
             // Extract settlement data directly from market response
             if (market.floor_strike !== undefined) {
-              // Handle both old (expiration_value) and new (settlement_value_dollars) API formats
-              const settlementPrice = market.settlement_value_dollars !== undefined
-                ? parseFloat(market.settlement_value_dollars)
-                : (market.expiration_value !== undefined ? parseFloat(market.expiration_value) : null);
+              // BUG FIX: Use expiration_value (actual asset price), NOT settlement_value_dollars (payout)
+              // settlement_value_dollars is 0 or 1, expiration_value is the BTC/ETH price at settlement
+              const settlementPrice = market.expiration_value !== undefined
+                ? parseFloat(market.expiration_value)
+                : null;
 
-              if (settlementPrice !== null) {
+              // Get the result (yes/no) from either field name
+              const result = market.result || market.market_result;
+
+              if (settlementPrice !== null && result) {
                 allSettlements.push({
                   ticker: market.ticker,
                   eventTicker: market.event_ticker,
                   token: t,
                   strikePrice: market.floor_strike,
                   settlementPrice: settlementPrice,
-                  result: market.result || market.market_result, // Handle API field name changes
+                  result: result,
                   closeTime: market.close_time,
                   settledTime: market.settlement_ts || market.settled_time,
                   volume: market.volume || 0
