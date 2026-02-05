@@ -196,7 +196,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
         timeMin: 2,         // Minimum minutes remaining
         timeMax: 7,         // Maximum minutes (too early = unpredictable)
         priceMin: 35,       // Minimum bet price in cents
-        priceMax: 75        // Maximum bet price in cents
+        priceMax: 97        // Allow high-confidence bets up to 97¢
       }
     },
     ETH: {
@@ -213,7 +213,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
         timeMin: 2,
         timeMax: 7,
         priceMin: 35,
-        priceMax: 75
+        priceMax: 97        // Allow high-confidence bets up to 97¢
       }
     },
     SOL: {
@@ -230,7 +230,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
         timeMin: 3,
         timeMax: 7,
         priceMin: 40,
-        priceMax: 70
+        priceMax: 97        // Allow high-confidence bets up to 97¢
       }
     }
   },
@@ -7077,9 +7077,9 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // DEBUG: Log price values to trace mismatch
   console.log(`    📊 ${token} prices: yesAsk=${(parsed.yesAsk*100).toFixed(0)}¢ noAsk=${(parsed.noAsk*100).toFixed(0)}¢ | betSide=${betSide} | marketPrice=${marketPriceCents}¢`);
 
-  // Check price window
+  // Check price window - allow up to 97¢ for high-confidence near-expiry bets
   const withinPriceWindow = marketPriceCents >= (entryWindows.priceMin || 35) &&
-                            marketPriceCents <= (entryWindows.priceMax || 75);
+                            marketPriceCents <= (entryWindows.priceMax || 97);
 
   // EDGE CALCULATION: Use distance-based empirical win rate vs market implied probability
   // Our win rate comes from how often the favored side wins at this distance from strike
