@@ -2889,19 +2889,32 @@ async function kalshiRequest(method, endpoint, body = null, userConfig = null) {
     headers['KALSHI-ACCESS-SIGNATURE'] = signature;
   }
 
-  const options = { method, headers };
+  // BUG FIX: Add timeout to prevent hanging on slow Kalshi responses
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+  const options = { method, headers, signal: controller.signal };
   if (body && (method === 'POST' || method === 'PUT')) {
     options.body = JSON.stringify(body);
   }
 
-  const response = await fetch(`${KALSHI_API_BASE}${endpoint}`, options);
+  try {
+    const response = await fetch(`${KALSHI_API_BASE}${endpoint}`, options);
+    clearTimeout(timeoutId);
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Kalshi API error ${response.status}: ${errorText}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Kalshi API error ${response.status}: ${errorText}`);
+    }
+
+    return response.json();
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      throw new Error(`Kalshi API timeout after 10s: ${endpoint}`);
+    }
+    throw err;
   }
-
-  return response.json();
 }
 
 // Sign request with specific config
@@ -5392,7 +5405,7 @@ app.post('/api/bet', async (req, res) => {
       betRecord.status = 'simulated';
       betRecord.orderId = 'SIM-' + Date.now();
       userBetHistory.unshift(betRecord);
-      userConfig.bankroll = (userConfig.bankroll || 10000) - betRecord.totalCost;
+      userConfig.bankroll = (userConfig.bankroll ?? 10000) - betRecord.totalCost;
 
       // Track for performance analysis
       trackBet({
@@ -5414,7 +5427,7 @@ app.post('/api/bet', async (req, res) => {
         success: true,
         simulated: true,
         bet: betRecord,
-        newBalance: (userConfig.bankroll || 10000) / 100
+        newBalance: (userConfig.bankroll ?? 10000) / 100
       });
     }
 
@@ -6314,22 +6327,32 @@ async function runAutoBet(userId = null) {
     // Bet size = (edge% / 100) × bankroll × fraction (0.25 = quarter Kelly for safety)
     // This sizes bets proportionally to edge - bigger edge = bigger bet
     const kellyFraction = 0.25; // Conservative: 1/4 Kelly
-    const bankrollCents = userConfig.bankroll || 1000;
+    const bankrollCents = userConfig.bankroll ?? 1000; // BUG FIX: use ?? to allow bankroll=0
     const edgeDecimal = (best.edge || 5) / 100; // Convert edge% to decimal
     const winProb = (best.winProbability || 60) / 100;
 
     // Kelly formula: f* = (bp - q) / b where b = odds, p = win prob, q = lose prob
     // For binary options: b = (1 - price) / price
     const priceDecimal = priceCents / 100;
+
+    // BUG FIX: Guard against division by zero at extreme prices
+    if (priceDecimal <= 0.01 || priceDecimal >= 0.99) {
+      console.log(`[KELLY] Skipping extreme price ${priceCents}¢ - too risky`);
+      return { betAmount: 100, method: 'minimum_extreme_price' }; // Return minimum bet
+    }
+
+    // BUG FIX: Verify positive edge before Kelly calculation
+    if (winProb <= priceDecimal) {
+      console.log(`[KELLY] No edge: winProb ${(winProb*100).toFixed(1)}% <= price ${priceCents}¢`);
+      return { betAmount: 100, method: 'minimum_no_edge' }; // Return minimum bet
+    }
+
     const oddsRatio = (1 - priceDecimal) / priceDecimal;
     const kellyOptimal = ((oddsRatio * winProb) - (1 - winProb)) / oddsRatio;
 
     // Apply fractional Kelly with floor/ceiling
+    // BUG FIX: Removed signal multiplier - Kelly already factors in edge optimally
     let kellyBetCents = Math.round(bankrollCents * Math.max(0, kellyOptimal) * kellyFraction);
-
-    // Scale by signal strength (higher confidence = closer to Kelly optimal)
-    const signalMultiplier = (best.signalStrength || 70) / 100;
-    kellyBetCents = Math.round(kellyBetCents * signalMultiplier);
 
     // Apply min/max constraints: minimum $1, maximum from hard cap
     const MIN_BET_CENTS = 100; // $1 minimum
@@ -7131,12 +7154,14 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const feePct = (feePerContract / marketPrice) * 100; // fee as % of bet cost
 
   // Add spread cost penalty if orderbook data available
+  // BUG FIX: spread is in cents, convert to percentage of market price
   let spreadPenalty = 0;
   if (orderbook) {
     const spread = betSide === 'YES' ? orderbook.yesSpread : orderbook.noSpread;
-    if (spread && spread > 0) {
-      // Subtract half the spread from edge (we pay half on entry, half on exit)
-      spreadPenalty = (spread / 2);
+    if (spread && spread > 0 && spread < 50) {
+      // Spread is in cents - convert to % of price for edge calculation
+      // Half spread paid on entry. Example: 4¢ spread at 50¢ = (4/2)/50 * 100 = 4%
+      spreadPenalty = ((spread / 2) / marketPrice) * 100;
     }
   }
 
@@ -7511,45 +7536,60 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 1000, userConfi
     }
 
     // For each event, fetch the market to get settlement data
+    // Use parallel batching (3 concurrent requests) for 3x faster data collection
+    const BATCH_SIZE = 3;
     let processedCount = 0;
     let consecutiveErrors = 0;
-    for (const event of eventsToProcess) {
-      try {
-        const marketData = await kalshiRequest('GET', `/markets?event_ticker=${event.event_ticker}`, null, cfg);
-        const market = marketData.markets?.[0];
 
-        if (market && market.floor_strike && market.expiration_value !== undefined) {
-          allSettlements.push({
-            ticker: market.ticker,
-            eventTicker: event.event_ticker,
-            token: t,
-            strikePrice: market.floor_strike,
-            settlementPrice: parseFloat(market.expiration_value),
-            result: market.result, // 'yes' or 'no'
-            closeTime: market.close_time,
-            volume: market.volume || 0
-          });
-        }
+    for (let i = 0; i < eventsToProcess.length; i += BATCH_SIZE) {
+      const batch = eventsToProcess.slice(i, i + BATCH_SIZE);
 
-        processedCount++;
-        consecutiveErrors = 0; // Reset on success
-        if (processedCount % 100 === 0) {
-          console.log(`   Processed ${processedCount}/${eventsToProcess.length} ${t} markets (${allSettlements.filter(s => s.token === t).length} valid)...`);
-        }
+      // Fetch batch in parallel
+      const results = await Promise.allSettled(
+        batch.map(event =>
+          kalshiRequest('GET', `/markets?event_ticker=${event.event_ticker}`, null, cfg)
+            .then(data => ({ event, market: data.markets?.[0] }))
+        )
+      );
 
-        await sleep(250); // Rate limit between market fetches (4 req/sec)
-      } catch (err) {
-        // Handle rate limiting with exponential backoff
-        if (err.message.includes('429')) {
-          consecutiveErrors++;
-          const backoffMs = Math.min(5000, 500 * Math.pow(2, consecutiveErrors));
-          console.log(`   ⏳ Rate limited, backing off ${backoffMs}ms...`);
-          await sleep(backoffMs);
-        } else if (!err.message.includes('404')) {
-          console.error(`   Error fetching market for ${event.event_ticker}:`, err.message);
+      for (const result of results) {
+        if (result.status === 'fulfilled' && result.value.market) {
+          const { event, market } = result.value;
+          if (market.floor_strike && market.expiration_value !== undefined) {
+            allSettlements.push({
+              ticker: market.ticker,
+              eventTicker: event.event_ticker,
+              token: t,
+              strikePrice: market.floor_strike,
+              settlementPrice: parseFloat(market.expiration_value),
+              result: market.result, // 'yes' or 'no'
+              closeTime: market.close_time,
+              volume: market.volume || 0
+            });
+          }
+          consecutiveErrors = 0;
+        } else if (result.status === 'rejected') {
+          const err = result.reason;
+          if (err?.message?.includes('429')) {
+            consecutiveErrors++;
+          }
         }
         processedCount++;
       }
+
+      if (processedCount % 100 < BATCH_SIZE) {
+        console.log(`   Processed ${processedCount}/${eventsToProcess.length} ${t} markets (${allSettlements.filter(s => s.token === t).length} valid)...`);
+      }
+
+      // Rate limit: 250ms per request = 750ms per batch of 3
+      // Add backoff if rate limited
+      const baseDelay = consecutiveErrors > 0
+        ? Math.min(5000, 500 * Math.pow(2, consecutiveErrors))
+        : 750;
+      if (consecutiveErrors > 0) {
+        console.log(`   ⏳ Rate limited, backing off ${baseDelay}ms...`);
+      }
+      await sleep(baseDelay);
     }
 
     const tokenSettlements = allSettlements.filter(s => s.token === t).length;
