@@ -78,9 +78,10 @@ const DEFAULT_CONFIG = {
     volumeWeighted: true         // Weight by volume
   },
   // Take-profit settings: exit positions early when favorable
-  // SMART MODE: Uses urgency scoring to decide when to lock in gains
+  // DISABLED: Let winners ride to expiry instead of taking early profits
+  // Stop-loss and coin-flip prevention still work regardless of this setting
   takeProfitSettings: {
-    enabled: true,               // ENABLED by default - solidify gains!
+    enabled: false,              // DISABLED - let winners ride to expiry
     autoExecute: true,           // Auto-execute when conditions are optimal
     minProfitPercent: 10,        // Base minimum (lowered by urgency score)
     confidenceFactor: 0.85,      // Model uncertainty discount
