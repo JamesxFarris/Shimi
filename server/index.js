@@ -3255,6 +3255,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
   }
 
   if (contracts === 0 || avgCost === 0) {
+    console.log(`[StopLoss] ${ticker}: Skipping - no position data (contracts=${contracts}, avgCost=${avgCost})`);
     return { shouldExit: false, reason: 'No valid position data (missing avg_price and market_exposure)' };
   }
 
