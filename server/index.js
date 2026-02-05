@@ -4026,12 +4026,67 @@ function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConf
     return null;
   }
 
-  // Get NO bias from empirical data (default to 8% if no data yet)
-  const noBias = (tokenData.noBias || 8) / 2 / 100;  // Half of 8% = 4% = 0.04
+  // ============================================
+  // SMART EDGE: Position-Aware Probability
+  // ============================================
+  // Instead of blanket NO bias, determine which side is favored by price position
+  // and apply distance-based win rate from empirical data.
 
-  // Apply NO bias: NO is favored, YES is disfavored
-  let probYesWins = marketProbYes - noBias;  // YES is disfavored
-  let probNoWins = marketProbNo + noBias;    // NO is favored
+  // Step 1: Determine which side is favored by current price
+  const isAboveStrike = currentPrice > parsed.strikePrice;
+
+  // For "above" markets: YES wins if price >= strike at settlement
+  // For "below" markets: YES wins if price < strike at settlement
+  let favoredSide;
+  if (parsed.marketType === 'above') {
+    favoredSide = isAboveStrike ? 'YES' : 'NO';
+  } else {
+    // "below" market: YES wins if price < strike
+    favoredSide = isAboveStrike ? 'NO' : 'YES';
+  }
+
+  // Step 2: Look up distance-based win rate from empirical tables
+  const winRateTable = learnedParams?.winRateByDistance || DEFAULT_EMPIRICAL_TABLES.winRateByDistance;
+  const distanceBuckets = [0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0];
+
+  // Find the closest bucket for our distance
+  let closestBucket = distanceBuckets[0];
+  for (const bucket of distanceBuckets) {
+    if (absDistance >= bucket) {
+      closestBucket = bucket;
+    } else {
+      break;
+    }
+  }
+
+  const bucketData = winRateTable[closestBucket] || { favoredWinRate: 50 };
+  const empiricalFavoredWinRate = bucketData.favoredWinRate / 100; // Convert to decimal
+
+  console.log(`   📊 SMART EDGE: Price ${isAboveStrike ? 'ABOVE' : 'BELOW'} strike by ${absDistance.toFixed(2)}%`);
+  console.log(`   📊 Favored side: ${favoredSide}, Distance bucket: ${closestBucket}%, Empirical win rate: ${(empiricalFavoredWinRate * 100).toFixed(0)}%`);
+
+  // Step 3: Apply to correct side
+  // Use the higher of market price or empirical win rate for favored side
+  let probYesWins, probNoWins;
+
+  if (favoredSide === 'YES') {
+    // YES is favored by price position
+    probYesWins = Math.max(marketProbYes, empiricalFavoredWinRate);
+    probNoWins = 1 - probYesWins;
+  } else {
+    // NO is favored by price position
+    probNoWins = Math.max(marketProbNo, empiricalFavoredWinRate);
+    probYesWins = 1 - probNoWins;
+  }
+
+  // Step 4: Apply small historical NO bias when outcome is uncertain (< 1% from strike)
+  // The 54/46 NO bias acts as a tiebreaker in coin-flip territory
+  if (absDistance < 1.0) {
+    const smallBias = (tokenData.noBias || 4) / 2 / 100;  // ~2%
+    probNoWins += smallBias;
+    probYesWins -= smallBias;
+    console.log(`   📊 Applied small NO bias (${(smallBias * 100).toFixed(1)}%) for uncertain territory`);
+  }
 
   // Reduce confidence if outside optimal windows
   if (!withinDistanceWindow || !withinTimeWindow) {
@@ -4089,8 +4144,8 @@ function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConf
   let yesEdge = (adjustedProbYesWins - effectiveYesCost) * 100;
   let noEdge = (adjustedProbNoWins - effectiveNoCost) * 100;
 
-  // Build analysis description (simplified - using market price + NO bias)
-  const noBiasDesc = noBias > 0 ? `NO bias +${(noBias * 100).toFixed(0)}%` : 'no bias';
+  // Build analysis description (simplified - using position-aware edge calculation)
+  const edgeDesc = `${favoredSide} favored @ ${absDistance.toFixed(1)}% from strike`;
 
   // ============================================
   // BET SELECTION (Safe Mode Only)
@@ -4264,7 +4319,7 @@ function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConf
 
   // Build reason string
   const probPct = (bestBet.prob * 100).toFixed(0);
-  const betReason = `${noBiasDesc} | ${probPct}% win prob`;
+  const betReason = `${edgeDesc} | ${probPct}% win prob`;
 
   // Calculate profit for $1 worth of contracts
   // E.g., if price is 50¢, we buy 2 contracts. If we win, each pays $1, so profit = 2×$1 - $1 = $1 (100¢)
