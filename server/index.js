@@ -7492,17 +7492,92 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 1000, userConfi
   for (const t of tokens) {
     console.log(`📊 Fetching ${t} historical data...`);
     const series = `KX${t}15M`;
+    let cursor = null;
+    let page = 0;
+    let tokenSettlements = 0;
+
+    // IMPROVED: Use /markets endpoint directly with status=settled
+    // This is 10x more efficient: 1000/page vs 100/page events + individual market fetches
+    // API docs: https://docs.kalshi.com/api-reference/market/get-markets
+    while (page < maxPages) {
+      try {
+        const url = cursor
+          ? `/markets?limit=1000&series_ticker=${series}&status=settled&cursor=${cursor}`
+          : `/markets?limit=1000&series_ticker=${series}&status=settled`;
+
+        const response = await kalshiRequest('GET', url, null, cfg);
+
+        if (response.markets && response.markets.length > 0) {
+          for (const market of response.markets) {
+            // Extract settlement data directly from market response
+            if (market.floor_strike !== undefined) {
+              // Handle both old (expiration_value) and new (settlement_value_dollars) API formats
+              const settlementPrice = market.settlement_value_dollars !== undefined
+                ? parseFloat(market.settlement_value_dollars)
+                : (market.expiration_value !== undefined ? parseFloat(market.expiration_value) : null);
+
+              if (settlementPrice !== null) {
+                allSettlements.push({
+                  ticker: market.ticker,
+                  eventTicker: market.event_ticker,
+                  token: t,
+                  strikePrice: market.floor_strike,
+                  settlementPrice: settlementPrice,
+                  result: market.result || market.market_result, // Handle API field name changes
+                  closeTime: market.close_time,
+                  settledTime: market.settlement_ts || market.settled_time,
+                  volume: market.volume || 0
+                });
+                tokenSettlements++;
+              }
+            }
+          }
+        }
+
+        cursor = response.cursor;
+        page++;
+
+        console.log(`   Page ${page}: ${tokenSettlements} ${t} settlements collected`);
+
+        if (!cursor || !response.markets || response.markets.length === 0) break;
+        await sleep(300); // Rate limit protection
+      } catch (err) {
+        console.error(`   Error fetching page ${page} for ${t}:`, err.message);
+        // If rate limited, back off and retry
+        if (err.message.includes('429')) {
+          console.log(`   ⏳ Rate limited, waiting 5s...`);
+          await sleep(5000);
+          continue; // Retry same page
+        }
+        break;
+      }
+    }
+
+    console.log(`   ✅ ${t}: ${tokenSettlements} settlements collected`);
+  }
+
+  console.log(`📊 Total settlements collected: ${allSettlements.length}`);
+  return allSettlements;
+}
+
+// Legacy function kept for backwards compatibility - redirects to new implementation
+async function fetchBulkHistoricalDataLegacy(token = 'all', maxPages = 1000, userConfig = null) {
+  const cfg = userConfig || config;
+  const tokens = token === 'all' ? ['BTC', 'ETH', 'SOL'] : [token.toUpperCase()];
+  const allSettlements = [];
+
+  for (const t of tokens) {
+    console.log(`📊 [Legacy] Fetching ${t} historical data via events...`);
+    const series = `KX${t}15M`;
     const allEvents = [];
     let cursor = null;
     let page = 0;
 
-    // Paginate through all events for this token
-    // Note: Kalshi uses "settled" not "closed" for finalized events
     while (page < maxPages) {
       try {
         const url = cursor
-          ? `/events?limit=100&series_ticker=${series}&status=settled&cursor=${cursor}`
-          : `/events?limit=100&series_ticker=${series}&status=settled`;
+          ? `/events?limit=200&series_ticker=${series}&status=settled&cursor=${cursor}`
+          : `/events?limit=200&series_ticker=${series}&status=settled`;
 
         const response = await kalshiRequest('GET', url, null, cfg);
 
@@ -7516,7 +7591,7 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 1000, userConfi
         console.log(`   Page ${page}: ${allEvents.length} events total`);
 
         if (!cursor || !response.events || response.events.length === 0) break;
-        await sleep(500); // Rate limit protection
+        await sleep(500);
       } catch (err) {
         console.error(`   Error fetching page ${page} for ${t}:`, err.message);
         break;
@@ -7525,26 +7600,13 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 1000, userConfi
 
     console.log(`   📋 Fetching market details for ${allEvents.length} ${t} events...`);
 
-    // Collect as many events as possible for robust NO bias validation
-    const maxEventsPerToken = 50000;
-    const eventsToProcess = allEvents.length > maxEventsPerToken
-      ? allEvents.slice(0, maxEventsPerToken) // Most recent events
-      : allEvents;
-
-    if (allEvents.length > maxEventsPerToken) {
-      console.log(`   📉 Sampling ${maxEventsPerToken}/${allEvents.length} events to respect rate limits`);
-    }
-
-    // For each event, fetch the market to get settlement data
-    // Use parallel batching (3 concurrent requests) for 3x faster data collection
     const BATCH_SIZE = 3;
     let processedCount = 0;
     let consecutiveErrors = 0;
 
-    for (let i = 0; i < eventsToProcess.length; i += BATCH_SIZE) {
-      const batch = eventsToProcess.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < allEvents.length; i += BATCH_SIZE) {
+      const batch = allEvents.slice(i, i + BATCH_SIZE);
 
-      // Fetch batch in parallel
       const results = await Promise.allSettled(
         batch.map(event =>
           kalshiRequest('GET', `/markets?event_ticker=${event.event_ticker}`, null, cfg)
@@ -7562,7 +7624,7 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 1000, userConfi
               token: t,
               strikePrice: market.floor_strike,
               settlementPrice: parseFloat(market.expiration_value),
-              result: market.result, // 'yes' or 'no'
+              result: market.result,
               closeTime: market.close_time,
               volume: market.volume || 0
             });
@@ -7578,11 +7640,9 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 1000, userConfi
       }
 
       if (processedCount % 100 < BATCH_SIZE) {
-        console.log(`   Processed ${processedCount}/${eventsToProcess.length} ${t} markets (${allSettlements.filter(s => s.token === t).length} valid)...`);
+        console.log(`   Processed ${processedCount}/${allEvents.length} ${t} markets...`);
       }
 
-      // Rate limit: 250ms per request = 750ms per batch of 3
-      // Add backoff if rate limited
       const baseDelay = consecutiveErrors > 0
         ? Math.min(5000, 500 * Math.pow(2, consecutiveErrors))
         : 750;
