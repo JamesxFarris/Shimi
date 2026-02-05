@@ -402,6 +402,29 @@ body {
   border-top: 1px solid var(--border-color);
 }
 
+.kalshi-link-btn {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  border: 1px solid var(--accent-cyan);
+  border-radius: var(--radius-md);
+  color: var(--accent-cyan);
+  text-align: center;
+  text-decoration: none;
+  font-size: 0.85rem;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.kalshi-link-btn:hover {
+  background: linear-gradient(135deg, #16213e 0%, #1a1a2e 100%);
+  border-color: var(--accent-green);
+  color: var(--accent-green);
+  box-shadow: 0 0 10px rgba(0, 255, 136, 0.2);
+}
+
 .balance-display {
   background: var(--bg-card);
   border: 1px solid var(--border-color);

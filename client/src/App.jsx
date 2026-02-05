@@ -1225,6 +1225,14 @@ function App() {
         </nav>
 
         <div className="sidebar-footer">
+          <a
+            href="https://kalshi.com/portfolio"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="kalshi-link-btn"
+          >
+            Open Kalshi ↗
+          </a>
           <div className="balance-display">
             <div className="balance-header">
               <span className="balance-label">
