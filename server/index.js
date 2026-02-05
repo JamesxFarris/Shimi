@@ -5927,6 +5927,39 @@ async function runAutoBet(userId = null) {
     console.log(`   Distance: ${best.absDistance?.toFixed(2)}% from strike | Regime: ${best.regime}`);
     console.log(`   Edge: +${best.edge?.toFixed(1)}% (after fees) | Sample size: ${best.sampleSize}`);
 
+    // MOMENTUM CONFIRMATION - Check if price trend supports our bet direction
+    const token = best.assetType || best.cryptoType || getTokenFromTicker(best.ticker);
+    const priceHistory = priceHistoryByToken.get(token) || [];
+    const momentum = calculateMomentumMultiTimeframe(priceHistory);
+    const isBullish = momentum.direction === 'bullish';
+    const isBearish = momentum.direction === 'bearish';
+    const betIsBullish = best.betSide === 'YES' && best.marketType !== 'below' ||
+                         best.betSide === 'NO' && best.marketType === 'below';
+
+    const momentumAligned = (betIsBullish && isBullish) || (!betIsBullish && isBearish);
+    const momentumOpposed = (betIsBullish && isBearish) || (!betIsBullish && isBullish);
+
+    console.log(`   Momentum: ${momentum.direction} (5m: ${(momentum.m5*100).toFixed(2)}%, 15m: ${(momentum.m15*100).toFixed(2)}%)`);
+
+    // Apply momentum adjustment to edge
+    const momentumSettings = config.momentumSettings || {};
+    if (momentumSettings.enabled !== false) {
+      if (momentumAligned && momentum.strength === 'strong') {
+        console.log(`   ✅ Momentum ALIGNED with bet (+${momentumSettings.alignmentBonus || 2}% edge bonus)`);
+      } else if (momentumOpposed && momentum.strength === 'strong') {
+        console.log(`   ⚠️ Momentum OPPOSED to bet - consider skipping`);
+        // If momentum strongly opposes and we don't have great edge, skip
+        if (best.edge < 8 && momentum.strength === 'strong') {
+          console.log(`   ❌ Skipping bet: momentum strongly opposed with only ${best.edge.toFixed(1)}% edge`);
+          lastScanStatus.status = 'momentum_opposed';
+          lastScanStatus.statusMessage = `Momentum ${momentum.direction} opposes ${best.betSide} bet`;
+          lastScanStatus.blockedReasons.push(`Momentum opposed: ${momentum.direction} vs ${best.betSide}`);
+          console.log('========================================\n');
+          return;
+        }
+      }
+    }
+
     // Show other good opportunities
     if (opportunities.length > 1) {
       console.log(`   + ${opportunities.length - 1} more opportunities with signal ≥${minSignal}`);
@@ -5964,9 +5997,36 @@ async function runAutoBet(userId = null) {
 
     // Cap bet at remaining risk budget, max per bet, OR token budget - whichever is lowest
     const maxPerBet = getMaxPerBet(isHourly ? 'hourly' : 'other', userConfig);
-    const MAX_BET_CENTS = Math.min(maxPerBet, remainingBudget, remainingTokenBudget);
+    const hardCapCents = Math.min(maxPerBet, remainingBudget, remainingTokenBudget);
 
     const priceCents = Math.round(best.betPrice * 100);
+
+    // KELLY CRITERION POSITION SIZING
+    // Bet size = (edge% / 100) × bankroll × fraction (0.25 = quarter Kelly for safety)
+    // This sizes bets proportionally to edge - bigger edge = bigger bet
+    const kellyFraction = 0.25; // Conservative: 1/4 Kelly
+    const bankrollCents = userConfig.bankroll || 1000;
+    const edgeDecimal = (best.edge || 5) / 100; // Convert edge% to decimal
+    const winProb = (best.winProbability || 60) / 100;
+
+    // Kelly formula: f* = (bp - q) / b where b = odds, p = win prob, q = lose prob
+    // For binary options: b = (1 - price) / price
+    const priceDecimal = priceCents / 100;
+    const oddsRatio = (1 - priceDecimal) / priceDecimal;
+    const kellyOptimal = ((oddsRatio * winProb) - (1 - winProb)) / oddsRatio;
+
+    // Apply fractional Kelly with floor/ceiling
+    let kellyBetCents = Math.round(bankrollCents * Math.max(0, kellyOptimal) * kellyFraction);
+
+    // Scale by signal strength (higher confidence = closer to Kelly optimal)
+    const signalMultiplier = (best.signalStrength || 70) / 100;
+    kellyBetCents = Math.round(kellyBetCents * signalMultiplier);
+
+    // Apply min/max constraints: minimum $1, maximum from hard cap
+    const MIN_BET_CENTS = 100; // $1 minimum
+    const MAX_BET_CENTS = Math.min(hardCapCents, Math.max(MIN_BET_CENTS, kellyBetCents));
+
+    console.log(`   Kelly sizing: edge=${(edgeDecimal*100).toFixed(1)}%, kelly=${kellyOptimal.toFixed(3)}, bet=$${(kellyBetCents/100).toFixed(2)} → capped=$${(MAX_BET_CENTS/100).toFixed(2)}`);
 
     // Calculate contracts but cap total cost
     let count = Math.floor(MAX_BET_CENTS / priceCents);
@@ -6705,13 +6765,42 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
                             marketPriceCents <= (entryWindows.priceMax || 75);
 
   // Apply regime multiplier to win rate (cap at 99.5% - can't exceed 100%)
-  const adjustedWinRate = Math.min(99.5, empirical.winRate * (regime.multiplier || 1.0));
+  let adjustedWinRate = Math.min(99.5, empirical.winRate * (regime.multiplier || 1.0));
+
+  // Apply token-specific YES/NO bias from empirical data
+  // BTC/ETH/SOL all show ~8% NO bias (NO wins 54%, YES wins 46%)
+  const tokenBias = tokenData?.noBias || 0; // e.g., 8 means NO wins 8% more often
+  if (betSide === 'NO' && tokenBias > 0) {
+    // NO side is historically favored - boost win rate
+    adjustedWinRate = Math.min(99.5, adjustedWinRate + (tokenBias / 2));
+  } else if (betSide === 'YES' && tokenBias > 0) {
+    // YES side is historically disfavored - reduce win rate
+    adjustedWinRate = Math.max(50, adjustedWinRate - (tokenBias / 2));
+  }
 
   // Calculate edge: our win rate - market implied probability - fees
   const marketImpliedProb = marketPrice * 100; // Market price as probability
-  const feePct = 2; // Approximate Kalshi fee
+
+  // DYNAMIC FEE CALCULATION - Kalshi formula: ceil(0.07 × contracts × price × (1-price))
+  // Fee is capped at 2¢ per contract. For edge calculation, use per-contract fee as percentage.
+  // At 50¢: fee = 0.07 * 0.50 * 0.50 = 1.75% of contract value
+  // At 65¢: fee = 0.07 * 0.65 * 0.35 = 1.59% of contract value
+  // At 75¢: fee = 0.07 * 0.75 * 0.25 = 1.31% of contract value
+  const feePerContract = Math.min(2, Math.ceil(7 * marketPrice * (1 - marketPrice))) / 100; // in cents, then to dollars
+  const feePct = (feePerContract / marketPrice) * 100; // fee as % of bet cost
+
+  // Add spread cost penalty if orderbook data available
+  let spreadPenalty = 0;
+  if (orderbook) {
+    const spread = betSide === 'YES' ? orderbook.yesSpread : orderbook.noSpread;
+    if (spread && spread > 0) {
+      // Subtract half the spread from edge (we pay half on entry, half on exit)
+      spreadPenalty = (spread / 2);
+    }
+  }
+
   const grossEdge = adjustedWinRate - marketImpliedProb;
-  const netEdge = grossEdge - feePct;
+  const netEdge = grossEdge - feePct - spreadPenalty;
 
   // Calculate signal strength
   const signalStrength = calculateSignalStrength(
