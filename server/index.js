@@ -114,7 +114,8 @@ const DEFAULT_CONFIG = {
     stopLossThreshold: -40,      // Exit if position is down 40%
     easyProfitEnabled: true,     // Take "free money" on high-confidence positions
     easyProfitMinPrice: 75,      // Minimum buy price for easy profit (75¢ = 75% implied prob)
-    easyProfitThreshold: 12      // Near expiry (<5min): take 12%+ profit (accounts for fees)
+    easyProfitThreshold: 12,     // Near expiry (<5min): take 12%+ profit (accounts for fees)
+    coinFlipPreventionEnabled: true  // Exit coin-flip positions near expiry (can disable to ride it out)
     // Note: Early exits (>5min left) require 18%+ profit to justify fees
   }
 };
@@ -3530,9 +3531,11 @@ async function evaluateTakeProfit(position, userConfig = null) {
 
   // ============================================
   // STOP-LOSS CHECK - Cut losses before they get worse
-  // Simple threshold: exit at -40% or worse
+  // BUG FIX: Read from BOTH activeMonitoring AND limitOrderSettings (user's UI setting)
   // ============================================
-  const stopLossThreshold = cfg.activeMonitoring?.stopLossThreshold || -40;
+  const stopLossThreshold = cfg.activeMonitoring?.stopLossThreshold
+    || cfg.limitOrderSettings?.stopLoss?.threshold
+    || -40;
 
   console.log(`[StopLoss] ${ticker}: Checking ${profitPercent.toFixed(1)}% vs threshold ${stopLossThreshold}%`);
 
@@ -3548,14 +3551,15 @@ async function evaluateTakeProfit(position, userConfig = null) {
     };
   }
 
-  // Time-based stop-loss: If <3 min left AND losing badly (>25%), cut losses
-  // This is a backup in case smart stop-loss didn't trigger
-  if (marketForStopLoss && profitPercent < -25) {
+  // Time-based stop-loss: If <3 min left AND loss exceeds half of user's threshold, cut losses
+  // BUG FIX: Was hardcoded -25%, now respects user's stopLossThreshold (uses half as time-critical trigger)
+  const timeCriticalThreshold = Math.max(stopLossThreshold / 2, -30); // At least -30%, but scales with user setting
+  if (marketForStopLoss && profitPercent < timeCriticalThreshold) {
     const timeRemaining = marketForStopLoss.close_time ? new Date(marketForStopLoss.close_time).getTime() - Date.now() : null;
     if (timeRemaining && timeRemaining < 3 * 60 * 1000) {
       return {
         shouldExit: true,
-        reason: `🛑 TIME STOP-LOSS: ${profitPercent.toFixed(1)}% loss with <3min left - cutting losses`,
+        reason: `🛑 TIME STOP-LOSS: ${profitPercent.toFixed(1)}% loss with <3min left - cutting losses (time-critical threshold: ${timeCriticalThreshold}%)`,
         urgencyScore: 90,
         urgencyReasons: [`Time-critical stop-loss: ${profitPercent.toFixed(1)}% loss, ${(timeRemaining/60000).toFixed(1)}min left`],
         analysis: { profitPercent, netProfit, currentBid, avgCost, totalSellFee, spreadCost, timeRemaining, stopLossTriggered: true }
@@ -3566,9 +3570,13 @@ async function evaluateTakeProfit(position, userConfig = null) {
   // ============================================
   // COIN-FLIP PREVENTION - Exit when price is at strike near expiry
   // Uses DATA-DRIVEN LEARNED THRESHOLDS when available
+  // BUG FIX: Only force exit on LOSING positions, let profitable ones ride
   // ============================================
+  // Check if coin-flip prevention is enabled (default: true, can be disabled in activeMonitoring)
+  const coinFlipEnabled = cfg.activeMonitoring?.coinFlipPreventionEnabled !== false;
+
   // If price is very close to strike AND time is running out, exit to avoid gambling
-  if (marketForStopLoss) {
+  if (coinFlipEnabled && marketForStopLoss) {
     const parsed = parseMarket(marketForStopLoss);
     if (parsed && parsed.strikePrice) {
       const token = parsed.cryptoType;
@@ -3587,28 +3595,43 @@ async function evaluateTakeProfit(position, userConfig = null) {
           console.log(`[TakeProfit] ${ticker}: Using learned threshold ${coinFlipThreshold}% for ${token} (sample size: ${learnedParams.byToken[token]?.sampleSize || 0})`);
         }
 
-        // If within learned coin-flip threshold AND <3 min left - this is a coin flip, exit
+        // BUG FIX: Only exit losing positions OR positions very close to expiry (<1 min)
+        // Profitable positions should ride unless we're about to expire
+        const isLosing = profitPercent < 0;
+        const veryCloseToExpiry = timeRemaining && timeRemaining < 60 * 1000; // <1 min
+
+        // If within learned coin-flip threshold AND <3 min left - this is a coin flip
         if (pctFromStrike < coinFlipThreshold && timeRemaining && timeRemaining < timeBuffer) {
-          console.log(`[TakeProfit] ${ticker}: COIN-FLIP PREVENTION - price ${pctFromStrike.toFixed(3)}% from strike with ${(timeRemaining/60000).toFixed(1)}min left (threshold: ${coinFlipThreshold}%)`);
-          return {
-            shouldExit: true,
-            reason: `🎲 COIN-FLIP EXIT: Price only ${pctFromStrike.toFixed(2)}% from strike with <3min left - avoiding gamble (learned threshold: ${coinFlipThreshold}%)`,
-            urgencyScore: 95,
-            urgencyReasons: [`Coin-flip prevention: ${pctFromStrike.toFixed(2)}% from strike, ${(timeRemaining/60000).toFixed(1)}min left`],
-            analysis: { profitPercent, netProfit, currentBid, avgCost, pctFromStrike, timeRemaining, coinFlipExit: true, learnedThreshold: coinFlipThreshold }
-          };
+          // Only exit if losing OR very close to expiry
+          if (isLosing || veryCloseToExpiry) {
+            console.log(`[TakeProfit] ${ticker}: COIN-FLIP PREVENTION - price ${pctFromStrike.toFixed(3)}% from strike with ${(timeRemaining/60000).toFixed(1)}min left (threshold: ${coinFlipThreshold}%)`);
+            return {
+              shouldExit: true,
+              reason: `🎲 COIN-FLIP EXIT: Price only ${pctFromStrike.toFixed(2)}% from strike with <3min left - avoiding gamble (learned threshold: ${coinFlipThreshold}%)`,
+              urgencyScore: 95,
+              urgencyReasons: [`Coin-flip prevention: ${pctFromStrike.toFixed(2)}% from strike, ${(timeRemaining/60000).toFixed(1)}min left`],
+              analysis: { profitPercent, netProfit, currentBid, avgCost, pctFromStrike, timeRemaining, coinFlipExit: true, learnedThreshold: coinFlipThreshold }
+            };
+          } else {
+            console.log(`[TakeProfit] ${ticker}: COIN-FLIP territory but position is PROFITABLE (${profitPercent.toFixed(1)}%) - letting it ride`);
+          }
         }
 
         // Slightly wider threshold with less time - nearStrikeThreshold from strike AND <2 min
         if (pctFromStrike < nearStrikeThreshold && timeRemaining && timeRemaining < 2 * 60 * 1000) {
-          console.log(`[TakeProfit] ${ticker}: COIN-FLIP PREVENTION - price ${pctFromStrike.toFixed(3)}% from strike with ${(timeRemaining/60000).toFixed(1)}min left (near-strike threshold: ${nearStrikeThreshold}%)`);
-          return {
-            shouldExit: true,
-            reason: `🎲 COIN-FLIP EXIT: Price ${pctFromStrike.toFixed(2)}% from strike with <2min left - too risky (near-strike threshold: ${nearStrikeThreshold}%)`,
-            urgencyScore: 95,
-            urgencyReasons: [`Coin-flip prevention: ${pctFromStrike.toFixed(2)}% from strike, ${(timeRemaining/60000).toFixed(1)}min left`],
-            analysis: { profitPercent, netProfit, currentBid, avgCost, pctFromStrike, timeRemaining, coinFlipExit: true, learnedThreshold: nearStrikeThreshold }
-          };
+          // Only exit if losing OR very close to expiry
+          if (isLosing || veryCloseToExpiry) {
+            console.log(`[TakeProfit] ${ticker}: COIN-FLIP PREVENTION - price ${pctFromStrike.toFixed(3)}% from strike with ${(timeRemaining/60000).toFixed(1)}min left (near-strike threshold: ${nearStrikeThreshold}%)`);
+            return {
+              shouldExit: true,
+              reason: `🎲 COIN-FLIP EXIT: Price ${pctFromStrike.toFixed(2)}% from strike with <2min left - too risky (near-strike threshold: ${nearStrikeThreshold}%)`,
+              urgencyScore: 95,
+              urgencyReasons: [`Coin-flip prevention: ${pctFromStrike.toFixed(2)}% from strike, ${(timeRemaining/60000).toFixed(1)}min left`],
+              analysis: { profitPercent, netProfit, currentBid, avgCost, pctFromStrike, timeRemaining, coinFlipExit: true, learnedThreshold: nearStrikeThreshold }
+            };
+          } else {
+            console.log(`[TakeProfit] ${ticker}: Near-strike but position is PROFITABLE (${profitPercent.toFixed(1)}%) - letting it ride`);
+          }
         }
       }
     }
@@ -5114,7 +5137,13 @@ app.post('/api/limit-order-settings', (req, res) => {
     }
     if (stopLoss.threshold !== undefined) {
       // Clamp to reasonable range: -90% to -5%
-      userConfig.limitOrderSettings.stopLoss.threshold = Math.max(-90, Math.min(-5, parseInt(stopLoss.threshold) || -40));
+      const threshold = Math.max(-90, Math.min(-5, parseInt(stopLoss.threshold) || -40));
+      userConfig.limitOrderSettings.stopLoss.threshold = threshold;
+      // BUG FIX: Also sync to activeMonitoring so evaluateTakeProfit uses the user's setting
+      if (!userConfig.activeMonitoring) {
+        userConfig.activeMonitoring = JSON.parse(JSON.stringify(DEFAULT_CONFIG.activeMonitoring));
+      }
+      userConfig.activeMonitoring.stopLossThreshold = threshold;
     }
   }
 
