@@ -193,7 +193,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
         distanceMin: 0.5,   // Minimum % from strike to bet
         distanceMax: 3.0,   // Maximum % (beyond this, edge eaten by fees)
         timeMin: 2,         // Minimum minutes remaining
-        timeMax: 12,        // Maximum minutes (too early = unpredictable)
+        timeMax: 7,         // Maximum minutes (too early = unpredictable)
         priceMin: 35,       // Minimum bet price in cents
         priceMax: 75        // Maximum bet price in cents
       }
@@ -210,7 +210,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
         distanceMin: 0.5,
         distanceMax: 3.0,
         timeMin: 2,
-        timeMax: 12,
+        timeMax: 7,
         priceMin: 35,
         priceMax: 75
       }
@@ -227,7 +227,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
         distanceMin: 0.75,  // Need more buffer for SOL
         distanceMax: 4.0,
         timeMin: 3,
-        timeMax: 10,
+        timeMax: 7,
         priceMin: 40,
         priceMax: 70
       }
