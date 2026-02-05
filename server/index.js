@@ -7074,6 +7074,9 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   const marketPriceCents = Math.round(marketPrice * 100);
 
+  // DEBUG: Log price values to trace mismatch
+  console.log(`    📊 ${token} prices: yesAsk=${(parsed.yesAsk*100).toFixed(0)}¢ noAsk=${(parsed.noAsk*100).toFixed(0)}¢ | betSide=${betSide} | marketPrice=${marketPriceCents}¢`);
+
   // Check price window
   const withinPriceWindow = marketPriceCents >= (entryWindows.priceMin || 35) &&
                             marketPriceCents <= (entryWindows.priceMax || 75);
