@@ -7093,7 +7093,7 @@ function recordEmpiricalBet(token) {
  * @param {object} userConfig - User configuration for API auth
  * @returns {Array} Array of settlement objects
  */
-async function fetchBulkHistoricalData(token = 'all', maxPages = 50, userConfig = null) {
+async function fetchBulkHistoricalData(token = 'all', maxPages = 1000, userConfig = null) {
   const cfg = userConfig || config;
   const tokens = token === 'all' ? ['BTC', 'ETH', 'SOL'] : [token.toUpperCase()];
   const allSettlements = [];
@@ -7134,8 +7134,8 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 50, userConfig 
 
     console.log(`   📋 Fetching market details for ${allEvents.length} ${t} events...`);
 
-    // Sample events to avoid hitting rate limits (max 800 per token for ~2400 total)
-    const maxEventsPerToken = 800;
+    // Collect as many events as possible for robust NO bias validation
+    const maxEventsPerToken = 50000;
     const eventsToProcess = allEvents.length > maxEventsPerToken
       ? allEvents.slice(0, maxEventsPerToken) // Most recent events
       : allEvents;
@@ -7446,7 +7446,7 @@ async function updateLearnedParameters(userConfig = null) {
   console.log('📚 Starting EMPIRICAL TABLES build from historical data...');
 
   try {
-    const settlements = await fetchBulkHistoricalData('all', 50, userConfig);
+    const settlements = await fetchBulkHistoricalData('all', 1000, userConfig);
 
     if (settlements.length < 100) {
       console.log(`⚠️ Insufficient data for learning: only ${settlements.length} settlements`);
