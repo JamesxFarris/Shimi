@@ -4079,14 +4079,8 @@ function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConf
     probYesWins = 1 - probNoWins;
   }
 
-  // Step 4: Apply small historical NO bias when outcome is uncertain (< 1% from strike)
-  // The 54/46 NO bias acts as a tiebreaker in coin-flip territory
-  if (absDistance < 1.0) {
-    const smallBias = (tokenData.noBias || 4) / 2 / 100;  // ~2%
-    probNoWins += smallBias;
-    probYesWins -= smallBias;
-    console.log(`   📊 Applied small NO bias (${(smallBias * 100).toFixed(1)}%) for uncertain territory`);
-  }
+  // Note: NO bias removed - empirical data shows favored side wins 99%+ at all distances
+  // The position-aware logic alone is the edge
 
   // Reduce confidence if outside optimal windows
   if (!withinDistanceWindow || !withinTimeWindow) {
