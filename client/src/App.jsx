@@ -1218,6 +1218,10 @@ function App() {
             <span className="nav-text">History</span>
             {newBetsCount > 0 && <span className="nav-badge">{newBetsCount}</span>}
           </button>
+          <button className={`nav-item ${tab === 'performance' ? 'active' : ''}`} onClick={() => { setTab('performance'); fetchPerformance(); }}>
+            <span className="nav-icon">📈</span>
+            <span className="nav-text">Performance</span>
+          </button>
           <button className={`nav-item ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>
             <span className="nav-icon">⚙</span>
             <span className="nav-text">Config</span>
@@ -1679,6 +1683,198 @@ function App() {
             </div>
           )}
 
+
+          {/* Performance Tab */}
+          {tab === 'performance' && (
+            <div className="performance-page">
+              <div className="performance-grid">
+                {/* Summary Stats */}
+                <div className="perf-card wide">
+                  <h3 className="perf-card-title">Overall Performance</h3>
+                  {performance ? (
+                    <div className="perf-summary">
+                      <div className="perf-stat-row">
+                        <div className="perf-stat">
+                          <span className="perf-stat-label">Total Bets</span>
+                          <span className="perf-stat-value">{performance.summary.totalBets}</span>
+                        </div>
+                        <div className="perf-stat">
+                          <span className="perf-stat-label">Win Rate</span>
+                          <span className={`perf-stat-value ${parseFloat(performance.summary.winRate) >= 50 ? 'positive' : 'negative'}`}>
+                            {performance.summary.winRate}%
+                          </span>
+                        </div>
+                        <div className="perf-stat">
+                          <span className="perf-stat-label">Total P&L</span>
+                          <span className={`perf-stat-value ${parseFloat(performance.summary.totalProfitDollars) >= 0 ? 'positive' : 'negative'}`}>
+                            ${performance.summary.totalProfitDollars}
+                          </span>
+                        </div>
+                        <div className="perf-stat">
+                          <span className="perf-stat-label">ROI</span>
+                          <span className={`perf-stat-value ${parseFloat(performance.summary.roi) >= 0 ? 'positive' : 'negative'}`}>
+                            {performance.summary.roi}%
+                          </span>
+                        </div>
+                      </div>
+                      <div className="perf-stat-row secondary">
+                        <div className="perf-stat small">
+                          <span className="perf-stat-label">Wins</span>
+                          <span className="perf-stat-value positive">{performance.summary.wins}</span>
+                        </div>
+                        <div className="perf-stat small">
+                          <span className="perf-stat-label">Losses</span>
+                          <span className="perf-stat-value negative">{performance.summary.losses}</span>
+                        </div>
+                        <div className="perf-stat small">
+                          <span className="perf-stat-label">Pending</span>
+                          <span className="perf-stat-value">{performance.summary.pendingBets}</span>
+                        </div>
+                        <div className="perf-stat small">
+                          <span className="perf-stat-label">Wagered</span>
+                          <span className="perf-stat-value">${performance.summary.totalWageredDollars}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="loading-text">Loading performance data...</p>
+                  )}
+                </div>
+
+                {/* Calibration - Predicted vs Actual */}
+                <div className="perf-card calibration-card">
+                  <h3 className="perf-card-title">Model Calibration</h3>
+
+                  {/* Calibration Score */}
+                  {performance?.calibrationScore && (
+                    <div className={`calibration-score ${performance.calibrationScore.status}`}>
+                      <div className="cal-score-main">
+                        {performance.calibrationScore.score ? (
+                          <>
+                            <span className="cal-score-value">{performance.calibrationScore.score}</span>
+                            <span className="cal-score-label">/ 100</span>
+                          </>
+                        ) : (
+                          <span className="cal-score-na">N/A</span>
+                        )}
+                      </div>
+                      <div className="cal-score-status">{performance.calibrationScore.message}</div>
+                      {performance.calibrationScore.mae && (
+                        <div className="cal-score-detail">
+                          Mean error: {performance.calibrationScore.mae}% | {performance.calibrationScore.bucketsAnalyzed} buckets
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Calibration Table */}
+                  {performance?.calibration && Object.keys(performance.calibration).length > 0 ? (
+                    <div className="calibration-table">
+                      <div className="calibration-header">
+                        <span>Predicted</span>
+                        <span>Actual</span>
+                        <span>Diff</span>
+                        <span>Bets</span>
+                      </div>
+                      {Object.entries(performance.calibration).sort((a, b) => parseFloat(a[0]) - parseFloat(b[0])).map(([bucket, data]) => (
+                        <div key={bucket} className={`calibration-row ${data.bets >= 10 ? 'calibrated' : 'low-sample'}`}>
+                          <span>{bucket}%</span>
+                          <span className={data.actual >= data.predicted ? 'positive' : 'negative'}>
+                            {data.actual.toFixed(1)}%
+                          </span>
+                          <span className={data.difference >= 0 ? 'positive' : 'negative'}>
+                            {data.difference >= 0 ? '+' : ''}{data.difference.toFixed(1)}%
+                          </span>
+                          <span>{data.bets}{data.bets < 10 ? '*' : ''}</span>
+                        </div>
+                      ))}
+                      <div className="calibration-note">
+                        * Buckets with &lt;10 bets not used for calibration
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="no-data">No calibration data yet. Place some bets!</p>
+                  )}
+                </div>
+
+                {/* By Token */}
+                <div className="perf-card">
+                  <h3 className="perf-card-title">By Token</h3>
+                  {performance?.byToken && Object.keys(performance.byToken).length > 0 ? (
+                    <div className="token-perf-list">
+                      {Object.entries(performance.byToken).map(([token, data]) => (
+                        <div key={token} className="token-perf-row">
+                          <span className="token-name">{token}</span>
+                          <span className="token-stats">
+                            {data.wins}W / {data.losses}L
+                          </span>
+                          <span className={`token-profit ${data.profit >= 0 ? 'positive' : 'negative'}`}>
+                            ${(data.profit / 100).toFixed(2)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="no-data">No token data yet</p>
+                  )}
+                </div>
+
+                {/* By Market Type */}
+                <div className="perf-card">
+                  <h3 className="perf-card-title">By Market Type</h3>
+                  {performance?.byMarketType && Object.keys(performance.byMarketType).length > 0 ? (
+                    <div className="token-perf-list">
+                      {Object.entries(performance.byMarketType).map(([type, data]) => (
+                        <div key={type} className="token-perf-row">
+                          <span className="token-name">{type.toUpperCase()}</span>
+                          <span className="token-stats">
+                            {data.wins}W / {data.losses}L
+                          </span>
+                          <span className={`token-profit ${data.profit >= 0 ? 'positive' : 'negative'}`}>
+                            ${(data.profit / 100).toFixed(2)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="no-data">No market type data yet</p>
+                  )}
+                </div>
+
+                {/* Recent Bets */}
+                <div className="perf-card wide">
+                  <h3 className="perf-card-title">Recent Tracked Bets</h3>
+                  {performance?.recentBets && performance.recentBets.length > 0 ? (
+                    <div className="recent-bets-list">
+                      {performance.recentBets.map((bet, i) => (
+                        <div key={bet.id || i} className={`recent-bet-row ${bet.outcome}`}>
+                          <div className="bet-main">
+                            <span className={`bet-side ${bet.side}`}>{bet.side?.toUpperCase()}</span>
+                            <span className="bet-token">{bet.token}</span>
+                            <span className="bet-title">{bet.title?.slice(0, 40)}...</span>
+                          </div>
+                          <div className="bet-details">
+                            <span className="bet-prob">Pred: {bet.predictedProb?.toFixed(0)}%</span>
+                            <span className="bet-price">@ {bet.price}¢</span>
+                            <span className={`bet-outcome ${bet.outcome}`}>
+                              {bet.outcome === 'pending' ? '⏳' : bet.outcome === 'won' ? '✅' : '❌'}
+                              {bet.outcome !== 'pending' && bet.actualProfit !== null && (
+                                <span className={bet.actualProfit >= 0 ? 'positive' : 'negative'}>
+                                  {bet.actualProfit >= 0 ? '+' : ''}{bet.actualProfit}¢
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="no-data">No bets tracked yet. Performance tracking starts now!</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Settings Tab */}
           {tab === 'settings' && (
