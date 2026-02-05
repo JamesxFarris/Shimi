@@ -304,6 +304,211 @@ function isLearningDataStale() {
   return Date.now() - lastUpdate > LEARNING_INTERVAL;
 }
 
+// ============================================
+// PROSPECTIVE DATA COLLECTION
+// ============================================
+// Records price snapshots from active markets for future model training
+// This captures "betting-time" data that historical settlements don't have
+
+const PRICE_SNAPSHOTS_FILE = path.join(__dirname, 'price_snapshots.json');
+const MAX_SNAPSHOTS = 10000; // Keep last 10k snapshots to limit file size
+
+// ============================================
+// TAKE-PROFIT EXECUTION HISTORY
+// ============================================
+// Tracks all take-profit and stop-loss executions for monitoring
+
+const TAKE_PROFIT_HISTORY_FILE = path.join(__dirname, 'take_profit_history.json');
+const MAX_TP_HISTORY = 200; // Keep last 200 executions
+
+let takeProfitHistory = [];
+
+// Load existing history
+try {
+  if (fs.existsSync(TAKE_PROFIT_HISTORY_FILE)) {
+    takeProfitHistory = JSON.parse(fs.readFileSync(TAKE_PROFIT_HISTORY_FILE, 'utf8'));
+    console.log(`📈 Loaded ${takeProfitHistory.length} take-profit history entries`);
+  }
+} catch (err) {
+  console.error('Error loading take-profit history:', err.message);
+  takeProfitHistory = [];
+}
+
+// Save take-profit history to disk
+function saveTakeProfitHistory() {
+  try {
+    if (takeProfitHistory.length > MAX_TP_HISTORY) {
+      takeProfitHistory = takeProfitHistory.slice(-MAX_TP_HISTORY);
+    }
+    fs.writeFileSync(TAKE_PROFIT_HISTORY_FILE, JSON.stringify(takeProfitHistory, null, 2));
+  } catch (err) {
+    console.error('Error saving take-profit history:', err.message);
+  }
+}
+
+// Record a take-profit/stop-loss execution
+function recordTakeProfitExecution(ticker, type, analysis, result, userId = null) {
+  takeProfitHistory.push({
+    timestamp: new Date().toISOString(),
+    userId: userId || 'anonymous',
+    ticker,
+    type, // 'take-profit' or 'stop-loss'
+    profitPercent: analysis.profitPercent,
+    netProfit: analysis.netProfit,
+    urgencyScore: analysis.urgencyScore || 0,
+    avgCost: analysis.avgCost,
+    exitPrice: analysis.currentBid,
+    executed: result.executed,
+    filledCount: result.filledCount || 0,
+    fillPrice: result.fillPrice || 0,
+    realizedProfit: result.realizedProfit || 0,
+    reason: result.reason
+  });
+  saveTakeProfitHistory();
+}
+
+// In-memory store for price snapshots
+let priceSnapshots = [];
+
+// Load existing snapshots
+try {
+  if (fs.existsSync(PRICE_SNAPSHOTS_FILE)) {
+    priceSnapshots = JSON.parse(fs.readFileSync(PRICE_SNAPSHOTS_FILE, 'utf8'));
+    console.log(`📸 Loaded ${priceSnapshots.length} price snapshots`);
+  }
+} catch (err) {
+  console.error('Error loading price snapshots:', err.message);
+  priceSnapshots = [];
+}
+
+// Save snapshots to disk
+function savePriceSnapshots() {
+  try {
+    // Trim to max size
+    if (priceSnapshots.length > MAX_SNAPSHOTS) {
+      priceSnapshots = priceSnapshots.slice(-MAX_SNAPSHOTS);
+    }
+    fs.writeFileSync(PRICE_SNAPSHOTS_FILE, JSON.stringify(priceSnapshots, null, 2));
+    console.log(`💾 Saved ${priceSnapshots.length} price snapshots`);
+  } catch (err) {
+    console.error('Error saving price snapshots:', err.message);
+  }
+}
+
+/**
+ * Record price snapshot for an active market
+ * @param {object} market - Market data with ticker, strikePrice, closeTime
+ * @param {number} currentPrice - Current crypto price
+ * @param {string} token - Token symbol (BTC, ETH, SOL)
+ */
+function recordPriceSnapshot(market, currentPrice, token) {
+  const now = Date.now();
+  const closeTime = new Date(market.closeTime || market.close_time).getTime();
+  const timeToSettlement = (closeTime - now) / 60000; // minutes
+
+  if (timeToSettlement <= 0 || timeToSettlement > 15) return; // Only track 0-15 min windows
+
+  const strikePrice = market.strikePrice || market.floor_strike;
+  if (!strikePrice || !currentPrice) return;
+
+  const pctFromStrike = ((currentPrice - strikePrice) / strikePrice) * 100;
+
+  priceSnapshots.push({
+    ticker: market.ticker,
+    token,
+    timestamp: new Date().toISOString(),
+    currentPrice,
+    strikePrice,
+    pctFromStrike: parseFloat(pctFromStrike.toFixed(4)),
+    timeToSettlement: parseFloat(timeToSettlement.toFixed(2)),
+    settledResult: null // Will be filled when market settles
+  });
+}
+
+/**
+ * Match settled market with its snapshots and update results
+ * @param {string} ticker - Market ticker
+ * @param {string} result - Settlement result ('yes' or 'no')
+ */
+function matchSettlementWithSnapshots(ticker, result) {
+  let matched = 0;
+  for (const snapshot of priceSnapshots) {
+    if (snapshot.ticker === ticker && snapshot.settledResult === null) {
+      snapshot.settledResult = result;
+      matched++;
+    }
+  }
+  if (matched > 0) {
+    console.log(`📸 Matched ${matched} snapshots with settlement result: ${ticker} = ${result}`);
+    savePriceSnapshots();
+  }
+}
+
+/**
+ * Analyze prospective data to get "betting time" win rates
+ * This measures: "At T-X minutes before settlement, if price was Y% from strike, what was the result?"
+ */
+function analyzeProspectiveData() {
+  const settledSnapshots = priceSnapshots.filter(s => s.settledResult !== null);
+
+  if (settledSnapshots.length < 50) {
+    return { success: false, error: 'Insufficient data', count: settledSnapshots.length };
+  }
+
+  // Group by time-to-settlement buckets
+  const timeBuckets = { '0-2min': [], '2-5min': [], '5-10min': [], '10-15min': [] };
+
+  for (const s of settledSnapshots) {
+    const t = s.timeToSettlement;
+    if (t <= 2) timeBuckets['0-2min'].push(s);
+    else if (t <= 5) timeBuckets['2-5min'].push(s);
+    else if (t <= 10) timeBuckets['5-10min'].push(s);
+    else timeBuckets['10-15min'].push(s);
+  }
+
+  const analysis = {};
+
+  for (const [bucket, snapshots] of Object.entries(timeBuckets)) {
+    if (snapshots.length < 10) continue;
+
+    // For each distance range, calculate actual win rate
+    const distanceRanges = [
+      { name: '0-0.5%', min: 0, max: 0.5 },
+      { name: '0.5-1%', min: 0.5, max: 1 },
+      { name: '1-2%', min: 1, max: 2 },
+      { name: '2%+', min: 2, max: Infinity }
+    ];
+
+    analysis[bucket] = { total: snapshots.length, byDistance: {} };
+
+    for (const range of distanceRanges) {
+      const inRange = snapshots.filter(s => {
+        const abs = Math.abs(s.pctFromStrike);
+        return abs >= range.min && abs < range.max;
+      });
+
+      if (inRange.length < 5) continue;
+
+      // Calculate: if price was above strike, did YES win?
+      let favoredWins = 0;
+      for (const s of inRange) {
+        const yesFavored = s.pctFromStrike > 0;
+        const yesWon = s.settledResult === 'yes';
+        if ((yesFavored && yesWon) || (!yesFavored && !yesWon)) {
+          favoredWins++;
+        }
+      }
+
+      analysis[bucket].byDistance[range.name] = {
+        count: inRange.length,
+        favoredWinRate: parseFloat((favoredWins / inRange.length * 100).toFixed(2))
+      };
+    }
+  }
+
+  return { success: true, totalSettled: settledSnapshots.length, analysis };
+}
+
 // Sleep helper for rate limiting
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -689,6 +894,12 @@ function settleBet(betId, outcome, settlementPrice, actualProfit) {
   // Recalculate summary stats
   recalculateSummary();
   savePerformanceData();
+
+  // Match prospective data snapshots with this settlement result
+  if (bet.ticker) {
+    const result = outcome === 'won' ? bet.side.toLowerCase() : (bet.side.toLowerCase() === 'yes' ? 'no' : 'yes');
+    matchSettlementWithSnapshots(bet.ticker, result);
+  }
 
   console.log(`📊 Settled bet: ${bet.side} on ${bet.token} → ${outcome.toUpperCase()} (${actualProfit > 0 ? '+' : ''}${actualProfit}¢)`);
   return bet;
@@ -3597,7 +3808,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
 /**
  * Execute take-profit exit (sell position)
  */
-async function executeTakeProfitExit(position, analysis, userConfig = null) {
+async function executeTakeProfitExit(position, analysis, userConfig = null, userId = null) {
   const cfg = userConfig || config;
   const settings = cfg.takeProfitSettings || {};
 
@@ -3664,7 +3875,7 @@ async function executeTakeProfitExit(position, analysis, userConfig = null) {
         console.log(`   💵 Realized profit: $${(actualProfit/100).toFixed(2)}`);
       }
 
-      return {
+      const result = {
         executed: true,
         orderId: response.order.order_id,
         filledCount,
@@ -3672,14 +3883,23 @@ async function executeTakeProfitExit(position, analysis, userConfig = null) {
         realizedProfit: (response.order.average_fill_price - analysis.avgCost) * filledCount,
         reason: filledCount === contracts ? 'Fully filled' : `Partial fill: ${filledCount}/${contracts}`
       };
+
+      // Record execution to history
+      recordTakeProfitExecution(ticker, isStopLoss ? 'stop-loss' : 'take-profit', analysis, result, userId);
+
+      return result;
     }
 
     console.log(`   ⚠️ No order in response`);
-    return { executed: false, reason: 'No order in response' };
+    const noOrderResult = { executed: false, reason: 'No order in response' };
+    recordTakeProfitExecution(ticker, isStopLoss ? 'stop-loss' : 'take-profit', analysis, noOrderResult, userId);
+    return noOrderResult;
 
   } catch (error) {
     console.error(`   ❌ Exit failed: ${error.message}`);
-    return { executed: false, reason: error.message };
+    const errorResult = { executed: false, reason: error.message };
+    recordTakeProfitExecution(ticker, isStopLoss ? 'stop-loss' : 'take-profit', analysis, errorResult, userId);
+    return errorResult;
   }
 }
 
@@ -3687,7 +3907,7 @@ async function executeTakeProfitExit(position, analysis, userConfig = null) {
  * Scan all positions for take-profit opportunities
  * Smart scanning: evaluates all positions and executes optimal exits
  */
-async function scanTakeProfitOpportunities(userConfig = null, userPortfolio = null) {
+async function scanTakeProfitOpportunities(userConfig = null, userPortfolio = null, userId = null) {
   const cfg = userConfig || config;
   const pf = userPortfolio || portfolio;
   const settings = cfg.takeProfitSettings || {};
@@ -3727,11 +3947,11 @@ async function scanTakeProfitOpportunities(userConfig = null, userPortfolio = nu
 
         // Execute if auto-execute is enabled
         if (settings.autoExecute && !settings.logOnly) {
-          const result = await executeTakeProfitExit(position, evaluation.analysis, cfg);
+          const result = await executeTakeProfitExit(position, evaluation.analysis, cfg, userId);
           opportunities[opportunities.length - 1].executionResult = result;
         } else {
           // Log the recommendation
-          await executeTakeProfitExit(position, evaluation.analysis, cfg);
+          await executeTakeProfitExit(position, evaluation.analysis, cfg, userId);
         }
       }
     } catch (error) {
@@ -3786,7 +4006,7 @@ function startTakeProfitScanning(intervalMs = 30000, userId, userConfig, userPor
         }
       }
 
-      await scanTakeProfitOpportunities(userConfig, userPortfolio);
+      await scanTakeProfitOpportunities(userConfig, userPortfolio, userId);
     } catch (error) {
       console.error('[TakeProfit] Scan error:', error.message);
     }
@@ -4079,7 +4299,7 @@ function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConf
     probYesWins = 1 - probNoWins;
   }
 
-  // Note: NO bias removed - empirical data shows favored side wins 99%+ at all distances
+  // Note: NO bias removed - win probability is calculated from distance (capped at 80%)
   // The position-aware logic alone is the edge
 
   // Reduce confidence if outside optimal windows
@@ -4226,12 +4446,15 @@ function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConf
     }
 
     // Return partial analysis so card can display probability
+    // Calculate zScore from distance and volatility (volatility is already a decimal like 0.02)
+    const zScoreCalc = volatility > 0 ? absDistance / (volatility * 100) : 0;
+
     return {
       ...parsed,
       currentPrice,
       volatility: (volatility * 100).toFixed(2) + '%',
       pctFromStrike: pctFromStrike.toFixed(2),
-      zScore: prediction.zScore.toFixed(2),
+      zScore: zScoreCalc.toFixed(2),
       probYesWins: probYesWins * 100,
       probNoWins: probNoWins * 100,
       ourProbability: bestProb * 100,
@@ -4247,10 +4470,10 @@ function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConf
       isLocked: true,
       filterReason,
       timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining),
-      momentum: prediction.momentum.direction,
-      momentumStrength: prediction.momentum.strength,
-      confidence: (prediction.confidence * 100).toFixed(0) + '%',
-      dataPoints: prediction.dataPoints
+      momentum: 'neutral',
+      momentumStrength: 'none',
+      confidence: ((empiricalFavoredWinRate || 0.5) * 100).toFixed(0) + '%',
+      dataPoints: bucketData?.count || 0
     };
   }
 
@@ -4360,7 +4583,7 @@ function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConf
     recommendedBet,
     isObviousBet: isSafeBet,
     isHighProb,
-    maxProbAllowed: 0.99, // Empirical data shows 99%+ win rates for favored side
+    maxProbAllowed: 0.80, // Win rate capped at 80% to avoid overconfidence
     // Smart edge analysis info (replaced statistical model)
     momentum: momentumInfo?.direction || 'neutral',
     momentumStrength: momentumInfo?.strength || 0,
@@ -5771,7 +5994,7 @@ async function runAutoBet(userId = null) {
       if (userConfig.takeProfitSettings?.enabled && userPortfolio.positions?.length > 0) {
         console.log(`\n📈 Scanning ${userPortfolio.positions.length} positions for take-profit...`);
         try {
-          const takeProfitOpps = await scanTakeProfitOpportunities(userConfig, userPortfolio);
+          const takeProfitOpps = await scanTakeProfitOpportunities(userConfig, userPortfolio, userId);
           if (takeProfitOpps.length > 0) {
             console.log(`   Found ${takeProfitOpps.length} take-profit opportunities`);
             takeProfitOpps.forEach(opp => {
@@ -5846,7 +6069,8 @@ async function runAutoBet(userId = null) {
         parsed,
         priceData.price,
         learnedParams,
-        orderbook
+        orderbook,
+        userConfig  // Pass user config for selectivity rules
       );
 
       // Merge parsed data with empirical evaluation
@@ -6769,10 +6993,13 @@ function lookupEmpiricalWinRate(pctFromStrike, token = null) {
  * @param {object} currentPrice - Current crypto price
  * @param {object} tables - Empirical lookup tables
  * @param {object} orderbook - Orderbook data (optional)
+ * @param {object} userConfig - User config with selectivity rules (optional)
  * @returns {object} { shouldBet, signalStrength, side, edge, winRate, reasons }
  */
-function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, orderbook = null) {
+function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, orderbook = null, userConfig = null) {
   const empiricalTables = tables || learnedParams;
+  // Merge user's selectivity rules with defaults (user settings take precedence)
+  const userRules = userConfig?.selectivityRules || {};
   const token = parsed.cryptoType;
   const strikePrice = parsed.strikePrice;
   const timeRemaining = parsed.timeRemainingMinutes || 15;
@@ -6900,8 +7127,9 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     timeRemaining
   );
 
-  // Get selectivity rules
-  const rules = empiricalTables.selectivityRules || DEFAULT_EMPIRICAL_TABLES.selectivityRules;
+  // Get selectivity rules - user config takes precedence over empirical tables
+  const defaultRules = empiricalTables.selectivityRules || DEFAULT_EMPIRICAL_TABLES.selectivityRules;
+  const rules = { ...defaultRules, ...userRules };
 
   // Build rejection reasons
   const reasons = [];
@@ -6981,14 +7209,39 @@ function buildEmpiricalLookupTables(settlements) {
   tables.lastUpdated = new Date().toISOString();
 
   // Process settlements for distance analysis
-  const distances = settlements.map(s => ({
-    pctFromStrike: Math.abs((s.settlementPrice - s.strikePrice) / s.strikePrice * 100),
-    result: s.result,
-    token: s.token,
-    wasAboveStrike: s.settlementPrice > s.strikePrice,
-    wasBelowStrike: s.settlementPrice < s.strikePrice,
-    closeTime: s.closeTime
-  }));
+  // IMPORTANT: Use bettingTimePct (price at betting time) if available, otherwise fall back to settlement distance
+  // This addresses the model design flaw - we want to measure "at betting time, what was the distance?"
+  const enrichedCount = settlements.filter(s => s.bettingTimePct !== undefined).length;
+  if (enrichedCount > 0) {
+    console.log(`   📊 Using betting-time data for ${enrichedCount}/${settlements.length} settlements`);
+  }
+
+  const distances = settlements.map(s => {
+    // Prefer betting-time distance if available (from candlestick enrichment)
+    // This is the "correct" way to measure - distance when betting, not at settlement
+    const usesBettingTime = s.bettingTimePct !== undefined;
+    const pctFromStrike = usesBettingTime
+      ? Math.abs(s.bettingTimePct)
+      : Math.abs((s.settlementPrice - s.strikePrice) / s.strikePrice * 100);
+
+    // For determining "favored side", use betting-time direction if available
+    const wasAboveStrike = usesBettingTime
+      ? s.bettingTimePct > 0
+      : s.settlementPrice > s.strikePrice;
+    const wasBelowStrike = usesBettingTime
+      ? s.bettingTimePct < 0
+      : s.settlementPrice < s.strikePrice;
+
+    return {
+      pctFromStrike,
+      result: s.result,
+      token: s.token,
+      wasAboveStrike,
+      wasBelowStrike,
+      closeTime: s.closeTime,
+      usesBettingTime
+    };
+  });
 
   // Build win rate by distance buckets
   const distanceBuckets = [0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0];
@@ -7009,7 +7262,9 @@ function buildEmpiricalLookupTables(settlements) {
       }
     }
 
-    const favoredWinRate = (favoredWins / withinBucket.length * 100);
+    // Cap win rate at 80% to avoid overconfidence from tautological measurement
+    const rawWinRate = (favoredWins / withinBucket.length * 100);
+    const favoredWinRate = Math.min(80, rawWinRate);
 
     tables.winRateByDistance[bucket] = {
       count: withinBucket.length,
@@ -7272,6 +7527,86 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 1000, userConfi
 }
 
 /**
+ * Try to enrich settlements with "betting time" price data from historical candlesticks
+ * This addresses the model design flaw where we only had settlement-time data
+ * Note: Kalshi may not retain candlestick history for settled markets - this is best-effort
+ *
+ * @param {Array} settlements - Array of settlement objects with closeTime
+ * @param {object} userConfig - User configuration for API auth
+ * @returns {Array} Enriched settlements (with bettingTimePct if available)
+ */
+async function enrichSettlementsWithCandlesticks(settlements, userConfig = null) {
+  const cfg = userConfig || config;
+  console.log(`📊 Attempting to enrich ${settlements.length} settlements with candlestick data...`);
+
+  let enrichedCount = 0;
+  let failedCount = 0;
+  const sampleSize = Math.min(100, settlements.length); // Only try a sample to avoid rate limits
+
+  // Take a random sample of settlements to test if candlestick data is available
+  const sample = settlements
+    .filter(s => s.ticker && s.closeTime)
+    .sort(() => Math.random() - 0.5)
+    .slice(0, sampleSize);
+
+  for (const settlement of sample) {
+    try {
+      // Fetch candlesticks for this market (1-minute candles, 15 data points)
+      const candleData = await fetchCandlesticks(settlement.ticker, 1, 15, cfg);
+
+      if (candleData && candleData.length > 0) {
+        // Find the candle approximately 5 minutes before close
+        const closeTime = new Date(settlement.closeTime).getTime();
+        const targetTime = closeTime - 5 * 60 * 1000; // 5 min before close
+
+        // Find closest candle to target time
+        let closestCandle = null;
+        let minDiff = Infinity;
+
+        for (const candle of candleData) {
+          const candleTime = new Date(candle.timestamp || candle.time).getTime();
+          const diff = Math.abs(candleTime - targetTime);
+          if (diff < minDiff) {
+            minDiff = diff;
+            closestCandle = candle;
+          }
+        }
+
+        if (closestCandle && minDiff < 10 * 60 * 1000) { // Within 10 minutes
+          // Use the candle's closing price as the "betting time" price
+          const bettingTimePrice = closestCandle.close || closestCandle.price;
+          if (bettingTimePrice && settlement.strikePrice) {
+            const bettingTimePct = ((bettingTimePrice - settlement.strikePrice) / settlement.strikePrice) * 100;
+            settlement.bettingTimePrice = bettingTimePrice;
+            settlement.bettingTimePct = parseFloat(bettingTimePct.toFixed(4));
+            settlement.candleTimestamp = closestCandle.timestamp || closestCandle.time;
+            enrichedCount++;
+          }
+        }
+      }
+
+      await sleep(250); // Rate limit
+    } catch (err) {
+      failedCount++;
+      // Kalshi likely doesn't retain candlestick history for settled markets
+      if (failedCount >= 10 && enrichedCount === 0) {
+        console.log(`   ⚠️ Candlestick enrichment not available (${failedCount} failures, 0 successes)`);
+        break; // Stop trying if it's clearly not working
+      }
+    }
+  }
+
+  if (enrichedCount > 0) {
+    console.log(`   ✅ Enriched ${enrichedCount}/${sampleSize} settlements with betting-time data`);
+  } else {
+    console.log(`   ℹ️ No candlestick data available for historical settlements (expected - Kalshi may not retain this)`);
+    console.log(`   ℹ️ Using prospective data collection instead for future model training`);
+  }
+
+  return settlements;
+}
+
+/**
  * Analyze settlement data to find optimal thresholds
  * @param {Array} settlements - Array of settlement objects
  * @returns {object} Analysis results with optimal thresholds
@@ -7530,6 +7865,11 @@ async function updateLearnedParameters(userConfig = null) {
       console.log(`⚠️ Insufficient data for learning: only ${settlements.length} settlements`);
       return { success: false, error: 'Insufficient data', sampleSize: settlements.length };
     }
+
+    // Try to enrich settlements with "betting time" data from candlesticks
+    // This addresses the model flaw where we only had settlement-time distance
+    // Note: This is best-effort - Kalshi may not retain historical candlesticks
+    await enrichSettlementsWithCandlesticks(settlements, userConfig);
 
     // Build comprehensive empirical tables using the new function
     const empiricalTables = buildEmpiricalLookupTables(settlements);
@@ -8022,8 +8362,145 @@ app.get('/api/historical/params', (req, res) => {
 });
 
 // ============================================
+// PROSPECTIVE DATA COLLECTION API
+// ============================================
+
+// Manually trigger a price snapshot for all active markets
+// POST /api/historical/snapshot
+app.post('/api/historical/snapshot', async (req, res) => {
+  try {
+    const tokens = ['BTC', 'ETH', 'SOL'];
+    let snapshotCount = 0;
+
+    for (const token of tokens) {
+      const price = latestPrices[token];
+      if (!price) continue;
+
+      // Get active markets for this token
+      const series = `KX${token}15M`;
+      const marketsResponse = await kalshiRequest('GET', `/markets?series_ticker=${series}&status=open`, null, config);
+      const markets = marketsResponse.markets || [];
+
+      for (const market of markets) {
+        recordPriceSnapshot(market, price, token);
+        snapshotCount++;
+      }
+    }
+
+    savePriceSnapshots();
+
+    res.json({
+      success: true,
+      message: `Recorded ${snapshotCount} price snapshots`,
+      totalSnapshots: priceSnapshots.length
+    });
+  } catch (error) {
+    console.error('Snapshot error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get prospective data analysis
+// GET /api/historical/prospective
+app.get('/api/historical/prospective', (req, res) => {
+  const analysis = analyzeProspectiveData();
+  res.json({
+    success: analysis.success,
+    totalSnapshots: priceSnapshots.length,
+    settledCount: priceSnapshots.filter(s => s.settledResult !== null).length,
+    pendingCount: priceSnapshots.filter(s => s.settledResult === null).length,
+    analysis: analysis.analysis || null,
+    error: analysis.error || null
+  });
+});
+
+// ============================================
 // TAKE-PROFIT API (Phase 5)
 // ============================================
+
+// Get take-profit execution history (per-user)
+app.get('/api/take-profit/history', (req, res) => {
+  const limit = parseInt(req.query.limit) || 50;
+  const userId = req.userId || 'anonymous';
+
+  // Filter history to only show current user's executions
+  const userHistory = takeProfitHistory.filter(h => h.userId === userId);
+  const history = userHistory.slice(-limit).reverse(); // Most recent first
+
+  // Calculate summary stats (for this user only)
+  const executions = history.filter(h => h.executed);
+  const stopLosses = executions.filter(h => h.type === 'stop-loss');
+  const takeProfits = executions.filter(h => h.type === 'take-profit');
+  const totalRealized = executions.reduce((sum, h) => sum + (h.realizedProfit || 0), 0);
+
+  res.json({
+    success: true,
+    history,
+    stats: {
+      totalExecutions: executions.length,
+      stopLossCount: stopLosses.length,
+      takeProfitCount: takeProfits.length,
+      totalRealizedCents: totalRealized,
+      avgProfitPercent: executions.length > 0
+        ? executions.reduce((sum, h) => sum + h.profitPercent, 0) / executions.length
+        : 0
+    }
+  });
+});
+
+// ============================================
+// SELECTIVITY RULES API (Model Edge Thresholds)
+// ============================================
+
+// Get current selectivity rules
+app.get('/api/model/selectivity', (req, res) => {
+  const userConfig = req.userState?.config || config;
+  res.json({
+    success: true,
+    selectivityRules: userConfig.selectivityRules || learnedParams.selectivityRules,
+    modelConfidence: learnedParams.confidence || 0.5,
+    lastUpdated: learnedParams.lastUpdated || null
+  });
+});
+
+// Update selectivity rules (allows adjusting min edge threshold)
+app.post('/api/model/selectivity', (req, res) => {
+  if (!req.userId) {
+    return res.status(401).json({ success: false, error: 'Please login first' });
+  }
+
+  const userConfig = req.userState.config;
+  const updates = req.body;
+
+  // Validate and merge updates
+  const validFields = ['minSignalStrength', 'minEmpiricalWinRate', 'minEdgeAfterFees', 'maxBetsPerHour', 'maxBetsPerToken'];
+  const current = userConfig.selectivityRules || { ...learnedParams.selectivityRules };
+
+  for (const field of validFields) {
+    if (updates[field] !== undefined) {
+      // Validate ranges
+      if (field === 'minEdgeAfterFees' && (updates[field] < 1 || updates[field] > 20)) {
+        return res.status(400).json({ success: false, error: 'minEdgeAfterFees must be between 1 and 20' });
+      }
+      if (field === 'minSignalStrength' && (updates[field] < 50 || updates[field] > 95)) {
+        return res.status(400).json({ success: false, error: 'minSignalStrength must be between 50 and 95' });
+      }
+      if (field === 'minEmpiricalWinRate' && (updates[field] < 50 || updates[field] > 90)) {
+        return res.status(400).json({ success: false, error: 'minEmpiricalWinRate must be between 50 and 90' });
+      }
+      current[field] = updates[field];
+    }
+  }
+
+  userConfig.selectivityRules = current;
+  saveUserState(req.userId);
+
+  res.json({
+    success: true,
+    message: 'Selectivity rules updated',
+    selectivityRules: current
+  });
+});
 
 // Get take-profit settings
 app.get('/api/take-profit/settings', (req, res) => {
@@ -8068,7 +8545,7 @@ app.post('/api/take-profit/scan', async (req, res) => {
   const userPortfolio = req.userState.portfolio;
 
   try {
-    const opportunities = await scanTakeProfitOpportunities(userConfig, userPortfolio);
+    const opportunities = await scanTakeProfitOpportunities(userConfig, userPortfolio, req.userId);
     res.json({
       success: true,
       opportunities,
@@ -9034,6 +9511,44 @@ initDatabase().then(() => {
       console.log('Settlement check error:', err.message);
     }
   }, 2 * 60 * 1000);
+
+  // ============================================
+  // PROSPECTIVE DATA COLLECTION SCHEDULER
+  // ============================================
+  // Record price snapshots every minute for active markets
+  // This builds training data for future model improvements
+  setInterval(async () => {
+    try {
+      const tokens = ['BTC', 'ETH', 'SOL'];
+      let snapshotCount = 0;
+
+      for (const token of tokens) {
+        const price = latestPrices[token];
+        if (!price) continue;
+
+        // Get active markets for this token (use cached if available to reduce API calls)
+        try {
+          const series = `KX${token}15M`;
+          const marketsResponse = await kalshiRequest('GET', `/markets?series_ticker=${series}&status=open`, null, config);
+          const markets = marketsResponse.markets || [];
+
+          for (const market of markets) {
+            recordPriceSnapshot(market, price, token);
+            snapshotCount++;
+          }
+        } catch (e) {
+          // Silently continue if API call fails
+        }
+      }
+
+      // Save every 5 minutes (not every minute to reduce disk I/O)
+      if (snapshotCount > 0 && new Date().getMinutes() % 5 === 0) {
+        savePriceSnapshots();
+      }
+    } catch (err) {
+      // Silently ignore errors in background task
+    }
+  }, 60 * 1000); // Every 1 minute
 
   // Keep-alive: Self-ping every 10 minutes to prevent Render free tier from spinning down
   const RENDER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
