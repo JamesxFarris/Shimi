@@ -3975,6 +3975,7 @@ function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConf
 
   // Calculate how far price is from strike
   const pctFromStrike = ((currentPrice - parsed.strikePrice) / parsed.strikePrice) * 100;
+  const absDistance = Math.abs(pctFromStrike);
 
   // USE MARKET PRICE + NO BIAS (Empirical Approach)
   // The market price IS the probability. Our edge comes from known token biases.
@@ -3984,21 +3985,76 @@ function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConf
   const marketProbYes = parsed.yesAsk || 0.5;
   const marketProbNo = parsed.noAsk || 0.5;
 
-  // Get token-specific NO bias from empirical data
-  // BTC/ETH/SOL all show ~8% NO bias (NO wins 54%, YES wins 46%)
-  const tokenData = learnedParams?.byToken?.[parsed.cryptoType];
-  const noBias = (tokenData?.noBias || 8) / 2 / 100;  // Half of 8% = 4% = 0.04
+  // Get token-specific data from empirical collection
+  const tokenData = learnedParams?.byToken?.[parsed.cryptoType] || {};
+  const entryWindows = tokenData.optimalEntryWindows || {};
+
+  // ============================================
+  // EMPIRICAL SAFETY FILTERS
+  // ============================================
+  // Use collected data to avoid bad situations
+
+  // 1. COIN-FLIP FILTER: If price is too close to strike, it's a gamble
+  const coinFlipThreshold = tokenData.coinFlipThreshold || 0.1;  // Default 0.1%
+  if (absDistance < coinFlipThreshold && timeMinutes < 3) {
+    console.log(`   🎲 COIN-FLIP: ${parsed.cryptoType} only ${absDistance.toFixed(3)}% from strike with ${timeMinutes.toFixed(1)}min left - SKIP`);
+    return null;
+  }
+
+  // 2. DISTANCE WINDOW: Use learned optimal entry distances
+  const distanceMin = entryWindows.distanceMin || 0.3;
+  const distanceMax = entryWindows.distanceMax || 5.0;
+  const withinDistanceWindow = absDistance >= distanceMin && absDistance <= distanceMax;
+
+  if (!withinDistanceWindow) {
+    console.log(`   📏 DISTANCE: ${absDistance.toFixed(2)}% outside optimal [${distanceMin}-${distanceMax}%] - reducing confidence`);
+  }
+
+  // 3. TIME WINDOW: Use learned optimal entry times
+  const timeMin = entryWindows.timeMin || 1;
+  const timeMax = entryWindows.timeMax || 12;
+  const withinTimeWindow = timeMinutes >= timeMin && timeMinutes <= timeMax;
+
+  if (!withinTimeWindow) {
+    console.log(`   ⏰ TIME: ${timeMinutes.toFixed(1)}min outside optimal [${timeMin}-${timeMax}min] - reducing confidence`);
+  }
+
+  // 4. VOLATILITY REGIME: Check if we should sit out
+  const regime = typeof detectVolatilityRegime === 'function' ? detectVolatilityRegime(parsed.cryptoType) : { regime: 'medium', sitOut: false };
+  if (regime.sitOut) {
+    console.log(`   🌊 VOLATILITY: ${regime.reason} - SKIP`);
+    return null;
+  }
+
+  // Get NO bias from empirical data (default to 8% if no data yet)
+  const noBias = (tokenData.noBias || 8) / 2 / 100;  // Half of 8% = 4% = 0.04
 
   // Apply NO bias: NO is favored, YES is disfavored
   let probYesWins = marketProbYes - noBias;  // YES is disfavored
   let probNoWins = marketProbNo + noBias;    // NO is favored
 
+  // Reduce confidence if outside optimal windows
+  if (!withinDistanceWindow || !withinTimeWindow) {
+    // Shrink edge toward zero when outside optimal windows
+    const confidenceMultiplier = 0.5;
+    const yesEdgeFromBias = probYesWins - marketProbYes;
+    const noEdgeFromBias = probNoWins - marketProbNo;
+    probYesWins = marketProbYes + (yesEdgeFromBias * confidenceMultiplier);
+    probNoWins = marketProbNo + (noEdgeFromBias * confidenceMultiplier);
+  }
+
+  // Apply volatility regime multiplier (reduces edge in high volatility)
+  if (regime.multiplier && regime.multiplier < 1) {
+    const yesEdgeFromBias = probYesWins - marketProbYes;
+    const noEdgeFromBias = probNoWins - marketProbNo;
+    probYesWins = marketProbYes + (yesEdgeFromBias * regime.multiplier);
+    probNoWins = marketProbNo + (noEdgeFromBias * regime.multiplier);
+  }
+
   // Clamp to valid range
   probYesWins = Math.max(0.01, Math.min(0.99, probYesWins));
   probNoWins = Math.max(0.01, Math.min(0.99, probNoWins));
 
-  // No disagreement penalty needed - we're using market price as the base
-  // Our edge comes purely from the NO bias, not from disagreeing with the market
   let adjustedProbYesWins = probYesWins;
   let adjustedProbNoWins = probNoWins;
 
