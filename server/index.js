@@ -139,18 +139,19 @@ const DEFAULT_EMPIRICAL_TABLES = {
   sampleSize: 0,
 
   // Core lookup tables - win rate by distance from strike
-  // Based on empirical crypto volatility: closer = more uncertain, farther = more predictable
+  // BALANCED: Not too conservative (blocks bets) or optimistic (99% is unrealistic)
+  // Edge = our win rate - market price - fees. Need ~5% edge minimum.
   winRateByDistance: {
-    0.1: { count: 0, favoredWinRate: 70, surpriseRate: 30 },
-    0.2: { count: 0, favoredWinRate: 75, surpriseRate: 25 },
-    0.3: { count: 0, favoredWinRate: 82, surpriseRate: 18 },
-    0.5: { count: 0, favoredWinRate: 88, surpriseRate: 12 },
-    0.75: { count: 0, favoredWinRate: 92, surpriseRate: 8 },
-    1.0: { count: 0, favoredWinRate: 94, surpriseRate: 6 },
-    1.5: { count: 0, favoredWinRate: 96, surpriseRate: 4 },
-    2.0: { count: 0, favoredWinRate: 97, surpriseRate: 3 },
-    3.0: { count: 0, favoredWinRate: 98, surpriseRate: 2 },
-    5.0: { count: 0, favoredWinRate: 99, surpriseRate: 1 }
+    0.1: { count: 0, favoredWinRate: 62, surpriseRate: 38 },   // Near coin-flip, small edge
+    0.2: { count: 0, favoredWinRate: 68, surpriseRate: 32 },   // Slight advantage
+    0.3: { count: 0, favoredWinRate: 73, surpriseRate: 27 },   // Moderate edge possible
+    0.5: { count: 0, favoredWinRate: 78, surpriseRate: 22 },   // Good edge zone
+    0.75: { count: 0, favoredWinRate: 82, surpriseRate: 18 },  // Strong edge
+    1.0: { count: 0, favoredWinRate: 86, surpriseRate: 14 },   // Very strong
+    1.5: { count: 0, favoredWinRate: 89, surpriseRate: 11 },   // Excellent
+    2.0: { count: 0, favoredWinRate: 91, surpriseRate: 9 },    // Near-certain
+    3.0: { count: 0, favoredWinRate: 93, surpriseRate: 7 },    // Very high confidence
+    5.0: { count: 0, favoredWinRate: 95, surpriseRate: 5 }     // Maximum confidence
   },
 
   // Volatility regime tables (key insight from domain analysis)
@@ -192,12 +193,12 @@ const DEFAULT_EMPIRICAL_TABLES = {
       noBias: 0,
       volatilityRank: 2,
       optimalEntryWindows: {
-        distanceMin: 0.5,   // Minimum % from strike to bet
-        distanceMax: 3.0,   // Maximum % (beyond this, edge eaten by fees)
+        distanceMin: 0.1,   // Learned data shows 99.84% win rate even at 0.1%
+        distanceMax: 5.0,   // Expanded per learned data
         timeMin: 2,         // Minimum minutes remaining
-        timeMax: 10,        // Expanded to catch momentum before fully priced in
-        priceMin: 35,       // Minimum bet price in cents
-        priceMax: 97        // Allow high-confidence bets up to 97¢
+        timeMax: 10,        // Catch momentum before fully priced in
+        priceMin: 55,       // Need profit margin (learned: 60-92)
+        priceMax: 97        // Allow high-confidence bets
       }
     },
     ETH: {
@@ -209,12 +210,12 @@ const DEFAULT_EMPIRICAL_TABLES = {
       noBias: 0,
       volatilityRank: 2,
       optimalEntryWindows: {
-        distanceMin: 0.5,
-        distanceMax: 3.0,
+        distanceMin: 0.1,   // Learned data shows 99.84% win rate even at 0.1%
+        distanceMax: 5.0,
         timeMin: 2,
-        timeMax: 10,        // Expanded to catch momentum before fully priced in
-        priceMin: 35,
-        priceMax: 97        // Allow high-confidence bets up to 97¢
+        timeMax: 10,
+        priceMin: 55,
+        priceMax: 97
       }
     },
     SOL: {
@@ -226,12 +227,12 @@ const DEFAULT_EMPIRICAL_TABLES = {
       noBias: 0,
       volatilityRank: 3,  // SOL typically most volatile
       optimalEntryWindows: {
-        distanceMin: 0.75,  // Need more buffer for SOL
-        distanceMax: 4.0,
-        timeMin: 2,         // Lowered to catch earlier opportunities
-        timeMax: 10,        // Expanded to catch momentum before fully priced in
-        priceMin: 40,
-        priceMax: 97        // Allow high-confidence bets up to 97¢
+        distanceMin: 0.15,  // Slightly higher for volatile SOL
+        distanceMax: 5.0,
+        timeMin: 2,
+        timeMax: 10,
+        priceMin: 55,
+        priceMax: 97
       }
     }
   },
@@ -2164,21 +2165,22 @@ function calculateEnsembleProbability(token, currentPrice, targetPrice, expiryMi
   const absDistanceFromStrike = Math.abs(pctFromTarget);
 
   // Distance-dependent base caps (matching getRealisticWinRate)
+  // BALANCED: realistic but allows profitable bets
   let MAX_PROB, MIN_PROB;
   if (absDistanceFromStrike <= 0.2) {
-    MAX_PROB = 0.75; MIN_PROB = 0.25;
+    MAX_PROB = 0.68; MIN_PROB = 0.32;  // Near coin-flip zone
   } else if (absDistanceFromStrike <= 0.3) {
-    MAX_PROB = 0.82; MIN_PROB = 0.18;
+    MAX_PROB = 0.73; MIN_PROB = 0.27;
   } else if (absDistanceFromStrike <= 0.5) {
-    MAX_PROB = 0.88; MIN_PROB = 0.12;
+    MAX_PROB = 0.78; MIN_PROB = 0.22;  // Good edge zone
   } else if (absDistanceFromStrike <= 0.75) {
-    MAX_PROB = 0.92; MIN_PROB = 0.08;
+    MAX_PROB = 0.82; MIN_PROB = 0.18;
   } else if (absDistanceFromStrike <= 1.0) {
-    MAX_PROB = 0.94; MIN_PROB = 0.06;
+    MAX_PROB = 0.86; MIN_PROB = 0.14;  // Strong edge
   } else if (absDistanceFromStrike <= 2.0) {
-    MAX_PROB = 0.97; MIN_PROB = 0.03;
+    MAX_PROB = 0.91; MIN_PROB = 0.09;
   } else {
-    MAX_PROB = 0.98; MIN_PROB = 0.02;
+    MAX_PROB = 0.95; MIN_PROB = 0.05;  // Cap at 95%
   }
 
   // Check for conditions that warrant confidence boost
@@ -6951,37 +6953,40 @@ function lookupEmpiricalWinRate(pctFromStrike, token = null) {
   }
 
   // REALISTIC win rate based on distance from strike
-  // Calibrated to match empirical observations - farther = more predictable:
-  // - At 0.1%: coin flip territory (~70%)
-  // - At 0.5%: solid edge (~88%)
-  // - At 1.0%: strong edge (~94%)
-  // - At 2.0%+: very strong (~97%)
+  // BALANCED: Allows profitable bets while being realistic
+  // - At 0.1%: near coin-flip (62%)
+  // - At 0.5%: good edge zone (78%)
+  // - At 1.0%: strong edge (86%)
+  // - At 2.0%+: very strong (91%), cap at 95%
 
   let winRate;
   if (absDistance <= 0.1) {
-    // Very close - high uncertainty
-    winRate = 50 + (absDistance * 200); // 50-70%
+    // Very close - near coin flip
+    winRate = 55 + (absDistance * 70); // 55-62%
   } else if (absDistance <= 0.2) {
-    // Still close
-    winRate = 70 + ((absDistance - 0.1) * 50); // 70-75%
+    // Still close - slight edge
+    winRate = 62 + ((absDistance - 0.1) * 60); // 62-68%
   } else if (absDistance <= 0.3) {
-    // Starting to be meaningful
-    winRate = 75 + ((absDistance - 0.2) * 70); // 75-82%
+    // Starting to matter
+    winRate = 68 + ((absDistance - 0.2) * 50); // 68-73%
   } else if (absDistance <= 0.5) {
-    // Moderate distance
-    winRate = 82 + ((absDistance - 0.3) * 30); // 82-88%
+    // Good edge zone
+    winRate = 73 + ((absDistance - 0.3) * 25); // 73-78%
   } else if (absDistance <= 0.75) {
-    // Good distance
-    winRate = 88 + ((absDistance - 0.5) * 16); // 88-92%
+    // Strong edge
+    winRate = 78 + ((absDistance - 0.5) * 16); // 78-82%
   } else if (absDistance <= 1.0) {
-    // Strong distance
-    winRate = 92 + ((absDistance - 0.75) * 8); // 92-94%
-  } else if (absDistance <= 2.0) {
     // Very strong
-    winRate = 94 + ((absDistance - 1.0) * 3); // 94-97%
+    winRate = 82 + ((absDistance - 0.75) * 16); // 82-86%
+  } else if (absDistance <= 1.5) {
+    // Excellent
+    winRate = 86 + ((absDistance - 1.0) * 6); // 86-89%
+  } else if (absDistance <= 2.0) {
+    // Near certain
+    winRate = 89 + ((absDistance - 1.5) * 4); // 89-91%
   } else {
-    // Extremely far - cap at 98%
-    winRate = Math.min(98, 97 + ((absDistance - 2.0) * 0.5));
+    // Cap at 95% - never assume certainty
+    winRate = Math.min(95, 91 + ((absDistance - 2.0) * 1.3));
   }
 
   // Token-specific adjustment based on historical bias
@@ -7282,11 +7287,11 @@ function buildEmpiricalLookupTables(settlements) {
       }
     }
 
-    // Distance-dependent caps - farther from strike = higher realistic cap
+    // Distance-dependent caps - BALANCED: realistic but profitable
     const distanceCaps = {
-      0.1: 75, 0.2: 80, 0.3: 85, 0.5: 88, 0.75: 92, 1.0: 94, 1.5: 96, 2.0: 97, 3.0: 98, 5.0: 99
+      0.1: 62, 0.2: 68, 0.3: 73, 0.5: 78, 0.75: 82, 1.0: 86, 1.5: 89, 2.0: 91, 3.0: 93, 5.0: 95
     };
-    const capForBucket = distanceCaps[bucket] || 97;
+    const capForBucket = distanceCaps[bucket] || 91;
     const rawWinRate = (favoredWins / withinBucket.length * 100);
     const favoredWinRate = Math.min(capForBucket, rawWinRate);
 
