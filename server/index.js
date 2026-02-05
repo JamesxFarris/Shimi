@@ -3976,59 +3976,31 @@ function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConf
   // Calculate how far price is from strike
   const pctFromStrike = ((currentPrice - parsed.strikePrice) / parsed.strikePrice) * 100;
 
-  // USE STATISTICAL PREDICTION ENGINE
-  // This analyzes historical data, momentum, and volatility
-  const prediction = predictOutcome(
-    parsed.cryptoType,
-    currentPrice,
-    parsed.strikePrice,
-    timeMinutes
-  );
+  // USE MARKET PRICE + NO BIAS (Empirical Approach)
+  // The market price IS the probability. Our edge comes from known token biases.
+  // Statistical models (volatility, momentum) have proven unreliable.
 
-  // For "above/up" markets: YES wins if price >= strike at expiry
-  // For "below/down" markets: YES wins if price < strike at expiry
-  let probYesWins, probNoWins;
-  if (parsed.marketType === 'above') {
-    probYesWins = prediction.probAbove;
-    probNoWins = prediction.probBelow;
-  } else {
-    probYesWins = prediction.probBelow;
-    probNoWins = prediction.probAbove;
-  }
+  // Get market implied probabilities from ask prices
+  const marketProbYes = parsed.yesAsk || 0.5;
+  const marketProbNo = parsed.noAsk || 0.5;
 
-  // Market implied probabilities from ask prices
-  const marketProbYes = parsed.yesAsk;
-  const marketProbNo = parsed.noAsk;
+  // Get token-specific NO bias from empirical data
+  // BTC/ETH/SOL all show ~8% NO bias (NO wins 54%, YES wins 46%)
+  const tokenData = learnedParams?.byToken?.[parsed.cryptoType];
+  const noBias = (tokenData?.noBias || 8) / 2 / 100;  // Half of 8% = 4% = 0.04
 
-  // ============================================
-  // MARKET DISAGREEMENT PENALTY
-  // ============================================
-  // If the market strongly disagrees with our model (cheap bets = market says unlikely),
-  // we should be skeptical. The market often has information we don't.
-  //
-  // Example: If we say 80% but market price is 20¢, the market disagrees by 60%!
-  // Apply a penalty that shrinks our probability toward the market's view.
+  // Apply NO bias: NO is favored, YES is disfavored
+  let probYesWins = marketProbYes - noBias;  // YES is disfavored
+  let probNoWins = marketProbNo + noBias;    // NO is favored
 
-  const yesDisagreement = Math.abs(probYesWins - marketProbYes);
-  const noDisagreement = Math.abs(probNoWins - marketProbNo);
+  // Clamp to valid range
+  probYesWins = Math.max(0.01, Math.min(0.99, probYesWins));
+  probNoWins = Math.max(0.01, Math.min(0.99, probNoWins));
 
-  // For cheap bets (under 35¢), apply stronger skepticism
-  // The market is usually right about unlikely events
+  // No disagreement penalty needed - we're using market price as the base
+  // Our edge comes purely from the NO bias, not from disagreeing with the market
   let adjustedProbYesWins = probYesWins;
   let adjustedProbNoWins = probNoWins;
-
-  if (marketProbYes < 0.35 && yesDisagreement > 0.40) {
-    // We think YES is likely but market thinks it's cheap - be skeptical
-    // Shrink our probability 30% toward market's view
-    adjustedProbYesWins = probYesWins * 0.7 + marketProbYes * 0.3;
-    console.log(`   ⚠️ Market disagreement on YES: Our ${(probYesWins*100).toFixed(0)}% vs Market ${(marketProbYes*100).toFixed(0)}% → Adjusted to ${(adjustedProbYesWins*100).toFixed(0)}%`);
-  }
-
-  if (marketProbNo < 0.35 && noDisagreement > 0.40) {
-    // We think NO is likely but market thinks it's cheap - be skeptical
-    adjustedProbNoWins = probNoWins * 0.7 + marketProbNo * 0.3;
-    console.log(`   ⚠️ Market disagreement on NO: Our ${(probNoWins*100).toFixed(0)}% vs Market ${(marketProbNo*100).toFixed(0)}% → Adjusted to ${(adjustedProbNoWins*100).toFixed(0)}%`);
-  }
 
   // ============================================
   // SPREAD PENALTY (Phase 3 - Smart Edge)
@@ -4061,10 +4033,8 @@ function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConf
   let yesEdge = (adjustedProbYesWins - effectiveYesCost) * 100;
   let noEdge = (adjustedProbNoWins - effectiveNoCost) * 100;
 
-  // Build analysis description
-  const momentumDesc = prediction.momentum.direction === 'up' ? '📈 UP' :
-                       prediction.momentum.direction === 'down' ? '📉 DOWN' : '➡️ flat';
-  const timeDesc = prediction.analysis.timeDecayApplied ? '⏰ time decay' : '';
+  // Build analysis description (simplified - using market price + NO bias)
+  const noBiasDesc = noBias > 0 ? `NO bias +${(noBias * 100).toFixed(0)}%` : 'no bias';
 
   // ============================================
   // BET SELECTION (Safe Mode Only)
@@ -4238,7 +4208,7 @@ function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConf
 
   // Build reason string
   const probPct = (bestBet.prob * 100).toFixed(0);
-  const betReason = `${momentumDesc} ${timeDesc} | ${probPct}% win prob`;
+  const betReason = `${noBiasDesc} | ${probPct}% win prob`;
 
   // Calculate profit for $1 worth of contracts
   // E.g., if price is 50¢, we buy 2 contracts. If we win, each pays $1, so profit = 2×$1 - $1 = $1 (100¢)
