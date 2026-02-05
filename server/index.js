@@ -5955,7 +5955,7 @@ async function runAutoBet(userId = null) {
 
     // MOMENTUM CONFIRMATION - Check if price trend supports our bet direction
     const token = best.assetType || best.cryptoType || getTokenFromTicker(best.ticker);
-    const priceHistory = priceHistoryByToken.get(token) || [];
+    const priceHistory = cryptoPrices[token]?.history || [];
     const momentum = calculateMomentumMultiTimeframe(priceHistory);
     const isBullish = momentum.direction === 'bullish';
     const isBearish = momentum.direction === 'bearish';
