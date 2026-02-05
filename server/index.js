@@ -4331,12 +4331,15 @@ function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConf
   // Fixed bet amount ($1) for sustainable growth
   const recommendedBet = 100; // Always $1
 
+  // Calculate z-score from distance and volatility
+  const zScore = volatility > 0 ? (pctFromStrike / volatility) : 0;
+
   return {
     ...parsed,
     currentPrice,
     volatility: (volatility * 100).toFixed(2) + '%',
     pctFromStrike: pctFromStrike.toFixed(2),
-    zScore: prediction.zScore.toFixed(2),
+    zScore: zScore.toFixed(2),
     probYesWins: probYesWins * 100,
     probNoWins: probNoWins * 100,
     ourProbability: bestBet.prob * 100,
@@ -4355,15 +4358,15 @@ function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConf
     expectedProfit: expectedProfit.toFixed(1),
     profitPotential,
     recommendedBet,
-    isObviousBet: isSafeBet || (prediction.ensemble?.isObviousBet && bestBet.prob >= 0.75),
+    isObviousBet: isSafeBet,
     isHighProb,
-    maxProbAllowed: prediction.ensemble?.maxProbAllowed || 0.80,
-    // Statistical analysis info
-    momentum: prediction.momentum.direction,
-    momentumStrength: prediction.momentum.strength,
-    confidence: (prediction.confidence * 100).toFixed(0) + '%',
-    dataPoints: prediction.dataPoints,
-    analysisMethod: prediction.analysis.method,
+    maxProbAllowed: 0.99, // Empirical data shows 99%+ win rates for favored side
+    // Smart edge analysis info (replaced statistical model)
+    momentum: momentumInfo?.direction || 'neutral',
+    momentumStrength: momentumInfo?.strength || 0,
+    confidence: (empiricalFavoredWinRate * 100).toFixed(0) + '%',
+    dataPoints: bucketData.count || 0,
+    analysisMethod: 'smart_edge_empirical',
     timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining),
     // Phase 3 & 4: Orderbook and momentum data
     spreadPenalty: bestBet.spreadPenalty || 0,
