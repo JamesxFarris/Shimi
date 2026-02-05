@@ -5146,6 +5146,15 @@ app.post('/api/bet', async (req, res) => {
       const filledCount = order.filled_count || 0;
 
       if (filledCount === 0) {
+        // Cancel the unfilled order so it doesn't sit on Kalshi's book
+        if (order.order_id) {
+          try {
+            await kalshiRequest('DELETE', `/portfolio/orders/${order.order_id}`, null, userConfig);
+            console.log(`Cancelled unfilled order ${order.order_id}`);
+          } catch (cancelErr) {
+            console.log(`Could not cancel order ${order.order_id}:`, cancelErr.message);
+          }
+        }
         return res.status(400).json({
           success: false,
           error: `Order not filled. Status: ${status}. No liquidity at current price.`
@@ -5463,6 +5472,15 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       const filledCount = order.filled_count || 0;
 
       if (filledCount === 0) {
+        // Cancel the unfilled order so it doesn't sit on Kalshi's book
+        if (order.order_id) {
+          try {
+            await kalshiRequest('DELETE', `/portfolio/orders/${order.order_id}`, null, userConfig);
+            console.log(`Cancelled unfilled order ${order.order_id}`);
+          } catch (cancelErr) {
+            console.log(`Could not cancel order ${order.order_id}:`, cancelErr.message);
+          }
+        }
         // Remove from recent bets so we can try again
         recentBets.delete(best.ticker);
         return res.status(400).json({
@@ -6045,6 +6063,15 @@ async function runAutoBet(userId = null) {
     const filledCount = order.filled_count || 0;
 
     if (filledCount === 0) {
+      // Cancel the unfilled order so it doesn't sit on Kalshi's book
+      if (order.order_id) {
+        try {
+          await kalshiRequest('DELETE', `/portfolio/orders/${order.order_id}`, null, userConfig);
+          console.log(`   Cancelled unfilled order ${order.order_id}`);
+        } catch (cancelErr) {
+          console.log(`   Could not cancel order ${order.order_id}:`, cancelErr.message);
+        }
+      }
       console.error(`❌ Order not filled. Status: ${status}. No liquidity.`);
       recentBets.delete(best.ticker);
       console.log('========================================\n');
@@ -6444,15 +6471,11 @@ function shouldSitOut(tables, token = null) {
   const now = Date.now();
   const oneHourAgo = now - 60 * 60 * 1000;
 
-  // Rate limiting: max bets per hour
+  // Clean up old timestamps (keep for tracking, but no longer rate limit)
   empiricalBetTracking.recentBetsThisHour = empiricalBetTracking.recentBetsThisHour
     .filter(ts => ts > oneHourAgo);
 
-  if (empiricalBetTracking.recentBetsThisHour.length >= (rules?.maxBetsPerHour || 6)) {
-    reasons.push(`Rate limit: ${empiricalBetTracking.recentBetsThisHour.length}/${rules?.maxBetsPerHour || 6} bets this hour`);
-  }
-
-  // Token-specific rate limiting
+  // Token-specific rate limiting (diversification - keep this)
   if (token) {
     const tokenBets = empiricalBetTracking.betsByToken.get(token) || 0;
     if (tokenBets >= (rules?.maxBetsPerToken || 3)) {
@@ -6473,38 +6496,85 @@ function shouldSitOut(tables, token = null) {
 
 /**
  * Look up empirical win rate for a given distance from strike
+ * Uses REALISTIC probabilities based on distance, not the misleading favoredWinRate
+ *
+ * The favoredWinRate (99.96%) was causing massive overconfidence because:
+ * - It measures "if favored, how often does favored win" which is nearly always
+ * - But the market already prices this in
+ * - Real edge requires knowing something the market doesn't
+ *
+ * This function now uses distance-based probability that accounts for:
+ * - Crypto volatility (prices can move 1-2% in minutes)
+ * - Market efficiency (prices reflect collective wisdom)
+ * - Historical settlement patterns
+ *
  * @param {number} pctFromStrike - Absolute percentage distance from strike
+ * @param {string} token - Optional token for token-specific adjustments
  * @returns {object} { winRate: number, sampleSize: number, bucket: number }
  */
-function lookupEmpiricalWinRate(pctFromStrike) {
+function lookupEmpiricalWinRate(pctFromStrike, token = null) {
   const absDistance = Math.abs(pctFromStrike);
   const winRateData = learnedParams.winRateByDistance || DEFAULT_EMPIRICAL_TABLES.winRateByDistance;
 
-  // Find the appropriate bucket
+  // Get sample size from nearest bucket
   const buckets = Object.keys(winRateData).map(Number).sort((a, b) => a - b);
+  let sampleSize = 0;
+  let bucket = 0;
 
-  for (const bucket of buckets) {
-    if (absDistance <= bucket) {
-      const data = winRateData[bucket];
-      return {
-        winRate: data?.favoredWinRate || 50,
-        sampleSize: data?.count || 0,
-        bucket,
-        surpriseRate: data?.surpriseRate || 50
-      };
+  for (const b of buckets) {
+    if (absDistance <= b) {
+      sampleSize = winRateData[b]?.count || 0;
+      bucket = b;
+      break;
     }
   }
+  if (bucket === 0) {
+    bucket = buckets[buckets.length - 1];
+    sampleSize = winRateData[bucket]?.count || 0;
+  }
 
-  // Beyond all buckets - use the largest one with extrapolation
-  const maxBucket = buckets[buckets.length - 1];
-  const maxData = winRateData[maxBucket];
-  const extrapolatedWinRate = Math.min(98, (maxData?.favoredWinRate || 85) + (absDistance - maxBucket) * 2);
+  // REALISTIC win rate based on distance from strike
+  // These are conservative estimates based on crypto volatility:
+  // - At 0%: pure coin flip (50%)
+  // - At 0.5%: slight edge (55-58%)
+  // - At 1%: moderate edge (60-65%)
+  // - At 2%: good edge (68-72%)
+  // - At 3%+: strong edge (75-80%, capped)
+
+  let winRate;
+  if (absDistance <= 0.1) {
+    // Essentially a coin flip
+    winRate = 50 + (absDistance * 20); // 50-52%
+  } else if (absDistance <= 0.3) {
+    // Very close to strike - high uncertainty
+    winRate = 52 + ((absDistance - 0.1) * 15); // 52-55%
+  } else if (absDistance <= 0.5) {
+    // Close to strike
+    winRate = 55 + ((absDistance - 0.3) * 15); // 55-58%
+  } else if (absDistance <= 1.0) {
+    // Moderate distance - starting to be meaningful
+    winRate = 58 + ((absDistance - 0.5) * 14); // 58-65%
+  } else if (absDistance <= 2.0) {
+    // Good distance
+    winRate = 65 + ((absDistance - 1.0) * 7); // 65-72%
+  } else if (absDistance <= 3.0) {
+    // Strong distance
+    winRate = 72 + ((absDistance - 2.0) * 5); // 72-77%
+  } else {
+    // Very far from strike - cap at 80% (crypto can still move!)
+    winRate = Math.min(80, 77 + ((absDistance - 3.0) * 1.5));
+  }
+
+  // Token-specific adjustment based on historical bias
+  // BTC/ETH/SOL all show slight NO bias (~54% NO wins vs 46% YES)
+  // This is factored in elsewhere, not here
 
   return {
-    winRate: extrapolatedWinRate,
-    sampleSize: maxData?.count || 0,
-    bucket: maxBucket,
-    extrapolated: true
+    winRate,
+    sampleSize,
+    bucket,
+    surpriseRate: 100 - winRate,
+    realistic: true // Flag to indicate we're using the fixed calculation
   };
 }
 

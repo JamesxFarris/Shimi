@@ -15,10 +15,5 @@
   "byToken": {},
   "byProbBucket": {},
   "byMarketType": {},
-  "lastUpdated": "2026-02-03T07:02:25.950Z",
-  "autoBetState": {
-    "enabled": true,
-    "intervalSeconds": 10,
-    "savedAt": "2026-02-03T07:02:25.950Z"
-  }
+  "lastUpdated": null
 }
