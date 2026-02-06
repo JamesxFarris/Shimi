@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "trainedOn": 13,
+  "lastUpdated": "2026-02-03T09:16:09.993Z",
+  "weights": {
+    "distanceFromStrike": -0.07646626032991977,
+    "distanceSquared": -0.011845684789766272,
+    "timeRemaining": -10.047940045662305,
+    "timeUrgency": -0.046871686213293635,
+    "momentum1m": 0,
+    "momentum5m": 0,
+    "momentumAlignment": 0.6873034862983652,
+    "volatility": -0.7991281552600616,
+    "volToDistance": -0.12063415345648107,
+    "marketImpliedProb": -35.3245821945166,
+    "priceDeviation": -8.932511739642406,
+    "signalStrength": 0,
+    "tokenBTC": -0.2636112006,
+    "tokenETH": -0.219073437594,
+    "tokenSOL": -0.23248328895000003,
+    "hourMorning": 0,
+    "hourAfternoon": 0,
+    "hourEvening": 0,
+    "hourNight": -0.6873034862983652,
+    "sideYes": -0.7250904324193075,
+    "sideNo": 0.03960000000000001
+  },
+  "featureStats": {},
+  "learningRate": 0.1,
+  "performance": {
+    "predictions": [
+      {
+        "predicted": 0.6,
+        "actual": 0,
+        "error": 0.6
+      },
+      {
+        "predicted": 0.6,
+        "actual": 0,
+        "error": 0.6
+      },
+      {
+        "predicted": 0.6,
+        "actual": 0,
+        "error": 0.6
+      },
+      {
+        "predicted": 0.6,
+        "actual": 1,
+        "error": 0.4
+      },
+      {
+        "predicted": 0.75,
+        "actual": 0,
+        "error": 0.75
+      },
+      {
+        "predicted": 0.518,
+        "actual": 0,
+        "error": 0.518
+      },
+      {
+        "predicted": 0.75,
+        "actual": 0,
+        "error": 0.75
+      },
+      {
+        "predicted": 0.75,
+        "actual": 0,
+        "error": 0.75
+      },
+      {
+        "predicted": 0.545,
+        "actual": 0,
+        "error": 0.545
+      },
+      {
+        "predicted": 0.61,
+        "actual": 0,
+        "error": 0.61
+      },
+      {
+        "predicted": 0.75,
+        "actual": 0,
+        "error": 0.75
+      },
+      {
+        "predicted": 0.75,
+        "actual": 0,
+        "error": 0.75
+      },
+      {
+        "predicted": 0.509,
+        "actual": 0,
+        "error": 0.509
+      }
+    ],
+    "accuracy": 0.07692307692307693,
+    "avgAdjustment": 0.6255384615384615
+  }
+}

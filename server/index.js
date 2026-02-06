@@ -309,6 +309,420 @@ function isLearningDataStale() {
 }
 
 // ============================================
+// ML MODEL - Logistic Regression
+// ============================================
+// Proper ML model trained on settlement data
+// Blends with empirical tables at max 30% weight
+
+const ML_MODEL_FILE = path.join(__dirname, 'ml_model.json');
+const ML_FEATURE_NAMES = [
+  'distance', 'distanceSquared', 'timeRemaining', 'timeUrgency',
+  'momentum1m', 'momentum5m', 'volatility', 'volToDistance',
+  'marketImpliedProb', 'priceDeviation', 'spread',
+  'tokenBTC', 'tokenETH', 'tokenSOL',
+  'hourMorning', 'hourAfternoon', 'hourEvening', 'hourNight',
+  'sideYes'
+];
+
+let mlModel = {
+  version: 2,
+  trainedOn: 0,
+  lastUpdated: null,
+  weights: {},
+  bias: 0,
+  featureStats: {}, // { featureName: { mean, std } } for z-score normalization
+  learningRate: 0.01,
+  regularization: 0.001, // L2 regularization strength
+  performance: {
+    accuracy: 0,
+    trainAccuracy: 0,
+    valAccuracy: 0,
+    logLoss: Infinity,
+    confusionMatrix: { tp: 0, fp: 0, tn: 0, fn: 0 }
+  }
+};
+
+// Initialize weights to zero
+for (const name of ML_FEATURE_NAMES) {
+  mlModel.weights[name] = 0;
+}
+
+// Load existing ML model
+try {
+  if (fs.existsSync(ML_MODEL_FILE)) {
+    const data = JSON.parse(fs.readFileSync(ML_MODEL_FILE, 'utf8'));
+    if (data.version >= 2) {
+      mlModel = data;
+      console.log(`🧠 Loaded ML model: ${mlModel.trainedOn} samples, accuracy ${(mlModel.performance?.accuracy * 100).toFixed(1)}%`);
+    } else {
+      console.log(`🧠 Skipping old ML model v${data.version}, will retrain`);
+    }
+  }
+} catch (err) {
+  console.error('Error loading ML model:', err.message);
+}
+
+function saveMLModel() {
+  try {
+    fs.writeFileSync(ML_MODEL_FILE, JSON.stringify(mlModel, null, 2));
+  } catch (err) {
+    console.error('Error saving ML model:', err.message);
+  }
+}
+
+// Sigmoid function
+function sigmoid(z) {
+  if (z > 500) return 1;
+  if (z < -500) return 0;
+  return 1 / (1 + Math.exp(-z));
+}
+
+/**
+ * Extract features from a market opportunity for ML prediction
+ * @param {object} params - { absDistance, timeRemaining, token, side, momentum, volatility, marketImpliedProb, spread }
+ * @returns {object} Feature vector keyed by feature name
+ */
+function extractMLFeatures(params) {
+  const {
+    absDistance = 0, timeRemaining = 15, token = 'BTC', side = 'YES',
+    momentum1m = 0, momentum5m = 0, volatility = 0.02,
+    marketImpliedProb = 50, spread = 0
+  } = params;
+
+  const hour = new Date().getUTCHours();
+
+  return {
+    distance: absDistance,
+    distanceSquared: absDistance * absDistance,
+    timeRemaining: timeRemaining,
+    timeUrgency: timeRemaining > 0 ? 1 / timeRemaining : 1,
+    momentum1m,
+    momentum5m,
+    volatility: volatility * 100, // convert to %
+    volToDistance: absDistance > 0 ? (volatility * 100) / absDistance : 0,
+    marketImpliedProb: marketImpliedProb / 100, // normalize to 0-1
+    priceDeviation: (marketImpliedProb - 50) / 50, // how far from 50/50
+    spread,
+    tokenBTC: token === 'BTC' ? 1 : 0,
+    tokenETH: token === 'ETH' ? 1 : 0,
+    tokenSOL: token === 'SOL' ? 1 : 0,
+    hourMorning: (hour >= 6 && hour < 12) ? 1 : 0,   // 6am-12pm UTC
+    hourAfternoon: (hour >= 12 && hour < 18) ? 1 : 0, // 12pm-6pm UTC
+    hourEvening: (hour >= 18 && hour < 24) ? 1 : 0,   // 6pm-12am UTC
+    hourNight: (hour >= 0 && hour < 6) ? 1 : 0,       // 12am-6am UTC
+    sideYes: side?.toUpperCase() === 'YES' ? 1 : 0
+  };
+}
+
+/**
+ * Normalize features using z-score (mean=0, std=1)
+ */
+function normalizeFeatures(features, stats) {
+  const normalized = {};
+  for (const [name, value] of Object.entries(features)) {
+    const s = stats[name];
+    if (s && s.std > 0) {
+      normalized[name] = (value - s.mean) / s.std;
+    } else {
+      normalized[name] = value; // No normalization if no stats
+    }
+  }
+  return normalized;
+}
+
+/**
+ * Predict win probability using logistic regression
+ */
+function mlPredict(features) {
+  if (!mlModel.trainedOn || mlModel.trainedOn < 200) return null;
+  if (!mlModel.performance || mlModel.performance.accuracy < 0.55) return null;
+
+  const normalized = normalizeFeatures(features, mlModel.featureStats);
+  let z = mlModel.bias || 0;
+  for (const [name, value] of Object.entries(normalized)) {
+    z += (mlModel.weights[name] || 0) * value;
+  }
+  return sigmoid(z);
+}
+
+/**
+ * Compute feature statistics (mean, std) for normalization
+ */
+function computeFeatureStats(dataPoints) {
+  const stats = {};
+  if (dataPoints.length === 0) return stats;
+
+  for (const name of ML_FEATURE_NAMES) {
+    const values = dataPoints.map(d => d.features[name] || 0);
+    const mean = values.reduce((a, b) => a + b, 0) / values.length;
+    const variance = values.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / values.length;
+    stats[name] = { mean, std: Math.sqrt(variance) || 1 };
+  }
+  return stats;
+}
+
+/**
+ * Train logistic regression model using gradient descent
+ * @param {Array} dataPoints - Array of { features: {}, outcome: 0|1 }
+ * @returns {object} Training results
+ */
+function trainMLModel(dataPoints) {
+  if (dataPoints.length < 200) {
+    console.log(`🧠 ML: Insufficient data (${dataPoints.length} < 200 required)`);
+    return { success: false, reason: 'Insufficient data' };
+  }
+
+  console.log(`🧠 ML: Training on ${dataPoints.length} samples...`);
+
+  // Shuffle data
+  const shuffled = [...dataPoints].sort(() => Math.random() - 0.5);
+
+  // 80/20 train/val split
+  const splitIdx = Math.floor(shuffled.length * 0.8);
+  const trainData = shuffled.slice(0, splitIdx);
+  const valData = shuffled.slice(splitIdx);
+
+  // Compute feature stats from training data only
+  const featureStats = computeFeatureStats(trainData);
+
+  // Initialize weights
+  const weights = {};
+  for (const name of ML_FEATURE_NAMES) {
+    weights[name] = 0;
+  }
+  let bias = 0;
+
+  const lr = 0.01;
+  const lambda = 0.001; // L2 regularization
+  const epochs = 100;
+  const batchSize = Math.min(64, Math.floor(trainData.length / 4));
+
+  let bestValAccuracy = 0;
+  let bestWeights = { ...weights };
+  let bestBias = bias;
+  let epochsSinceImprovement = 0;
+
+  for (let epoch = 0; epoch < epochs; epoch++) {
+    // Shuffle training data each epoch
+    trainData.sort(() => Math.random() - 0.5);
+
+    // Mini-batch gradient descent
+    for (let i = 0; i < trainData.length; i += batchSize) {
+      const batch = trainData.slice(i, i + batchSize);
+
+      // Accumulate gradients
+      const gradients = {};
+      for (const name of ML_FEATURE_NAMES) {
+        gradients[name] = 0;
+      }
+      let biasGrad = 0;
+
+      for (const dp of batch) {
+        const normalized = normalizeFeatures(dp.features, featureStats);
+        let z = bias;
+        for (const [name, value] of Object.entries(normalized)) {
+          z += (weights[name] || 0) * value;
+        }
+        const pred = sigmoid(z);
+        const error = pred - dp.outcome; // gradient of log-loss
+
+        biasGrad += error;
+        for (const [name, value] of Object.entries(normalized)) {
+          gradients[name] = (gradients[name] || 0) + error * value;
+        }
+      }
+
+      // Update weights with L2 regularization
+      const scale = lr / batch.length;
+      bias -= scale * biasGrad;
+      for (const name of ML_FEATURE_NAMES) {
+        weights[name] -= scale * (gradients[name] + lambda * weights[name]);
+      }
+    }
+
+    // Evaluate on validation set every 10 epochs
+    if ((epoch + 1) % 10 === 0) {
+      let correct = 0;
+      for (const dp of valData) {
+        const normalized = normalizeFeatures(dp.features, featureStats);
+        let z = bias;
+        for (const [name, value] of Object.entries(normalized)) {
+          z += (weights[name] || 0) * value;
+        }
+        const pred = sigmoid(z) >= 0.5 ? 1 : 0;
+        if (pred === dp.outcome) correct++;
+      }
+      const valAcc = correct / valData.length;
+
+      if (valAcc > bestValAccuracy) {
+        bestValAccuracy = valAcc;
+        bestWeights = { ...weights };
+        bestBias = bias;
+        epochsSinceImprovement = 0;
+      } else {
+        epochsSinceImprovement += 10;
+      }
+
+      // Early stopping
+      if (epochsSinceImprovement >= 30) {
+        console.log(`🧠 ML: Early stopping at epoch ${epoch + 1} (val accuracy: ${(bestValAccuracy * 100).toFixed(1)}%)`);
+        break;
+      }
+    }
+  }
+
+  // Evaluate final model on both sets
+  let trainCorrect = 0;
+  const confusionMatrix = { tp: 0, fp: 0, tn: 0, fn: 0 };
+
+  for (const dp of trainData) {
+    const normalized = normalizeFeatures(dp.features, featureStats);
+    let z = bestBias;
+    for (const [name, value] of Object.entries(normalized)) {
+      z += (bestWeights[name] || 0) * value;
+    }
+    if ((sigmoid(z) >= 0.5 ? 1 : 0) === dp.outcome) trainCorrect++;
+  }
+
+  let valCorrect = 0;
+  let logLossSum = 0;
+  for (const dp of valData) {
+    const normalized = normalizeFeatures(dp.features, featureStats);
+    let z = bestBias;
+    for (const [name, value] of Object.entries(normalized)) {
+      z += (bestWeights[name] || 0) * value;
+    }
+    const pred = sigmoid(z);
+    const predBinary = pred >= 0.5 ? 1 : 0;
+    if (predBinary === dp.outcome) valCorrect++;
+
+    // Log loss
+    const clipped = Math.max(0.001, Math.min(0.999, pred));
+    logLossSum -= dp.outcome * Math.log(clipped) + (1 - dp.outcome) * Math.log(1 - clipped);
+
+    // Confusion matrix
+    if (predBinary === 1 && dp.outcome === 1) confusionMatrix.tp++;
+    else if (predBinary === 1 && dp.outcome === 0) confusionMatrix.fp++;
+    else if (predBinary === 0 && dp.outcome === 0) confusionMatrix.tn++;
+    else confusionMatrix.fn++;
+  }
+
+  const trainAccuracy = trainCorrect / trainData.length;
+  const valAccuracy = valCorrect / valData.length;
+  const logLoss = logLossSum / valData.length;
+
+  // Update model
+  mlModel = {
+    version: 2,
+    trainedOn: dataPoints.length,
+    lastUpdated: new Date().toISOString(),
+    weights: bestWeights,
+    bias: bestBias,
+    featureStats,
+    learningRate: lr,
+    regularization: lambda,
+    performance: {
+      accuracy: valAccuracy,
+      trainAccuracy,
+      valAccuracy,
+      logLoss,
+      confusionMatrix,
+      trainSize: trainData.length,
+      valSize: valData.length
+    }
+  };
+
+  saveMLModel();
+
+  console.log(`🧠 ML: Training complete!`);
+  console.log(`   Train accuracy: ${(trainAccuracy * 100).toFixed(1)}% | Val accuracy: ${(valAccuracy * 100).toFixed(1)}%`);
+  console.log(`   Log loss: ${logLoss.toFixed(4)}`);
+  console.log(`   Confusion matrix: TP=${confusionMatrix.tp} FP=${confusionMatrix.fp} TN=${confusionMatrix.tn} FN=${confusionMatrix.fn}`);
+
+  // Log top features by absolute weight
+  const sortedFeatures = Object.entries(bestWeights)
+    .map(([name, weight]) => ({ name, weight, absWeight: Math.abs(weight) }))
+    .sort((a, b) => b.absWeight - a.absWeight)
+    .slice(0, 5);
+  console.log(`   Top features: ${sortedFeatures.map(f => `${f.name}=${f.weight.toFixed(3)}`).join(', ')}`);
+
+  return {
+    success: true,
+    trainAccuracy,
+    valAccuracy,
+    logLoss,
+    confusionMatrix,
+    topFeatures: sortedFeatures
+  };
+}
+
+/**
+ * Build training data from historical settlements
+ * @param {Array} settlements - Settlement records from fetchBulkHistoricalData
+ * @returns {Array} Training data points { features, outcome }
+ */
+function buildMLTrainingData(settlements) {
+  const dataPoints = [];
+
+  for (const s of settlements) {
+    if (!s.token || !s.strikePrice || !s.result) continue;
+
+    // Calculate distance
+    const usesBettingTime = s.bettingTimePct !== undefined;
+    const absDistance = usesBettingTime
+      ? Math.abs(s.bettingTimePct)
+      : Math.abs((s.settlementPrice - s.strikePrice) / s.strikePrice * 100);
+
+    if (absDistance > 10) continue; // Skip outliers
+
+    // Determine the favored side at betting time
+    const wasAboveStrike = usesBettingTime
+      ? s.bettingTimePct > 0
+      : s.settlementPrice > s.strikePrice;
+
+    const token = s.token;
+    const side = wasAboveStrike ? 'YES' : 'NO'; // Favored side
+    const yesWon = s.result === 'yes';
+    const favoredWon = (wasAboveStrike && yesWon) || (!wasAboveStrike && !yesWon);
+
+    // Extract time info from close time
+    let hour = 12; // default
+    let timeRemaining = 7.5; // default mid-point
+    try {
+      if (s.closeTime) {
+        const closeDate = new Date(s.closeTime);
+        hour = closeDate.getUTCHours();
+      }
+    } catch (e) {}
+
+    const features = extractMLFeatures({
+      absDistance,
+      timeRemaining, // We don't know exact time remaining from settlements
+      token,
+      side,
+      momentum1m: 0, // Not available from historical data
+      momentum5m: 0,
+      volatility: 0.02, // Default
+      marketImpliedProb: 50 + absDistance * 5, // Rough estimate
+      spread: 0
+    });
+
+    // Override hour features based on actual close time
+    features.hourMorning = (hour >= 6 && hour < 12) ? 1 : 0;
+    features.hourAfternoon = (hour >= 12 && hour < 18) ? 1 : 0;
+    features.hourEvening = (hour >= 18 && hour < 24) ? 1 : 0;
+    features.hourNight = (hour >= 0 && hour < 6) ? 1 : 0;
+
+    dataPoints.push({
+      features,
+      outcome: favoredWon ? 1 : 0
+    });
+  }
+
+  return dataPoints;
+}
+
+// ============================================
 // PROSPECTIVE DATA COLLECTION
 // ============================================
 // Records price snapshots from active markets for future model training
@@ -338,16 +752,28 @@ try {
   takeProfitHistory = [];
 }
 
-// Save take-profit history to disk
+// Debounced file I/O - batches writes with 5s delay to reduce disk thrashing
+const _debouncedTimers = {};
+function debouncedWrite(key, fn, delayMs = 5000) {
+  if (_debouncedTimers[key]) clearTimeout(_debouncedTimers[key]);
+  _debouncedTimers[key] = setTimeout(() => {
+    _debouncedTimers[key] = null;
+    fn();
+  }, delayMs);
+}
+
+// Save take-profit history to disk (debounced)
 function saveTakeProfitHistory() {
-  try {
-    if (takeProfitHistory.length > MAX_TP_HISTORY) {
-      takeProfitHistory = takeProfitHistory.slice(-MAX_TP_HISTORY);
+  debouncedWrite('takeProfitHistory', () => {
+    try {
+      if (takeProfitHistory.length > MAX_TP_HISTORY) {
+        takeProfitHistory = takeProfitHistory.slice(-MAX_TP_HISTORY);
+      }
+      fs.writeFileSync(TAKE_PROFIT_HISTORY_FILE, JSON.stringify(takeProfitHistory, null, 2));
+    } catch (err) {
+      console.error('Error saving take-profit history:', err.message);
     }
-    fs.writeFileSync(TAKE_PROFIT_HISTORY_FILE, JSON.stringify(takeProfitHistory, null, 2));
-  } catch (err) {
-    console.error('Error saving take-profit history:', err.message);
-  }
+  });
 }
 
 // Record a take-profit/stop-loss execution
@@ -368,6 +794,10 @@ function recordTakeProfitExecution(ticker, type, analysis, result, userId = null
     realizedProfit: result.realizedProfit || 0,
     reason: result.reason
   });
+  // Trim in-memory array to prevent unbounded growth between debounced saves
+  if (takeProfitHistory.length > MAX_TP_HISTORY * 2) {
+    takeProfitHistory = takeProfitHistory.slice(-MAX_TP_HISTORY);
+  }
   saveTakeProfitHistory();
 }
 
@@ -385,18 +815,20 @@ try {
   priceSnapshots = [];
 }
 
-// Save snapshots to disk
+// Save snapshots to disk (debounced)
 function savePriceSnapshots() {
-  try {
-    // Trim to max size
-    if (priceSnapshots.length > MAX_SNAPSHOTS) {
-      priceSnapshots = priceSnapshots.slice(-MAX_SNAPSHOTS);
+  debouncedWrite('priceSnapshots', () => {
+    try {
+      // Trim to max size
+      if (priceSnapshots.length > MAX_SNAPSHOTS) {
+        priceSnapshots = priceSnapshots.slice(-MAX_SNAPSHOTS);
+      }
+      fs.writeFileSync(PRICE_SNAPSHOTS_FILE, JSON.stringify(priceSnapshots, null, 2));
+      console.log(`💾 Saved ${priceSnapshots.length} price snapshots`);
+    } catch (err) {
+      console.error('Error saving price snapshots:', err.message);
     }
-    fs.writeFileSync(PRICE_SNAPSHOTS_FILE, JSON.stringify(priceSnapshots, null, 2));
-    console.log(`💾 Saved ${priceSnapshots.length} price snapshots`);
-  } catch (err) {
-    console.error('Error saving price snapshots:', err.message);
-  }
+  });
 }
 
 /**
@@ -788,14 +1220,16 @@ function loadPerformanceData() {
   }
 }
 
-// Save performance data to file
+// Save performance data to file (debounced)
 function savePerformanceData() {
-  try {
-    performanceData.lastUpdated = new Date().toISOString();
-    fs.writeFileSync(PERFORMANCE_FILE, JSON.stringify(performanceData, null, 2));
-  } catch (err) {
-    console.log('Could not save performance data:', err.message);
-  }
+  debouncedWrite('performanceData', () => {
+    try {
+      performanceData.lastUpdated = new Date().toISOString();
+      fs.writeFileSync(PERFORMANCE_FILE, JSON.stringify(performanceData, null, 2));
+    } catch (err) {
+      console.log('Could not save performance data:', err.message);
+    }
+  });
 }
 
 // Track a new bet
@@ -1093,11 +1527,18 @@ async function loadCredentialsFromEnv() {
 const recentBets = new Map();
 
 // Check if we should allow a scale-in bet on this market
-function shouldAllowScaleIn(ticker, currentProbability) {
+function shouldAllowScaleIn(ticker, currentProbability, currentSide) {
   if (!config.scaleIn.enabled) return false;
 
   const existing = recentBets.get(ticker);
   if (!existing) return false; // No existing bet, this isn't a scale-in
+
+  // CRITICAL: Reject if bet side flipped (YES->NO or NO->YES)
+  // When crypto oscillates around strike, model alternates sides - betting both loses to fees
+  if (currentSide && existing.side && existing.side.toUpperCase() !== currentSide.toUpperCase()) {
+    console.log(`🚫 SIDE FLIP BLOCKED: ${ticker} was ${existing.side} → now ${currentSide} — refusing to bet both sides`);
+    return false;
+  }
 
   const now = Date.now();
   const timeSinceLastBet = now - existing.timestamp;
@@ -1544,10 +1985,71 @@ const TRACKED_TOKENS = {
   SOL: { name: 'Solana', minPrice: 1, maxPrice: 1000 }
 };
 
+// Ring buffer for O(1) price history updates (replaces O(n) array.shift())
+// Returns a Proxy that supports array-like index access (buf[0], buf[i], etc.)
+function createRingBuffer(capacity) {
+  const state = {
+    _buf: new Array(capacity),
+    _capacity: capacity,
+    _head: 0,
+    _size: 0
+  };
+
+  function toArray() {
+    if (state._size === 0) return [];
+    if (state._size < state._capacity) {
+      return state._buf.slice(0, state._size);
+    }
+    return [...state._buf.slice(state._head), ...state._buf.slice(0, state._head)];
+  }
+
+  function getByIndex(idx) {
+    if (idx < 0 || idx >= state._size) return undefined;
+    if (state._size < state._capacity) {
+      return state._buf[idx];
+    }
+    return state._buf[(state._head + idx) % state._capacity];
+  }
+
+  const handler = {
+    get(target, prop) {
+      // Handle Symbol props first (Symbol.iterator, etc.)
+      if (typeof prop === 'symbol') {
+        if (prop === Symbol.iterator) return function*() {
+          const arr = toArray();
+          for (const item of arr) yield item;
+        };
+        return undefined;
+      }
+      // Numeric index access
+      const idx = Number(prop);
+      if (Number.isInteger(idx) && idx >= 0) {
+        return getByIndex(idx);
+      }
+      if (prop === 'length') return state._size;
+      if (prop === 'push') return (item) => {
+        state._buf[state._head] = item;
+        state._head = (state._head + 1) % state._capacity;
+        if (state._size < state._capacity) state._size++;
+      };
+      if (prop === 'toArray') return toArray;
+      if (prop === 'filter') return (fn) => toArray().filter(fn);
+      if (prop === 'map') return (fn) => toArray().map(fn);
+      if (prop === 'reduce') return (fn, init) => toArray().reduce(fn, init);
+      if (prop === 'forEach') return (fn) => toArray().forEach(fn);
+      if (prop === 'slice') return (a, b) => toArray().slice(a, b);
+      if (prop === 'sort') return (fn) => toArray().sort(fn);
+      return undefined;
+    }
+  };
+
+  return new Proxy({}, handler);
+}
+
 // Price data storage
 const cryptoPrices = {};
 Object.keys(TRACKED_TOKENS).forEach(token => {
-  cryptoPrices[token] = { price: 0, timestamp: 0, history: [], volatility: 0.02 };
+  cryptoPrices[token] = { price: 0, timestamp: 0, history: createRingBuffer(120), volatility: 0.02 };
 });
 
 // Binance symbol mapping (PRIMARY - fast)
@@ -1572,11 +2074,8 @@ function updateTokenPrice(token, price, now) {
   cryptoPrices[token].timestamp = now;
   cryptoPrices[token].source = priceSource;
 
-  // Keep 120 price points for volatility (more history with faster updates)
+  // Ring buffer: O(1) insert, capped at 120 entries automatically
   cryptoPrices[token].history.push({ price, time: now });
-  if (cryptoPrices[token].history.length > 120) {
-    cryptoPrices[token].history.shift();
-  }
 
   // Keep extended history for statistical analysis (2 hours)
   if (!priceHistoryExtended[token]) priceHistoryExtended[token] = [];
@@ -5688,8 +6187,8 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
 
         // Check if we already bet on this market
         if (recentBets.has(m.ticker)) {
-          // Allow scale-in if probability improved significantly
-          if (shouldAllowScaleIn(m.ticker, winProb)) {
+          // Allow scale-in if probability improved significantly AND same side
+          if (shouldAllowScaleIn(m.ticker, winProb, m.betSide)) {
             m.isScaleIn = true; // Mark as scale-in opportunity
           } else {
             return false; // Skip - already bet and not a valid scale-in
@@ -5742,6 +6241,24 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
         bet: null,
         risk: getRiskByType(req.userState)
       });
+    }
+
+    // DEFENSE-IN-DEPTH: Check if Kalshi portfolio has opposite-side position on same ticker
+    if (userConfig.isAuthenticated && userPortfolio.positions?.length > 0) {
+      const existingPos = userPortfolio.positions.find(p => p.ticker === best.ticker);
+      if (existingPos && Math.abs(existingPos.position || 0) > 0) {
+        const existingSide = existingPos.position > 0 ? 'YES' : 'NO';
+        const newSide = best.betSide?.toUpperCase();
+        if (existingSide !== newSide) {
+          console.log(`🚫 OPPOSITE POSITION BLOCKED: Already holding ${existingSide} on ${best.ticker}, refusing ${newSide} bet`);
+          return res.json({
+            success: true,
+            message: `Blocked: Already holding ${existingSide} on ${best.ticker}, refusing opposite ${newSide} bet`,
+            bet: null,
+            risk: getRiskByType(req.userState)
+          });
+        }
+      }
     }
 
     // Cap bet at remaining risk budget, max per bet, OR token budget - whichever is lowest
@@ -6006,40 +6523,40 @@ async function runAutoBet(userId = null) {
       blockedReasons: []
     };
 
-    // CRITICAL: Refresh positions from Kalshi FIRST to get accurate risk
-    if (userConfig.isAuthenticated) {
-      try {
-        const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
-        userPortfolio.positions = posData.market_positions || posData.positions || [];
-        // Sync existing Kalshi positions to betHistory for accurate exposure tracking
-        syncKalshiPositionsToBetHistory(userState, userPortfolio.positions, userId);
-        console.log(`📊 Refreshed positions: ${userPortfolio.positions.length} open positions from Kalshi`);
-        if (userPortfolio.positions.length > 0) {
-          userPortfolio.positions.forEach(p => {
-            const token = getTokenFromTicker(p.ticker);
-            console.log(`   Position: ${p.ticker} (${token}) | contracts=${p.position} | avg_price=${p.average_price} | market_exposure=${p.market_exposure}`);
-          });
-          // Log calculated exposure by token
-          const tokenExposure = getExposureByToken(userState);
-          console.log(`📊 Calculated token exposure:`);
-          for (const [token, exposure] of Object.entries(tokenExposure)) {
-            console.log(`   💵 ${token}: $${(exposure/100).toFixed(2)} exposure (max $${(getMaxPerToken(userConfig)/100).toFixed(2)})`);
-          }
-        }
-        // Log pre-bet total exposure summary for debugging limit violations
-        const preExposure = getRiskByType(userState);
-        const preTokenExposure = getExposureByToken(userState);
-        console.log(`📊 Pre-bet exposure: Total=$${(preExposure.total/100).toFixed(2)} (max $${(getMaxTotalRisk(userConfig)/100).toFixed(2)}) | Tokens=${JSON.stringify(
-          Object.fromEntries(Object.entries(preTokenExposure).map(([k,v]) => [k, '$'+(v/100).toFixed(2)]))
-        )}`);
-      } catch (e) {
-        console.log('⚠️ Could not refresh positions:', e.message);
-      }
+    // Parallel fetch: positions + markets simultaneously (saves ~500-1000ms per cycle)
+    const positionsPromise = userConfig.isAuthenticated
+      ? kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig).catch(e => {
+          console.log('⚠️ Could not refresh positions:', e.message);
+          return null;
+        })
+      : Promise.resolve(null);
+    const marketsPromise = fetchCryptoMarkets();
 
-      // ============================================
-      // TAKE-PROFIT SCAN (Phase 5)
-      // ============================================
-      // Scan existing positions for take-profit opportunities
+    const [posData, cryptoMarkets] = await Promise.all([positionsPromise, marketsPromise]);
+
+    // Process positions result
+    if (posData && userConfig.isAuthenticated) {
+      userPortfolio.positions = posData.market_positions || posData.positions || [];
+      syncKalshiPositionsToBetHistory(userState, userPortfolio.positions, userId);
+      console.log(`📊 Refreshed positions: ${userPortfolio.positions.length} open positions from Kalshi`);
+      if (userPortfolio.positions.length > 0) {
+        userPortfolio.positions.forEach(p => {
+          const token = getTokenFromTicker(p.ticker);
+          console.log(`   Position: ${p.ticker} (${token}) | contracts=${p.position} | avg_price=${p.average_price} | market_exposure=${p.market_exposure}`);
+        });
+        const tokenExposure = getExposureByToken(userState);
+        console.log(`📊 Calculated token exposure:`);
+        for (const [token, exposure] of Object.entries(tokenExposure)) {
+          console.log(`   💵 ${token}: $${(exposure/100).toFixed(2)} exposure (max $${(getMaxPerToken(userConfig)/100).toFixed(2)})`);
+        }
+      }
+      const preExposure = getRiskByType(userState);
+      const preTokenExposure = getExposureByToken(userState);
+      console.log(`📊 Pre-bet exposure: Total=$${(preExposure.total/100).toFixed(2)} (max $${(getMaxTotalRisk(userConfig)/100).toFixed(2)}) | Tokens=${JSON.stringify(
+        Object.fromEntries(Object.entries(preTokenExposure).map(([k,v]) => [k, '$'+(v/100).toFixed(2)]))
+      )}`);
+
+      // TAKE-PROFIT SCAN (Phase 5) - after positions loaded
       if (userConfig.takeProfitSettings?.enabled && userPortfolio.positions?.length > 0) {
         console.log(`\n📈 Scanning ${userPortfolio.positions.length} positions for take-profit...`);
         try {
@@ -6055,12 +6572,6 @@ async function runAutoBet(userId = null) {
         }
       }
     }
-
-    // Force fresh market data
-    marketCache.lastFetch = 0;
-
-    // Fetch crypto markets only (BTC, ETH, SOL 15-minute markets)
-    const cryptoMarkets = await fetchCryptoMarkets();
     const now = Date.now();
 
     // Clean up old bets (remove bets older than 30 minutes)
@@ -6137,29 +6648,35 @@ async function runAutoBet(userId = null) {
     });
 
     const allOppsRaw = await Promise.all(analysisPromises);
-    const allOpps = allOppsRaw.filter(m => m !== null);
-    const withEdge = allOpps.filter(m => m.edge > 0);
-    const recommended = allOpps.filter(m => m.shouldBet);
+    // Single-pass filter with counters (was 3 separate .filter() calls)
+    const allOpps = [];
+    let withEdgeCount = 0;
+    let recommendedCount = 0;
+    for (const m of allOppsRaw) {
+      if (m === null) continue;
+      allOpps.push(m);
+      if (m.edge > 0) withEdgeCount++;
+      if (m.shouldBet) recommendedCount++;
+    }
     const minAutoThreshold = learnedParams.selectivityRules?.minEmpiricalWinRate || 62;
 
-    console.log(`   Analyzed: ${allOpps.length} valid | ${withEdge.length} with edge | ${recommended.length} recommended`);
+    console.log(`   Analyzed: ${allOpps.length} valid | ${withEdgeCount} with edge | ${recommendedCount} recommended`);
 
     // Update scan status
     lastScanStatus.marketsScanned = 3;
     lastScanStatus.activeMarkets = allOpps.length;
-    lastScanStatus.marketsWithEdge = withEdge.length;
+    lastScanStatus.marketsWithEdge = withEdgeCount;
 
     // Show signal strength distribution for empirical debugging
-    const signalBuckets = { '0-40': 0, '40-60': 0, '60-70': 0, '70-80': 0, '80-90': 0, '90-100': 0 };
-    allOpps.forEach(m => {
+    // Signal strength distribution (math-based bucket assignment)
+    const bucketNames = ['0-40', '40-60', '60-70', '70-80', '80-90', '90-100'];
+    const bucketThresholds = [40, 60, 70, 80, 90, 101]; // upper bounds
+    const signalBuckets = Object.fromEntries(bucketNames.map(n => [n, 0]));
+    for (const m of allOpps) {
       const sig = m.signalStrength || 0;
-      if (sig >= 90) signalBuckets['90-100']++;
-      else if (sig >= 80) signalBuckets['80-90']++;
-      else if (sig >= 70) signalBuckets['70-80']++;
-      else if (sig >= 60) signalBuckets['60-70']++;
-      else if (sig >= 40) signalBuckets['40-60']++;
-      else signalBuckets['0-40']++;
-    });
+      const idx = sig < 40 ? 0 : sig < 60 ? 1 : Math.min(5, 2 + Math.floor((sig - 60) / 10));
+      signalBuckets[bucketNames[idx]]++;
+    }
     console.log(`   Signal strength distribution: ${JSON.stringify(signalBuckets)}`);
 
     // Show regime status for each token
@@ -6179,9 +6696,9 @@ async function runAutoBet(userId = null) {
 
         // Check if we already bet on this market
         if (recentBets.has(m.ticker)) {
-          // Allow scale-in if win rate improved significantly
+          // Allow scale-in if win rate improved significantly AND same side
           const currentWinRate = parseFloat(m.winProbability) || 0;
-          if (shouldAllowScaleIn(m.ticker, currentWinRate)) {
+          if (shouldAllowScaleIn(m.ticker, currentWinRate, m.betSide || m.side)) {
             m.isScaleIn = true; // Mark as scale-in opportunity
           } else {
             return false; // Skip - already bet and not a valid scale-in
@@ -6338,6 +6855,24 @@ async function runAutoBet(userId = null) {
       lastScanStatus.statusMessage = `Token limit reached for ${tokenName}`;
       lastScanStatus.blockedReasons.push(`${tokenName} limit: $${(getMaxPerToken(userConfig)/100).toFixed(2)} max per token`);
       return;
+    }
+
+    // DEFENSE-IN-DEPTH: Check if Kalshi portfolio has opposite-side position on same ticker
+    // This catches edge cases where recentBets was cleared but we still hold a position
+    if (userConfig.isAuthenticated && userPortfolio.positions?.length > 0) {
+      const existingPos = userPortfolio.positions.find(p => p.ticker === best.ticker);
+      if (existingPos && Math.abs(existingPos.position || 0) > 0) {
+        const existingSide = existingPos.position > 0 ? 'YES' : 'NO';
+        const newSide = best.betSide?.toUpperCase();
+        if (existingSide !== newSide) {
+          console.log(`🚫 OPPOSITE POSITION BLOCKED: Already holding ${existingSide} on ${best.ticker}, refusing ${newSide} bet`);
+          lastScanStatus.status = 'opposite_position';
+          lastScanStatus.statusMessage = `Already holding ${existingSide} on ${best.ticker}`;
+          lastScanStatus.blockedReasons.push(`Opposite position: holding ${existingSide}, tried ${newSide}`);
+          console.log('========================================\n');
+          return;
+        }
+      }
     }
 
     // Display confidence based on signal strength
@@ -6784,6 +7319,10 @@ const empiricalBetTracking = {
   lastSpikeTimes: new Map() // Token -> timestamp of last detected spike
 };
 
+// Volatility regime cache (30s TTL) - called 3x+ per 10s scan for display
+const volatilityRegimeCache = new Map();
+const VOLATILITY_CACHE_TTL = 30000;
+
 /**
  * Detect current volatility regime for a token
  * @param {string} token - 'BTC', 'ETH', or 'SOL'
@@ -6791,6 +7330,27 @@ const empiricalBetTracking = {
  * @returns {object} Regime info: { regime: 'low'|'medium'|'high'|'spike', reason: string }
  */
 function detectVolatilityRegime(token, priceHistory = null) {
+  const now = Date.now();
+
+  // Return cached result if available and not stale (skip cache if custom history provided)
+  if (!priceHistory) {
+    const cached = volatilityRegimeCache.get(token);
+    if (cached && (now - cached.timestamp) < VOLATILITY_CACHE_TTL) {
+      return cached.result;
+    }
+  }
+
+  const result = _detectVolatilityRegimeInner(token, priceHistory);
+
+  // Cache result (only for default history lookups)
+  if (!priceHistory) {
+    volatilityRegimeCache.set(token, { result, timestamp: now });
+  }
+
+  return result;
+}
+
+function _detectVolatilityRegimeInner(token, priceHistory = null) {
   const history = priceHistory || cryptoPrices[token]?.history || [];
   const now = Date.now();
 
@@ -7172,6 +7732,38 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     adjustedWinRate = marketImpliedProb + (empiricalEdge * regime.multiplier);
   }
 
+  // ML MODEL BLENDING: Blend ML prediction with empirical win rate (max 30% weight)
+  let mlPrediction = null;
+  let mlWeight = 0;
+  if (mlModel.trainedOn >= 200 && mlModel.performance?.accuracy >= 0.55) {
+    const priceHistory = cryptoPrices[token]?.history || [];
+    const momentum = calculateMomentumMultiTimeframe(priceHistory);
+    const spreadVal = orderbook ? (betSide === 'YES' ? orderbook.yesSpread : orderbook.noSpread) || 0 : 0;
+
+    const features = extractMLFeatures({
+      absDistance,
+      timeRemaining,
+      token,
+      side: betSide,
+      momentum1m: (momentum.m1 || 0) * 100,
+      momentum5m: (momentum.m5 || 0) * 100,
+      volatility: cryptoPrices[token]?.volatility || 0.02,
+      marketImpliedProb,
+      spread: spreadVal
+    });
+
+    mlPrediction = mlPredict(features);
+    if (mlPrediction !== null) {
+      // Scale ML weight by accuracy above baseline (55%)
+      // At 55% accuracy: 0% weight, at 70% accuracy: 30% weight
+      mlWeight = Math.min(0.30, Math.max(0, (mlModel.performance.accuracy - 0.55) * 2));
+      const mlWinRate = mlPrediction * 100; // ML predicts favored side win probability
+      const blendedWinRate = adjustedWinRate * (1 - mlWeight) + mlWinRate * mlWeight;
+      console.log(`    🧠 ML blend: ml=${mlWinRate.toFixed(1)}% (weight=${(mlWeight*100).toFixed(0)}%) → blended=${blendedWinRate.toFixed(1)}% (was ${adjustedWinRate.toFixed(1)}%)`);
+      adjustedWinRate = blendedWinRate;
+    }
+  }
+
   console.log(`    📊 Edge calc: empirical=${empirical.winRate.toFixed(1)}% vs market=${marketImpliedProb.toFixed(0)}% @ distance=${absDistance.toFixed(2)}%`);
 
   // DYNAMIC FEE CALCULATION - Kalshi formula: ceil(0.07 × contracts × price × (1-price))
@@ -7322,31 +7914,42 @@ function buildEmpiricalLookupTables(settlements) {
     };
   });
 
-  // Build win rate by distance buckets
+  // Build win rate by distance buckets - optimized single-pass
+  // Pre-sort by distance then accumulate (was nested filter+loop, now O(n log n + n))
   const distanceBuckets = [0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0];
+  const distanceCaps = {
+    0.1: 62, 0.2: 68, 0.3: 73, 0.5: 78, 0.75: 82, 1.0: 86, 1.5: 89, 2.0: 91, 3.0: 93, 5.0: 95
+  };
 
-  for (const bucket of distanceBuckets) {
-    const withinBucket = distances.filter(d => d.pctFromStrike <= bucket);
-    if (withinBucket.length < 5) continue;
+  // Sort distances by pctFromStrike ascending
+  distances.sort((a, b) => a.pctFromStrike - b.pctFromStrike);
 
-    let favoredWins = 0;
-    for (const d of withinBucket) {
+  // Single pass: accumulate counts and wins as we go
+  let cumCount = 0;
+  let cumFavoredWins = 0;
+  let distIdx = 0;
+
+  for (let bucketIdx = 0; bucketIdx < distanceBuckets.length; bucketIdx++) {
+    const bucket = distanceBuckets[bucketIdx];
+
+    // Advance through sorted distances up to this bucket
+    while (distIdx < distances.length && distances[distIdx].pctFromStrike <= bucket) {
+      const d = distances[distIdx];
+      cumCount++;
       const yesFavored = d.wasAboveStrike;
       const noFavored = d.wasBelowStrike;
       const yesWon = d.result === 'yes';
       const noWon = d.result === 'no';
-
       if ((yesFavored && yesWon) || (noFavored && noWon)) {
-        favoredWins++;
+        cumFavoredWins++;
       }
+      distIdx++;
     }
 
-    // Distance-dependent caps - BALANCED: realistic but profitable
-    const distanceCaps = {
-      0.1: 62, 0.2: 68, 0.3: 73, 0.5: 78, 0.75: 82, 1.0: 86, 1.5: 89, 2.0: 91, 3.0: 93, 5.0: 95
-    };
+    if (cumCount < 5) continue;
+
     const capForBucket = distanceCaps[bucket] || 91;
-    const rawWinRate = (favoredWins / withinBucket.length * 100);
+    const rawWinRate = (cumFavoredWins / cumCount * 100);
     const favoredWinRate = Math.min(capForBucket, rawWinRate);
 
     if (rawWinRate > capForBucket) {
@@ -7354,7 +7957,7 @@ function buildEmpiricalLookupTables(settlements) {
     }
 
     tables.winRateByDistance[bucket] = {
-      count: withinBucket.length,
+      count: cumCount,
       favoredWinRate: parseFloat(favoredWinRate.toFixed(2)),
       surpriseRate: parseFloat((100 - favoredWinRate).toFixed(2))
     };
@@ -8094,6 +8697,18 @@ async function updateLearnedParameters(userConfig = null) {
       }
     }
 
+    // Train ML model on the same settlements
+    let mlResult = null;
+    try {
+      const mlTrainingData = buildMLTrainingData(settlements);
+      console.log(`\n🧠 ML: Built ${mlTrainingData.length} training samples from ${settlements.length} settlements`);
+      if (mlTrainingData.length >= 200) {
+        mlResult = trainMLModel(mlTrainingData);
+      }
+    } catch (mlErr) {
+      console.error('⚠️ ML training failed (non-fatal):', mlErr.message);
+    }
+
     return {
       success: true,
       sampleSize: settlements.length,
@@ -8105,7 +8720,13 @@ async function updateLearnedParameters(userConfig = null) {
       byToken: learnedParams.byToken,
       confidence: empiricalTables.confidence,
       yesNoBias: learnedParams.yesNoBias,
-      probabilityThresholds: learnedParams.probabilityThresholds
+      probabilityThresholds: learnedParams.probabilityThresholds,
+      mlModel: mlResult ? {
+        trained: true,
+        accuracy: mlResult.valAccuracy,
+        trainAccuracy: mlResult.trainAccuracy,
+        topFeatures: mlResult.topFeatures
+      } : { trained: false, reason: mlResult?.reason || 'Unknown' }
     };
   } catch (err) {
     console.error('❌ Learning failed:', err.message);
@@ -8665,6 +9286,30 @@ app.post('/api/model/selectivity', (req, res) => {
     success: true,
     message: 'Selectivity rules updated',
     selectivityRules: current
+  });
+});
+
+// ML Model status endpoint
+app.get('/api/model/ml-status', (req, res) => {
+  const topFeatures = Object.entries(mlModel.weights || {})
+    .map(([name, weight]) => ({ name, weight, absWeight: Math.abs(weight) }))
+    .sort((a, b) => b.absWeight - a.absWeight)
+    .slice(0, 10);
+
+  res.json({
+    success: true,
+    mlModel: {
+      version: mlModel.version,
+      trainedOn: mlModel.trainedOn,
+      lastUpdated: mlModel.lastUpdated,
+      isActive: mlModel.trainedOn >= 200 && (mlModel.performance?.accuracy || 0) >= 0.55,
+      performance: mlModel.performance,
+      topFeatures,
+      featureCount: ML_FEATURE_NAMES.length,
+      blendWeight: mlModel.trainedOn >= 200 && (mlModel.performance?.accuracy || 0) >= 0.55
+        ? Math.min(0.30, Math.max(0, ((mlModel.performance?.accuracy || 0) - 0.55) * 2))
+        : 0
+    }
   });
 });
 

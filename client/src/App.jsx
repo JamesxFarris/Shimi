@@ -798,18 +798,17 @@ function App() {
     fetchModelMonitoring()  // Get prospective data, take-profit history, selectivity rules
     checkAuth()
 
-    // Refresh opportunities every 10 seconds (includes prices and risk/exposure)
-    const oppInterval = setInterval(fetchOpportunities, 10000)
-
-    // Refresh portfolio every 10 seconds (faster balance updates)
-    const portfolioInterval = setInterval(fetchPortfolio, 10000)
+    // Merged data polling: opportunities + portfolio every 10 seconds (was 2 separate intervals)
+    const dataInterval = setInterval(() => {
+      fetchOpportunities()
+      fetchPortfolio()
+    }, 10000)
 
     // Faster exposure updates: poll every 3 seconds when there are pending bets
     const fastExposureInterval = setInterval(() => {
-      // Use ref to get current value (avoids stale closure)
       const hasPendingBets = betHistoryRef.current.some(b => b.outcome !== 'won' && b.outcome !== 'lost')
       if (hasPendingBets) {
-        fetchOpportunities() // This updates exposure/risk
+        fetchOpportunities()
       }
     }, 3000)
 
@@ -822,8 +821,7 @@ function App() {
     }, 1000)
 
     return () => {
-      clearInterval(oppInterval)
-      clearInterval(portfolioInterval)
+      clearInterval(dataInterval)
       clearInterval(perfInterval)
       clearInterval(tickerTimeInterval)
       clearInterval(fastExposureInterval)
