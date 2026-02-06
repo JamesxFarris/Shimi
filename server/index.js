@@ -7,6 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { parseStringPromise } from 'xml2js';
 import * as auth from './auth.js';
+import WebSocket from 'ws';
 import { getKalshiWebSocket } from './kalshiWebSocket.js';
 import { pool, initDatabase } from './db.js';
 
@@ -2041,7 +2042,7 @@ function createRingBuffer(capacity) {
       if (prop === 'toArray') return toArray;
       if (prop === 'filter') return (fn) => toArray().filter(fn);
       if (prop === 'map') return (fn) => toArray().map(fn);
-      if (prop === 'reduce') return (fn, init) => toArray().reduce(fn, init);
+      if (prop === 'reduce') return (...args) => toArray().reduce(...args);
       if (prop === 'forEach') return (fn) => toArray().forEach(fn);
       if (prop === 'slice') return (a, b) => toArray().slice(a, b);
       if (prop === 'sort') return (fn) => toArray().sort(fn);
@@ -2091,6 +2092,81 @@ function updateTokenPrice(token, price, now) {
 
   // Calculate volatility
   cryptoPrices[token].volatility = calculateVolatility(cryptoPrices[token].history, token);
+}
+
+// Binance WebSocket state
+let binanceWsConnected = false;
+let binanceWs = null;
+let binanceWsReconnectDelay = 1000;
+let binanceWsReconnectTimer = null;
+let lastWsPriceUpdate = 0;
+
+// Reverse map: BTCUSDT -> BTC
+const BINANCE_SYMBOL_TO_TOKEN = {};
+for (const [token, symbol] of Object.entries(BINANCE_SYMBOLS)) {
+  BINANCE_SYMBOL_TO_TOKEN[symbol.toLowerCase()] = token;
+}
+
+function initBinanceWebSocket() {
+  if (binanceWs) {
+    try { binanceWs.close(); } catch (e) {}
+  }
+
+  const streams = Object.values(BINANCE_SYMBOLS).map(s => `${s.toLowerCase()}@miniTicker`).join('/');
+  const url = `wss://stream.binance.us:9443/stream?streams=${streams}`;
+
+  console.log('🔌 Connecting to Binance WebSocket...');
+  binanceWs = new WebSocket(url);
+
+  binanceWs.on('open', () => {
+    binanceWsConnected = true;
+    binanceWsReconnectDelay = 1000;
+    priceSource = 'binance-ws';
+    console.log('✅ Binance WebSocket connected - real-time prices active');
+  });
+
+  binanceWs.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(raw);
+      const data = msg.data;
+      if (!data || !data.s) return;
+
+      const token = BINANCE_SYMBOL_TO_TOKEN[data.s.toLowerCase()];
+      if (!token) return;
+
+      const price = parseFloat(data.c);
+      if (!price || price <= 0) return;
+
+      const now = Date.now();
+      priceSource = 'binance-ws';
+      updateTokenPrice(token, price, now);
+      lastWsPriceUpdate = now;
+      binanceFailCount = 0;
+    } catch (e) {
+      // Ignore parse errors on individual messages
+    }
+  });
+
+  binanceWs.on('close', (code, reason) => {
+    binanceWsConnected = false;
+    console.log(`⚠️ Binance WebSocket closed (code=${code}). Reconnecting in ${binanceWsReconnectDelay/1000}s...`);
+    scheduleWsReconnect();
+  });
+
+  binanceWs.on('error', (err) => {
+    binanceWsConnected = false;
+    console.error('Binance WebSocket error:', err.message);
+    // 'close' event will fire after this, triggering reconnect
+  });
+}
+
+function scheduleWsReconnect() {
+  if (binanceWsReconnectTimer) clearTimeout(binanceWsReconnectTimer);
+  binanceWsReconnectTimer = setTimeout(() => {
+    binanceWsReconnectTimer = null;
+    initBinanceWebSocket();
+    binanceWsReconnectDelay = Math.min(binanceWsReconnectDelay * 2, 30000);
+  }, binanceWsReconnectDelay);
 }
 
 // Fetch prices from Binance.US (PRIMARY - very fast, works for US users)
@@ -2993,9 +3069,15 @@ function normalCDF(x) {
   return isNaN(result) ? 0.5 : Math.max(0.0001, Math.min(0.9999, result));
 }
 
-// Start price tracking (every 10 seconds)
-let priceInterval = setInterval(fetchCryptoPrices, 10000);
-fetchCryptoPrices();
+// Start price tracking: WebSocket primary, REST fallback every 30s
+fetchCryptoPrices(); // Immediate fetch on startup (WebSocket takes a moment to connect)
+let priceInterval = setInterval(() => {
+  if (!binanceWsConnected) {
+    console.log('📡 WebSocket disconnected - falling back to REST polling');
+    fetchCryptoPrices();
+  }
+}, 30000);
+initBinanceWebSocket();
 
 // ============================================
 // RISK MANAGEMENT
@@ -3142,7 +3224,7 @@ function getRiskByType(userState = null) {
   const ourCostsByTicker = {};
   const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
   for (const bet of userBetHistory) {
-    if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') continue;
+    if (bet.status === 'settled' || bet.status === 'closed') continue;
     const betTime = new Date(bet.timestamp).getTime();
     if (betTime < twoHoursAgo) continue;
 
@@ -3187,7 +3269,7 @@ function getRiskByType(userState = null) {
 
   // Add unsettled local bets not already counted via Kalshi positions
   for (const bet of userBetHistory) {
-    if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') continue;
+    if (bet.status === 'settled' || bet.status === 'closed') continue;
     const betTime = new Date(bet.timestamp).getTime();
     if (betTime < twoHoursAgo) continue;
     if (kalshiTickers.has(bet.ticker)) continue;
@@ -3273,7 +3355,7 @@ function getExposureByToken(userState = null) {
   const ourCostsByTicker = {};
   const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
   for (const bet of userBetHistory) {
-    if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') continue;
+    if (bet.status === 'settled' || bet.status === 'closed') continue;
     const betTime = new Date(bet.timestamp).getTime();
     if (betTime < twoHoursAgo) continue;
 
@@ -3319,7 +3401,7 @@ function getExposureByToken(userState = null) {
 
   // Add unsettled local bets not already counted via Kalshi positions
   for (const bet of userBetHistory) {
-    if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') continue;
+    if (bet.status === 'settled' || bet.status === 'closed') continue;
     const betTime = new Date(bet.timestamp).getTime();
     if (betTime < twoHoursAgo) continue;
     // Skip bets already counted via Kalshi positions or synced from Kalshi
@@ -4787,6 +4869,13 @@ function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConf
     return null;
   }
 
+  // Skip if price data is stale (no update in 60+ seconds)
+  const priceAge = Date.now() - priceData.timestamp;
+  if (priceAge > 60000) {
+    console.log(`⚠️ Stale price for ${parsed.cryptoType}: ${(priceAge/1000).toFixed(0)}s old - skipping`);
+    return null;
+  }
+
   const cfg = userConfig || config;
   const liquiditySettings = cfg.liquiditySettings || {};
   const momentumSettings = cfg.momentumSettings || {};
@@ -5485,7 +5574,7 @@ app.get('/api/risk', async (req, res) => {
     let localRisk = 0;
     const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
     const unsettledBets = userBetHistory.filter(bet => {
-      if (bet.status === 'settled' || bet.status === 'closed' || bet.status === 'simulated') {
+      if (bet.status === 'settled' || bet.status === 'closed') {
         return false;
       }
       const betTime = new Date(bet.timestamp).getTime();
@@ -6012,11 +6101,35 @@ app.post('/api/bet', async (req, res) => {
       // Save user state
       if (req.userId) saveUserState(req.userId);
 
+      const simRisk = getRiskByType(req.userState);
       return res.json({
         success: true,
         simulated: true,
         bet: betRecord,
-        newBalance: (userConfig.bankroll ?? 10000) / 100
+        newBalance: (userConfig.bankroll ?? 10000) / 100,
+        risk: {
+          current: simRisk.total,
+          max: getMaxTotalRisk(userConfig),
+          remaining: getTotalRemainingBudget(req.userState, userConfig),
+          currentDollars: (simRisk.total / 100).toFixed(2),
+          maxDollars: (getMaxTotalRisk(userConfig) / 100).toFixed(2),
+          remainingDollars: (getTotalRemainingBudget(req.userState, userConfig) / 100).toFixed(2),
+          byToken: getExposureByToken(req.userState),
+          positionCount: (userPortfolio.positions || []).length,
+          maxPerToken: getMaxPerToken(userConfig),
+          hourly: {
+            current: simRisk.hourly,
+            max: getMaxRisk('hourly', userConfig),
+            currentDollars: (simRisk.hourly / 100).toFixed(2),
+            maxDollars: (getMaxRisk('hourly', userConfig) / 100).toFixed(2)
+          },
+          other: {
+            current: simRisk.other,
+            max: getMaxRisk('other', userConfig),
+            currentDollars: (simRisk.other / 100).toFixed(2),
+            maxDollars: (getMaxRisk('other', userConfig) / 100).toFixed(2)
+          }
+        }
       });
     }
 
@@ -6129,6 +6242,9 @@ app.post('/api/bet', async (req, res) => {
           currentDollars: (riskByType.total / 100).toFixed(2),
           maxDollars: (getMaxTotalRisk(userConfig) / 100).toFixed(2),
           remainingDollars: (getTotalRemainingBudget(req.userState, userConfig) / 100).toFixed(2),
+          byToken: getExposureByToken(req.userState),
+          positionCount: (userPortfolio.positions || []).length,
+          maxPerToken: getMaxPerToken(userConfig),
           hourly: {
             current: riskByType.hourly,
             max: getMaxRisk('hourly', userConfig),
@@ -6407,12 +6523,36 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       // Save user state
       if (req.userId) saveUserState(req.userId);
 
+      const simRiskAuto = getRiskByType(req.userState);
       return res.json({
         success: true,
         simulated: true,
         bet: betRecord,
         opportunity: best,
-        newBalance: userConfig.bankroll / 100
+        newBalance: userConfig.bankroll / 100,
+        risk: {
+          current: simRiskAuto.total,
+          max: getMaxTotalRisk(userConfig),
+          remaining: getTotalRemainingBudget(req.userState, userConfig),
+          currentDollars: (simRiskAuto.total / 100).toFixed(2),
+          maxDollars: (getMaxTotalRisk(userConfig) / 100).toFixed(2),
+          remainingDollars: (getTotalRemainingBudget(req.userState, userConfig) / 100).toFixed(2),
+          byToken: getExposureByToken(req.userState),
+          positionCount: (userPortfolio.positions || []).length,
+          maxPerToken: getMaxPerToken(userConfig),
+          hourly: {
+            current: simRiskAuto.hourly,
+            max: getMaxRisk('hourly', userConfig),
+            currentDollars: (simRiskAuto.hourly / 100).toFixed(2),
+            maxDollars: (getMaxRisk('hourly', userConfig) / 100).toFixed(2)
+          },
+          other: {
+            current: simRiskAuto.other,
+            max: getMaxRisk('other', userConfig),
+            currentDollars: (simRiskAuto.other / 100).toFixed(2),
+            maxDollars: (getMaxRisk('other', userConfig) / 100).toFixed(2)
+          }
+        }
       });
     }
 
@@ -6523,6 +6663,9 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
           currentDollars: (riskByType.total / 100).toFixed(2),
           maxDollars: (getMaxTotalRisk(userConfig) / 100).toFixed(2),
           remainingDollars: (getTotalRemainingBudget(req.userState, userConfig) / 100).toFixed(2),
+          byToken: getExposureByToken(req.userState),
+          positionCount: (userPortfolio.positions || []).length,
+          maxPerToken: getMaxPerToken(userConfig),
           hourly: {
             current: riskByType.hourly,
             max: getMaxRisk('hourly', userConfig),
