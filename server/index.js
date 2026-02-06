@@ -4461,8 +4461,12 @@ async function scanTakeProfitOpportunities(userConfig = null, userPortfolio = nu
   const settings = cfg.takeProfitSettings || {};
   const limitSettings = cfg.limitOrderSettings || {};
 
-  // Don't return early - always scan for stop-loss even if take-profit is disabled
-  // Limit orders don't reliably execute on fast market crashes, so we need active monitoring
+  // If take-profit is disabled AND stop-loss is disabled, nothing to do
+  const takeProfitEnabled = settings.enabled !== false; // default true for backwards compat
+  const stopLossEnabled = cfg.activeMonitoring?.stopLossEnabled !== false;
+  if (!takeProfitEnabled && !stopLossEnabled) {
+    return [];
+  }
 
   const positions = pf.positions || [];
   if (positions.length === 0) return [];
@@ -7184,7 +7188,9 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
     userAutoBetIntervals.set(req.userId, setInterval(() => runAutoBet(req.userId), intervalSeconds * 1000));
 
     // Start take-profit scanning to monitor positions for exit opportunities
-    startTakeProfitScanning(15000, req.userId, userConfig, userPortfolio);
+    if (userConfig.takeProfitSettings?.enabled !== false || userConfig.activeMonitoring?.stopLossEnabled !== false) {
+      startTakeProfitScanning(15000, req.userId, userConfig, userPortfolio);
+    }
 
     res.json({
       success: true,
@@ -7232,7 +7238,8 @@ app.get('/api/auto-bet/status', (req, res) => {
     userAutoBetIntervals.set(req.userId, setInterval(() => runAutoBet(req.userId), 10000));
 
     // Also restore take-profit scanning (per-user)
-    if (!userTakeProfitIntervals.has(req.userId)) {
+    if (!userTakeProfitIntervals.has(req.userId) &&
+        (userConfig.takeProfitSettings?.enabled !== false || userConfig.activeMonitoring?.stopLossEnabled !== false)) {
       startTakeProfitScanning(15000, req.userId, userConfig, userPortfolio);
     }
   }
@@ -9880,8 +9887,8 @@ app.get('/api/portfolio', async (req, res) => {
       if (req.userId) saveUserState(req.userId);
 
       // Start position protection monitoring if user has open positions
-      // This runs regardless of auto-bet status to always protect positions
-      if (req.userId && userPortfolio.positions?.length > 0 && !userTakeProfitIntervals.has(req.userId)) {
+      if (req.userId && userPortfolio.positions?.length > 0 && !userTakeProfitIntervals.has(req.userId) &&
+          (userConfig.takeProfitSettings?.enabled !== false || userConfig.activeMonitoring?.stopLossEnabled !== false)) {
         console.log(`🛡️ Starting position protection for user ${req.userId} (${userPortfolio.positions.length} open positions)`);
         startTakeProfitScanning(15000, req.userId, userConfig, userPortfolio);
       }
