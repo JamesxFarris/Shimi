@@ -5961,7 +5961,8 @@ app.post('/api/bet', async (req, res) => {
 
     // Real bet - use limit order slightly above ask to ensure fill
     // Add 2 cent buffer to improve fill rate
-    const fillPrice = Math.min(priceCents + 2, 99);
+    const fillSlippage = userConfig.selectivityRules?.fillSlippageCents ?? 3;
+    const fillPrice = Math.min(priceCents + fillSlippage, 99);
 
     const orderRequest = {
       ticker,
@@ -6353,7 +6354,8 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     }
 
     // Real bet - use limit order slightly above ask to ensure fill
-    const fillPrice = Math.min(priceCents + 2, 99);
+    const fillSlippage = userConfig.selectivityRules?.fillSlippageCents ?? 3;
+    const fillPrice = Math.min(priceCents + fillSlippage, 99);
 
     const orderRequest = {
       ticker: best.ticker,
@@ -7035,7 +7037,8 @@ async function runAutoBet(userId = null) {
     }
 
     // Real bet - use limit order slightly above ask to ensure fill
-    const fillPrice = Math.min(priceCents + 2, 99);
+    const fillSlippage = userConfig.selectivityRules?.fillSlippageCents ?? 3;
+    const fillPrice = Math.min(priceCents + fillSlippage, 99);
 
     console.log(`\n💸 PLACING REAL BET...`);
     const orderRequest = {
@@ -7787,8 +7790,11 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
   }
 
+  // Account for fill slippage: we may pay up to N cents above ask to ensure fill
+  // Each cent of slippage = 1 percentage point reduction in edge (prices are cents out of 100)
+  const slippageCents = userRules.fillSlippageCents ?? 3;
   const grossEdge = adjustedWinRate - marketImpliedProb;
-  const netEdge = grossEdge - feePct - spreadPenalty;
+  const netEdge = grossEdge - feePct - spreadPenalty - slippageCents;
 
   // Calculate signal strength
   const signalStrength = calculateSignalStrength(
