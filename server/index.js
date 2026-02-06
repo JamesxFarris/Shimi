@@ -4541,7 +4541,7 @@ function startTakeProfitScanning(intervalMs = 30000, userId, userConfig, userPor
         try {
           const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
           if (userPortfolio) {
-            userPortfolio.positions = posData.market_positions || posData.positions || [];
+            userPortfolio.positions = (posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0);
           }
         } catch (e) {
           console.log('[TakeProfit] Could not refresh positions:', e.message);
@@ -5311,7 +5311,7 @@ app.get('/api/opportunities/all', async (req, res) => {
     if (userConfig.isAuthenticated) {
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
-        userPortfolio.positions = posData.market_positions || posData.positions || [];
+        userPortfolio.positions = (posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0);
         // Sync existing Kalshi positions to betHistory for accurate exposure tracking
         syncKalshiPositionsToBetHistory(req.userState, userPortfolio.positions, req.userId);
       } catch (e) {
@@ -5397,7 +5397,7 @@ app.get('/api/risk', async (req, res) => {
     if (userConfig.isAuthenticated) {
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
-        userPortfolio.positions = posData.market_positions || posData.positions || [];
+        userPortfolio.positions = (posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0);
         // Sync existing Kalshi positions to betHistory for accurate exposure tracking
         syncKalshiPositionsToBetHistory(req.userState, userPortfolio.positions, req.userId);
       } catch (e) {
@@ -5825,7 +5825,7 @@ app.post('/api/bet', async (req, res) => {
     if (userConfig.isAuthenticated) {
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
-        userPortfolio.positions = posData.market_positions || posData.positions || [];
+        userPortfolio.positions = (posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0);
         // Sync existing Kalshi positions to betHistory for accurate exposure tracking
         syncKalshiPositionsToBetHistory(req.userState, userPortfolio.positions, req.userId);
       } catch (e) {
@@ -6043,7 +6043,7 @@ app.post('/api/bet', async (req, res) => {
       // Refresh positions for risk tracking
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
-        userPortfolio.positions = posData.market_positions || posData.positions || [];
+        userPortfolio.positions = (posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0);
       } catch (e) {
         console.log('Could not refresh positions after bet:', e.message);
       }
@@ -6152,7 +6152,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     if (userConfig.isAuthenticated) {
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
-        userPortfolio.positions = posData.market_positions || posData.positions || [];
+        userPortfolio.positions = (posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0);
         // Sync existing Kalshi positions to betHistory for accurate exposure tracking
         syncKalshiPositionsToBetHistory(req.userState, userPortfolio.positions, req.userId);
       } catch (e) {
@@ -6433,7 +6433,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       // Refresh positions for accurate risk calculation
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
-        userPortfolio.positions = posData.market_positions || posData.positions || [];
+        userPortfolio.positions = (posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0);
       } catch (e) {
         console.log('Could not refresh positions after auto-bet:', e.message);
       }
@@ -6536,7 +6536,8 @@ async function runAutoBet(userId = null) {
 
     // Process positions result
     if (posData && userConfig.isAuthenticated) {
-      userPortfolio.positions = posData.market_positions || posData.positions || [];
+      userPortfolio.positions = (posData.market_positions || posData.positions || [])
+        .filter(p => Math.abs(p.position || 0) > 0); // Filter ghost positions (0 contracts)
       syncKalshiPositionsToBetHistory(userState, userPortfolio.positions, userId);
       console.log(`📊 Refreshed positions: ${userPortfolio.positions.length} open positions from Kalshi`);
       if (userPortfolio.positions.length > 0) {
@@ -9771,7 +9772,7 @@ app.get('/api/portfolio', async (req, res) => {
               return {
                 ticker,
                 title: data.market.title || ticker,
-                result: data.market.result,
+                result: data.market.result || data.market.market_result,
                 status: data.market.status,
                 closeTime: data.market.close_time
               };
@@ -10045,7 +10046,7 @@ app.get('/api/performance', async (req, res) => {
           try {
             const data = await kalshiRequest('GET', `/markets/${ticker}`, null, userConfig);
             if (data.market) {
-              return { ticker, result: data.market.result, status: data.market.status };
+              return { ticker, result: data.market.result || data.market.market_result, status: data.market.status };
             }
           } catch (e) { /* ignore */ }
           return { ticker, result: null, status: 'unknown' };
@@ -10339,7 +10340,7 @@ app.get('/api/debug/kalshi-fills', async (req, res) => {
       try {
         const market = await kalshiRequest('GET', `/markets/${ticker}`, null, useConfig);
         marketResults[ticker] = {
-          result: market.market?.result,
+          result: market.market?.result || market.market?.market_result,
           status: market.market?.status,
           close_time: market.market?.close_time
         };
