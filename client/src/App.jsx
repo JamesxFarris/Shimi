@@ -830,10 +830,10 @@ function App() {
       })
 
       clearTimeout(timeoutId)
+      const data = await res.json().catch(() => ({}))
       if (!res.ok) {
-        throw new Error(`Server error: ${res.status}`)
+        throw new Error(data.error || `Server error: ${res.status}`)
       }
-      const data = await res.json()
 
       if (data.success) {
         if (data.newBalance) setBalance(data.newBalance)
@@ -897,10 +897,10 @@ function App() {
       })
 
       clearTimeout(timeoutId)
+      const data = await res.json().catch(() => ({}))
       if (!res.ok) {
-        throw new Error(`Server error: ${res.status}`)
+        throw new Error(data.error || `Server error: ${res.status}`)
       }
-      const data = await res.json()
 
       if (data.success && data.bet) {
         setBalance(data.newBalance)
