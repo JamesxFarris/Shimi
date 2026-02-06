@@ -3237,6 +3237,28 @@ function getTokenFromTicker(ticker) {
   return null;
 }
 
+// Check if a market ticker has expired (settled + 5 min grace period)
+function isTickerExpired(ticker) {
+  if (!ticker) return false;
+  const match = ticker.match(/(\d{2})([A-Z]{3})(\d{2})(\d{2})(\d{2})/);
+  if (!match) return false;
+  const [, yearSuffix, monthStr, day, hour, minute] = match;
+  const months = { JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5, JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11 };
+  const expiry = new Date(Date.UTC(2000 + parseInt(yearSuffix), months[monthStr] || 0, parseInt(day), parseInt(hour), parseInt(minute)));
+  return Date.now() > expiry.getTime() + 5 * 60 * 1000;
+}
+
+// Filter positions array to remove expired markets
+function filterExpiredPositions(positions, log = false) {
+  return positions.filter(p => {
+    if (isTickerExpired(p.ticker)) {
+      if (log) console.log(`   🗑️ Filtered expired position: ${p.ticker}`);
+      return false;
+    }
+    return true;
+  });
+}
+
 // Get total exposure per token across all positions
 function getExposureByToken(userState = null) {
   const tokenExposure = {};
@@ -4577,7 +4599,7 @@ function startTakeProfitScanning(intervalMs = 30000, userId, userConfig, userPor
         try {
           const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
           if (userPortfolio) {
-            userPortfolio.positions = (posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0);
+            userPortfolio.positions = filterExpiredPositions((posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0));
           }
         } catch (e) {
           console.log('[TakeProfit] Could not refresh positions:', e.message);
@@ -5347,7 +5369,7 @@ app.get('/api/opportunities/all', async (req, res) => {
     if (userConfig.isAuthenticated) {
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
-        userPortfolio.positions = (posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0);
+        userPortfolio.positions = filterExpiredPositions((posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0));
         // Sync existing Kalshi positions to betHistory for accurate exposure tracking
         syncKalshiPositionsToBetHistory(req.userState, userPortfolio.positions, req.userId);
       } catch (e) {
@@ -5434,7 +5456,7 @@ app.get('/api/risk', async (req, res) => {
     if (userConfig.isAuthenticated) {
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
-        userPortfolio.positions = (posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0);
+        userPortfolio.positions = filterExpiredPositions((posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0));
         // Sync existing Kalshi positions to betHistory for accurate exposure tracking
         syncKalshiPositionsToBetHistory(req.userState, userPortfolio.positions, req.userId);
       } catch (e) {
@@ -5862,7 +5884,7 @@ app.post('/api/bet', async (req, res) => {
     if (userConfig.isAuthenticated) {
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
-        userPortfolio.positions = (posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0);
+        userPortfolio.positions = filterExpiredPositions((posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0));
         // Sync existing Kalshi positions to betHistory for accurate exposure tracking
         syncKalshiPositionsToBetHistory(req.userState, userPortfolio.positions, req.userId);
       } catch (e) {
@@ -6081,7 +6103,7 @@ app.post('/api/bet', async (req, res) => {
       // Refresh positions for risk tracking
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
-        userPortfolio.positions = (posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0);
+        userPortfolio.positions = filterExpiredPositions((posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0));
       } catch (e) {
         console.log('Could not refresh positions after bet:', e.message);
       }
@@ -6190,7 +6212,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     if (userConfig.isAuthenticated) {
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
-        userPortfolio.positions = (posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0);
+        userPortfolio.positions = filterExpiredPositions((posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0));
         // Sync existing Kalshi positions to betHistory for accurate exposure tracking
         syncKalshiPositionsToBetHistory(req.userState, userPortfolio.positions, req.userId);
       } catch (e) {
@@ -6474,7 +6496,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       // Refresh positions for accurate risk calculation
       try {
         const posData = await kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig);
-        userPortfolio.positions = (posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0);
+        userPortfolio.positions = filterExpiredPositions((posData.market_positions || posData.positions || []).filter(p => Math.abs(p.position || 0) > 0));
       } catch (e) {
         console.log('Could not refresh positions after auto-bet:', e.message);
       }
@@ -6577,8 +6599,11 @@ async function runAutoBet(userId = null) {
 
     // Process positions result
     if (posData && userConfig.isAuthenticated) {
-      userPortfolio.positions = (posData.market_positions || posData.positions || [])
-        .filter(p => Math.abs(p.position || 0) > 0); // Filter ghost positions (0 contracts)
+      userPortfolio.positions = filterExpiredPositions(
+        (posData.market_positions || posData.positions || [])
+          .filter(p => Math.abs(p.position || 0) > 0), // Filter ghost positions (0 contracts)
+        true // log filtered positions
+      );
       syncKalshiPositionsToBetHistory(userState, userPortfolio.positions, userId);
       console.log(`📊 Refreshed positions: ${userPortfolio.positions.length} open positions from Kalshi`);
       if (userPortfolio.positions.length > 0) {
