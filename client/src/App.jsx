@@ -2122,7 +2122,7 @@ function App() {
                   {/* Selectivity Rules */}
                   <div className="model-section" style={{ marginBottom: '20px' }}>
                     <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', color: '#ccc' }}>Betting Thresholds</h4>
-                    <div className="threshold-controls-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px' }}>
+                    <div className="threshold-controls-grid">
                       <div className="threshold-control">
                         <label style={{ fontSize: '12px', color: '#888' }}>Min Edge After Fees</label>
                         <div className="threshold-controls">
@@ -2156,18 +2156,18 @@ function App() {
                   {/* Prospective Data Collection */}
                   <div className="model-section" style={{ marginBottom: '20px' }}>
                     <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', color: '#ccc' }}>Prospective Data Collection</h4>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '12px' }}>
-                      <div style={{ textAlign: 'center', padding: '12px', background: '#1a1a2e', borderRadius: '8px' }}>
-                        <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#4fc3f7' }}>{prospectiveData?.totalSnapshots || 0}</div>
-                        <div style={{ fontSize: '11px', color: '#888' }}>Total Snapshots</div>
+                    <div className="model-stats-grid">
+                      <div>
+                        <div className="stat-number" style={{ color: '#4fc3f7' }}>{prospectiveData?.totalSnapshots || 0}</div>
+                        <div className="stat-label-small">Total Snapshots</div>
                       </div>
-                      <div style={{ textAlign: 'center', padding: '12px', background: '#1a1a2e', borderRadius: '8px' }}>
-                        <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#81c784' }}>{prospectiveData?.settledCount || 0}</div>
-                        <div style={{ fontSize: '11px', color: '#888' }}>Settled</div>
+                      <div>
+                        <div className="stat-number" style={{ color: '#81c784' }}>{prospectiveData?.settledCount || 0}</div>
+                        <div className="stat-label-small">Settled</div>
                       </div>
-                      <div style={{ textAlign: 'center', padding: '12px', background: '#1a1a2e', borderRadius: '8px' }}>
-                        <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#ffb74d' }}>{prospectiveData?.pendingCount || 0}</div>
-                        <div style={{ fontSize: '11px', color: '#888' }}>Pending</div>
+                      <div>
+                        <div className="stat-number" style={{ color: '#ffb74d' }}>{prospectiveData?.pendingCount || 0}</div>
+                        <div className="stat-label-small">Pending</div>
                       </div>
                     </div>
                     {prospectiveData?.settledCount >= 100 && (
@@ -2185,24 +2185,24 @@ function App() {
                   {/* Take-Profit Execution History */}
                   <div className="model-section">
                     <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', color: '#ccc' }}>Auto-Sell Execution History</h4>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginBottom: '12px' }}>
-                      <div style={{ textAlign: 'center', padding: '8px', background: '#1a1a2e', borderRadius: '6px' }}>
-                        <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#4fc3f7' }}>{takeProfitHistory?.stats?.totalExecutions || 0}</div>
-                        <div style={{ fontSize: '10px', color: '#888' }}>Total</div>
+                    <div className="execution-stats-grid">
+                      <div>
+                        <div className="stat-number" style={{ color: '#4fc3f7' }}>{takeProfitHistory?.stats?.totalExecutions || 0}</div>
+                        <div className="stat-label-small">Total</div>
                       </div>
-                      <div style={{ textAlign: 'center', padding: '8px', background: '#1a1a2e', borderRadius: '6px' }}>
-                        <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#81c784' }}>{takeProfitHistory?.stats?.takeProfitCount || 0}</div>
-                        <div style={{ fontSize: '10px', color: '#888' }}>Take Profit</div>
+                      <div>
+                        <div className="stat-number" style={{ color: '#81c784' }}>{takeProfitHistory?.stats?.takeProfitCount || 0}</div>
+                        <div className="stat-label-small">Take Profit</div>
                       </div>
-                      <div style={{ textAlign: 'center', padding: '8px', background: '#1a1a2e', borderRadius: '6px' }}>
-                        <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#ef5350' }}>{takeProfitHistory?.stats?.stopLossCount || 0}</div>
-                        <div style={{ fontSize: '10px', color: '#888' }}>Stop Loss</div>
+                      <div>
+                        <div className="stat-number" style={{ color: '#ef5350' }}>{takeProfitHistory?.stats?.stopLossCount || 0}</div>
+                        <div className="stat-label-small">Stop Loss</div>
                       </div>
-                      <div style={{ textAlign: 'center', padding: '8px', background: '#1a1a2e', borderRadius: '6px' }}>
-                        <div style={{ fontSize: '18px', fontWeight: 'bold', color: takeProfitHistory?.stats?.totalRealizedCents >= 0 ? '#81c784' : '#ef5350' }}>
+                      <div>
+                        <div className="stat-number" style={{ color: takeProfitHistory?.stats?.totalRealizedCents >= 0 ? '#81c784' : '#ef5350' }}>
                           ${((takeProfitHistory?.stats?.totalRealizedCents || 0) / 100).toFixed(2)}
                         </div>
-                        <div style={{ fontSize: '10px', color: '#888' }}>Realized</div>
+                        <div className="stat-label-small">Realized</div>
                       </div>
                     </div>
                     {takeProfitHistory?.history?.length > 0 && (
