@@ -110,7 +110,7 @@ const DEFAULT_CONFIG = {
   },
   // Active monitoring settings (runs every 15 seconds when auto-bet is on)
   activeMonitoring: {
-    stopLossEnabled: true,       // Cut losses at threshold
+    stopLossEnabled: false,      // Cut losses at threshold (disabled by default)
     stopLossThreshold: -40,      // Exit if position is down 40%
     easyProfitEnabled: true,     // Take "free money" on high-confidence positions
     easyProfitMinPrice: 75,      // Minimum buy price for easy profit (75¢ = 75% implied prob)
@@ -4036,34 +4036,40 @@ async function evaluateTakeProfit(position, userConfig = null) {
     || cfg.limitOrderSettings?.stopLoss?.threshold
     || -40;
 
-  console.log(`[StopLoss] ${ticker}: Checking ${profitPercent.toFixed(1)}% vs threshold ${stopLossThreshold}%`);
+  const stopLossEnabled = cfg.activeMonitoring?.stopLossEnabled !== false;
 
-  if (profitPercent <= stopLossThreshold) {
-    // Loss exceeds threshold - cut it now
-    console.log(`🛑 [StopLoss] TRIGGERED for ${ticker}: ${profitPercent.toFixed(1)}% <= ${stopLossThreshold}%`);
-    return {
-      shouldExit: true,
-      reason: `🛑 STOP-LOSS: Position at ${profitPercent.toFixed(1)}% (threshold: ${stopLossThreshold}%)`,
-      urgencyScore: 100,
-      urgencyReasons: [`Stop-loss triggered at ${profitPercent.toFixed(1)}% (threshold: ${stopLossThreshold}%)`],
-      analysis: { profitPercent, netProfit, currentBid, avgCost, totalSellFee, spreadCost, stopLossTriggered: true, stopLossThreshold }
-    };
-  }
+  if (stopLossEnabled) {
+    console.log(`[StopLoss] ${ticker}: Checking ${profitPercent.toFixed(1)}% vs threshold ${stopLossThreshold}%`);
 
-  // Time-based stop-loss: If <3 min left AND loss exceeds half of user's threshold, cut losses
-  // BUG FIX: Was hardcoded -25%, now respects user's stopLossThreshold (uses half as time-critical trigger)
-  const timeCriticalThreshold = Math.max(stopLossThreshold / 2, -30); // At least -30%, but scales with user setting
-  if (marketForStopLoss && profitPercent < timeCriticalThreshold) {
-    const timeRemaining = marketForStopLoss.close_time ? new Date(marketForStopLoss.close_time).getTime() - Date.now() : null;
-    if (timeRemaining && timeRemaining < 3 * 60 * 1000) {
+    if (profitPercent <= stopLossThreshold) {
+      // Loss exceeds threshold - cut it now
+      console.log(`🛑 [StopLoss] TRIGGERED for ${ticker}: ${profitPercent.toFixed(1)}% <= ${stopLossThreshold}%`);
       return {
         shouldExit: true,
-        reason: `🛑 TIME STOP-LOSS: ${profitPercent.toFixed(1)}% loss with <3min left - cutting losses (time-critical threshold: ${timeCriticalThreshold}%)`,
-        urgencyScore: 90,
-        urgencyReasons: [`Time-critical stop-loss: ${profitPercent.toFixed(1)}% loss, ${(timeRemaining/60000).toFixed(1)}min left`],
-        analysis: { profitPercent, netProfit, currentBid, avgCost, totalSellFee, spreadCost, timeRemaining, stopLossTriggered: true }
+        reason: `🛑 STOP-LOSS: Position at ${profitPercent.toFixed(1)}% (threshold: ${stopLossThreshold}%)`,
+        urgencyScore: 100,
+        urgencyReasons: [`Stop-loss triggered at ${profitPercent.toFixed(1)}% (threshold: ${stopLossThreshold}%)`],
+        analysis: { profitPercent, netProfit, currentBid, avgCost, totalSellFee, spreadCost, stopLossTriggered: true, stopLossThreshold }
       };
     }
+
+    // Time-based stop-loss: If <3 min left AND loss exceeds half of user's threshold, cut losses
+    // BUG FIX: Was hardcoded -25%, now respects user's stopLossThreshold (uses half as time-critical trigger)
+    const timeCriticalThreshold = Math.max(stopLossThreshold / 2, -30); // At least -30%, but scales with user setting
+    if (marketForStopLoss && profitPercent < timeCriticalThreshold) {
+      const timeRemaining = marketForStopLoss.close_time ? new Date(marketForStopLoss.close_time).getTime() - Date.now() : null;
+      if (timeRemaining && timeRemaining < 3 * 60 * 1000) {
+        return {
+          shouldExit: true,
+          reason: `🛑 TIME STOP-LOSS: ${profitPercent.toFixed(1)}% loss with <3min left - cutting losses (time-critical threshold: ${timeCriticalThreshold}%)`,
+          urgencyScore: 90,
+          urgencyReasons: [`Time-critical stop-loss: ${profitPercent.toFixed(1)}% loss, ${(timeRemaining/60000).toFixed(1)}min left`],
+          analysis: { profitPercent, netProfit, currentBid, avgCost, totalSellFee, spreadCost, timeRemaining, stopLossTriggered: true }
+        };
+      }
+    }
+  } else {
+    console.log(`[StopLoss] ${ticker}: DISABLED by config, skipping check (profit: ${profitPercent.toFixed(1)}%)`);
   }
 
   // ============================================
@@ -4354,9 +4360,9 @@ async function executeTakeProfitExit(position, analysis, userConfig = null, user
   const cfg = userConfig || config;
   const settings = cfg.takeProfitSettings || {};
 
-  // ALWAYS execute stop-loss - it's critical for protecting positions
-  // Only apply logOnly mode to take-profit (profitable exits)
-  const isStopLoss = analysis.stopLossTriggered || analysis.profitPercent < 0;
+  // Only bypass logOnly mode for stop-loss if stop-loss is enabled
+  const stopLossEnabled = cfg.activeMonitoring?.stopLossEnabled !== false;
+  const isStopLoss = stopLossEnabled && (analysis.stopLossTriggered || analysis.profitPercent < 0);
 
   // Safety check - don't execute if logOnly mode (but ALWAYS execute stop-loss)
   if (!isStopLoss && (settings.logOnly || !settings.autoExecute)) {
