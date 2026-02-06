@@ -3214,72 +3214,49 @@ function syncKalshiPositionsToBetHistory(userState, positions, userId = null) {
 function getRiskByType(userState = null) {
   let hourlyRisk = 0;
   let otherRisk = 0;
-  const kalshiTickers = new Set();
 
-  // Use user-specific data if provided, otherwise fall back to globals
   const userBetHistory = userState?.betHistory || betHistory;
   const userPortfolio = userState?.portfolio || portfolio;
 
-  // First, build a map of our actual costs from betHistory for each ticker
-  const ourCostsByTicker = {};
-  const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
+  // Track which tickers we already counted (to avoid double-counting)
+  const countedTickers = new Set();
+
+  // 1) Count from betHistory - most reliable since we set totalCost ourselves
   for (const bet of userBetHistory) {
+    if (!bet.ticker) continue;
+    if (isTickerExpired(bet.ticker)) continue; // Market settled → not active
     if (bet.status === 'settled' || bet.status === 'closed') continue;
-    const betTime = new Date(bet.timestamp).getTime();
-    if (betTime < twoHoursAgo) continue;
 
-    const ticker = bet.ticker;
-    if (!ourCostsByTicker[ticker]) {
-      ourCostsByTicker[ticker] = { totalCost: 0, contracts: 0 };
-    }
-    ourCostsByTicker[ticker].totalCost += bet.totalCost || (bet.count * bet.price) || 0;
-    ourCostsByTicker[ticker].contracts += bet.count || bet.filledCount || 0;
-  }
-
-  // Count Kalshi positions
-  if (userPortfolio.positions && Array.isArray(userPortfolio.positions)) {
-    for (const pos of userPortfolio.positions) {
-      const contracts = Math.abs(pos.position || 0);
-      if (contracts > 0) {
-        kalshiTickers.add(pos.ticker);
-
-        // Try to get the actual cost - check multiple sources in order of reliability
-        let posRisk;
-        if (pos.market_exposure && pos.market_exposure > 0) {
-          // Kalshi's market_exposure is in cents, this is the most accurate
-          posRisk = pos.market_exposure;
-        } else if (pos.average_price && pos.average_price > 0) {
-          posRisk = contracts * pos.average_price;
-        } else if (ourCostsByTicker[pos.ticker]) {
-          // Use our tracked costs - this is what we actually paid
-          posRisk = ourCostsByTicker[pos.ticker].totalCost;
-        } else {
-          // Last resort: use a conservative estimate (high price to prevent over-betting)
-          posRisk = contracts * 75; // Assume 75¢ avg if we have no data
-        }
-
-        if (isHourlyMarket(pos.ticker)) {
-          hourlyRisk += posRisk;
-        } else {
-          otherRisk += posRisk;
-        }
-      }
-    }
-  }
-
-  // Add unsettled local bets not already counted via Kalshi positions
-  for (const bet of userBetHistory) {
-    if (bet.status === 'settled' || bet.status === 'closed') continue;
-    const betTime = new Date(bet.timestamp).getTime();
-    if (betTime < twoHoursAgo) continue;
-    if (kalshiTickers.has(bet.ticker)) continue;
-    if (isTickerExpired(bet.ticker)) continue; // Don't count expired market bets
-
+    countedTickers.add(bet.ticker);
     const betRisk = bet.totalCost || (bet.count * bet.price) || 0;
     if (isHourlyMarket(bet.ticker)) {
       hourlyRisk += betRisk;
     } else {
       otherRisk += betRisk;
+    }
+  }
+
+  // 2) Count Kalshi positions we don't already have in betHistory
+  if (userPortfolio.positions && Array.isArray(userPortfolio.positions)) {
+    for (const pos of userPortfolio.positions) {
+      if (!pos.ticker || countedTickers.has(pos.ticker)) continue;
+      if (isTickerExpired(pos.ticker)) continue;
+      const contracts = Math.abs(pos.position || 0);
+      if (contracts <= 0) continue;
+
+      // Normalize Kalshi values that might be decimals (0-1) instead of cents
+      let exposure = pos.market_exposure || 0;
+      if (exposure > 0 && exposure <= 1) exposure = Math.round(exposure * 100);
+      let avgPrice = pos.average_price || 0;
+      if (avgPrice > 0 && avgPrice <= 1) avgPrice = Math.round(avgPrice * 100);
+
+      const posRisk = exposure > 0 ? exposure : (avgPrice > 0 ? contracts * avgPrice : contracts * 75);
+
+      if (isHourlyMarket(pos.ticker)) {
+        hourlyRisk += posRisk;
+      } else {
+        otherRisk += posRisk;
+      }
     }
   }
 
@@ -3345,74 +3322,43 @@ function filterExpiredPositions(positions, log = false) {
 // Get total exposure per token across all positions
 function getExposureByToken(userState = null) {
   const tokenExposure = {};
-  const kalshiTickers = new Set();
 
-  // Use user-specific data if provided, otherwise fall back to globals
   const userBetHistory = userState?.betHistory || betHistory;
   const userPortfolio = userState?.portfolio || portfolio;
+  const countedTickers = new Set();
 
-  // First, build a map of our actual costs from betHistory for each ticker
-  const ourCostsByTicker = {};
-  const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
+  // 1) Count from betHistory first - we know totalCost is in cents
   for (const bet of userBetHistory) {
+    if (!bet.ticker) continue;
+    if (isTickerExpired(bet.ticker)) continue;
     if (bet.status === 'settled' || bet.status === 'closed') continue;
-    const betTime = new Date(bet.timestamp).getTime();
-    if (betTime < twoHoursAgo) continue;
 
-    const ticker = bet.ticker;
-    if (!ourCostsByTicker[ticker]) {
-      ourCostsByTicker[ticker] = { totalCost: 0, contracts: 0 };
-    }
-    ourCostsByTicker[ticker].totalCost += bet.totalCost || (bet.count * bet.price) || 0;
-    ourCostsByTicker[ticker].contracts += bet.count || bet.filledCount || 0;
-  }
-
-  // Count Kalshi positions by token
-  if (userPortfolio.positions && Array.isArray(userPortfolio.positions)) {
-    for (const pos of userPortfolio.positions) {
-      const contracts = Math.abs(pos.position || 0);
-      if (contracts > 0) {
-        const token = getTokenFromTicker(pos.ticker);
-        kalshiTickers.add(pos.ticker);
-
-        // Try to get the actual cost - check multiple sources in order of reliability
-        let posRisk;
-        if (pos.market_exposure && pos.market_exposure > 0) {
-          // Kalshi's market_exposure is in cents, this is the most accurate
-          posRisk = pos.market_exposure;
-        } else if (pos.average_price && pos.average_price > 0) {
-          posRisk = contracts * pos.average_price;
-        } else if (ourCostsByTicker[pos.ticker]) {
-          // Use our tracked costs - this is what we actually paid
-          posRisk = ourCostsByTicker[pos.ticker].totalCost;
-          console.log(`📊 Using tracked cost for ${pos.ticker}: ${posRisk}¢ (Kalshi avg_price was ${pos.average_price})`);
-        } else {
-          // Last resort: use a conservative estimate (high price to prevent over-betting)
-          posRisk = contracts * 75; // Assume 75¢ avg if we have no data
-          console.log(`⚠️ No price data for ${pos.ticker}, using 75¢ estimate: ${posRisk}¢`);
-        }
-
-        if (token) {
-          tokenExposure[token] = (tokenExposure[token] || 0) + posRisk;
-        }
-      }
-    }
-  }
-
-  // Add unsettled local bets not already counted via Kalshi positions
-  for (const bet of userBetHistory) {
-    if (bet.status === 'settled' || bet.status === 'closed') continue;
-    const betTime = new Date(bet.timestamp).getTime();
-    if (betTime < twoHoursAgo) continue;
-    // Skip bets already counted via Kalshi positions or synced from Kalshi
-    if (kalshiTickers.has(bet.ticker) || bet.source === 'kalshi-sync') continue;
-    if (isTickerExpired(bet.ticker)) continue; // Don't count expired market bets
-
+    countedTickers.add(bet.ticker);
     const betRisk = bet.totalCost || (bet.count * bet.price) || 0;
     const token = getTokenFromTicker(bet.ticker) || bet.assetType;
-
     if (token) {
       tokenExposure[token] = (tokenExposure[token] || 0) + betRisk;
+    }
+  }
+
+  // 2) Count Kalshi positions not already in betHistory
+  if (userPortfolio.positions && Array.isArray(userPortfolio.positions)) {
+    for (const pos of userPortfolio.positions) {
+      if (!pos.ticker || countedTickers.has(pos.ticker)) continue;
+      if (isTickerExpired(pos.ticker)) continue;
+      const contracts = Math.abs(pos.position || 0);
+      if (contracts <= 0) continue;
+
+      let exposure = pos.market_exposure || 0;
+      if (exposure > 0 && exposure <= 1) exposure = Math.round(exposure * 100);
+      let avgPrice = pos.average_price || 0;
+      if (avgPrice > 0 && avgPrice <= 1) avgPrice = Math.round(avgPrice * 100);
+
+      const posRisk = exposure > 0 ? exposure : (avgPrice > 0 ? contracts * avgPrice : contracts * 75);
+      const token = getTokenFromTicker(pos.ticker);
+      if (token) {
+        tokenExposure[token] = (tokenExposure[token] || 0) + posRisk;
+      }
     }
   }
 
