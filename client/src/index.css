@@ -5816,6 +5816,92 @@ body {
   .token-limits-grid {
     grid-template-columns: 1fr;
   }
+
+  /* ---- Settings page mobile fixes ---- */
+
+  /* Stack feature toggle rows so ON/OFF button isn't crammed against text */
+  .feature-toggle {
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .feature-info {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .feature-desc {
+    font-size: 10px;
+  }
+
+  .toggle-btn {
+    min-width: 70px;
+    padding: 10px 18px;
+    font-size: 13px;
+  }
+
+  /* Threshold +/- buttons: meet 44px minimum touch target */
+  .threshold-btn {
+    width: 44px;
+    height: 44px;
+    font-size: 20px;
+  }
+
+  .threshold-controls {
+    gap: 6px;
+  }
+
+  .threshold-value {
+    font-size: 16px;
+    min-width: 50px;
+    text-align: center;
+  }
+
+  /* Scale-in settings: stack label above input on mobile */
+  .scale-in-settings .settings-input-group {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .scale-in-settings .settings-input-group label {
+    font-size: 12px;
+    margin-bottom: 4px;
+  }
+
+  .scale-in-settings .settings-input-group input[type="number"] {
+    padding: 10px 12px;
+    font-size: 16px;
+  }
+
+  /* Bigger checkbox touch target */
+  .scale-in-settings .settings-input-group input[type="checkbox"] {
+    width: 22px;
+    height: 22px;
+    min-width: 22px;
+  }
+
+  /* Stepper buttons: ensure touch-friendly size */
+  .stepper-btn {
+    width: 48px;
+    height: 48px;
+    font-size: 22px;
+  }
+
+  .stepper-value {
+    font-size: 18px;
+  }
+
+  /* Save button: bigger tap target */
+  .save-settings-btn {
+    padding: 14px 18px;
+    font-size: 14px;
+  }
+
+  /* Settings card breathing room */
+  .settings-card {
+    padding: 14px;
+  }
 }
 
 /* ============================================
