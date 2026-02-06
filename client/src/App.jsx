@@ -656,6 +656,10 @@ function App() {
         betHistoryRef.current = newHistory // Keep ref in sync
         setBetStats(data.stats || { totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 })
         setIsAuthenticated(!data.simulated)
+        // Update risk/exposure if returned
+        if (data.risk) {
+          setRisk(data.risk)
+        }
         // Track new bets for notification badge using bet IDs
         // Only show badge for NEW bets placed AFTER initial load
         // Using refs to avoid stale closures since this callback has [] deps
@@ -1714,7 +1718,31 @@ function App() {
 
                 {/* Recent Activity Section */}
                 <div className="recent-history-section">
-                  <h3 className="section-subtitle">Recent Activity (Last 20)</h3>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h3 className="section-subtitle">Recent Activity (Last 20)</h3>
+                    {betHistory.length > 0 && (
+                      <button
+                        className="disconnect-btn"
+                        style={{ fontSize: '12px', padding: '4px 12px' }}
+                        onClick={async () => {
+                          if (!window.confirm('Clear all bet history cards? This cannot be undone.')) return
+                          try {
+                            const res = await authFetch(`${API_BASE}/api/history`, { method: 'DELETE' })
+                            const data = await res.json()
+                            if (data.success) {
+                              setBetHistory([])
+                              betHistoryRef.current = []
+                              fetchPerformance()
+                            }
+                          } catch (err) {
+                            console.error('Failed to clear history:', err)
+                          }
+                        }}
+                      >
+                        Clear History
+                      </button>
+                    )}
+                  </div>
                   {betHistory.length === 0 ? (
                     <div className="empty-state large">
                       <span className="empty-icon">📜</span>
