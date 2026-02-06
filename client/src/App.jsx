@@ -1718,7 +1718,31 @@ function App() {
 
                 {/* Recent Activity Section */}
                 <div className="recent-history-section">
-                  <h3 className="section-subtitle">Recent Activity (Last 20)</h3>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h3 className="section-subtitle">Recent Activity (Last 20)</h3>
+                    {betHistory.length > 0 && (
+                      <button
+                        className="disconnect-btn"
+                        style={{ fontSize: '12px', padding: '4px 12px' }}
+                        onClick={async () => {
+                          if (!window.confirm('Clear all bet history cards? This cannot be undone.')) return
+                          try {
+                            const res = await authFetch(`${API_BASE}/api/history`, { method: 'DELETE' })
+                            const data = await res.json()
+                            if (data.success) {
+                              setBetHistory([])
+                              betHistoryRef.current = []
+                              fetchPerformance()
+                            }
+                          } catch (err) {
+                            console.error('Failed to clear history:', err)
+                          }
+                        }}
+                      >
+                        Clear History
+                      </button>
+                    )}
+                  </div>
                   {betHistory.length === 0 ? (
                     <div className="empty-state large">
                       <span className="empty-icon">📜</span>

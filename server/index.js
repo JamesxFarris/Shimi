@@ -10604,6 +10604,26 @@ app.delete('/api/performance', (req, res) => {
   res.json({ success: true, message: 'Performance data cleared' });
 });
 
+// Clear user's bet history (cards on the History tab)
+app.delete('/api/history', (req, res) => {
+  const userState = req.userState;
+  if (!userState) {
+    return res.status(400).json({ success: false, error: 'No user state' });
+  }
+
+  // Clear in-memory bet history
+  userState.betHistory.length = 0;
+
+  // For authenticated users, advance historyStartDate so old Kalshi fills are hidden
+  const userConfig = userState.config || config;
+  userConfig.historyStartDate = new Date().toISOString();
+
+  // Persist to database
+  if (req.userId) saveUserState(req.userId);
+
+  res.json({ success: true, message: 'Bet history cleared' });
+});
+
 // Debug endpoint to see raw Kalshi data (uses global server credentials)
 app.get('/api/debug/kalshi-fills', async (req, res) => {
   try {
