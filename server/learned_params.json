@@ -89,14 +89,14 @@
       "noBias": 8,
       "volatilityRank": 1,
       "optimalEntryWindows": {
-        "distanceMin": 0.1,
-        "distanceMax": 5,
-        "timeMin": 2,
+        "distanceMin": 0.3,
+        "distanceMax": 3,
+        "timeMin": 3,
         "timeMax": 7,
-        "priceMin": 60,
-        "priceMax": 92
+        "priceMin": 65,
+        "priceMax": 88
       },
-      "coinFlipThreshold": 0.05,
+      "coinFlipThreshold": 0.15,
       "coinFlipPct": 16.6
     },
     "ETH": {
@@ -108,14 +108,14 @@
       "noBias": 8.75,
       "volatilityRank": 3,
       "optimalEntryWindows": {
-        "distanceMin": 0.1,
-        "distanceMax": 5,
-        "timeMin": 2,
+        "distanceMin": 0.4,
+        "distanceMax": 3,
+        "timeMin": 3,
         "timeMax": 7,
-        "priceMin": 60,
-        "priceMax": 92
+        "priceMin": 65,
+        "priceMax": 88
       },
-      "coinFlipThreshold": 0.1,
+      "coinFlipThreshold": 0.2,
       "coinFlipPct": 25
     },
     "SOL": {
@@ -127,23 +127,23 @@
       "noBias": 8.5,
       "volatilityRank": 2,
       "optimalEntryWindows": {
-        "distanceMin": 0.1,
-        "distanceMax": 5,
-        "timeMin": 2,
+        "distanceMin": 0.4,
+        "distanceMax": 3,
+        "timeMin": 3,
         "timeMax": 7,
-        "priceMin": 60,
-        "priceMax": 92
+        "priceMin": 65,
+        "priceMax": 88
       },
-      "coinFlipThreshold": 0.1,
+      "coinFlipThreshold": 0.2,
       "coinFlipPct": 22.9
     }
   },
   "selectivityRules": {
-    "minSignalStrength": 50,
-    "minEmpiricalWinRate": 55,
-    "minEdgeAfterFees": 1,
-    "maxBetsPerHour": 999,
-    "maxBetsPerToken": 3,
+    "minSignalStrength": 65,
+    "minEmpiricalWinRate": 65,
+    "minEdgeAfterFees": 5,
+    "maxBetsPerHour": 4,
+    "maxBetsPerToken": 2,
     "requireRegimeCheck": true
   },
   "performanceTracking": {

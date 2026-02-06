@@ -41,11 +41,15 @@ const DEFAULT_CONFIG = {
   maxBetPercent: 15,
   minEdge: 5, // 5% minimum - model has uncertainty, need buffer
   autoBetEnabled: false,
+  // Safety: daily loss limit and bankroll floor
+  dailyLossLimitPct: 30,    // Stop auto-betting if down 30% in rolling 24 hours
+  minBankrollCents: 200,    // Never auto-bet if bankroll drops below $2.00
   // Risk management settings (in cents) - bet sizing uses maxPerBet
   riskLimits: {
     maxPerBet: 500,      // $5.00 max per bet (unified)
     maxPerToken: 500,    // $5.00 max per token
     maxTotal: 500,       // $5.00 max total exposure (unified)
+    maxPerMarket: 500,   // $5.00 max TOTAL per single market ticker (caps scale-in accumulation)
     // Legacy nested structure for compatibility
     hourly: {
       maxPerBet: 500,
@@ -195,12 +199,12 @@ const DEFAULT_EMPIRICAL_TABLES = {
       noBias: 0,
       volatilityRank: 2,
       optimalEntryWindows: {
-        distanceMin: 0.1,   // Learned data shows 99.84% win rate even at 0.1%
-        distanceMax: 5.0,   // Expanded per learned data
-        timeMin: 2,         // Minimum minutes remaining
-        timeMax: 10,        // Catch momentum before fully priced in
-        priceMin: 55,       // Need profit margin (learned: 60-92)
-        priceMax: 97        // Allow high-confidence bets
+        distanceMin: 0.3,   // Tightened: 0.1% is coin-flip territory
+        distanceMax: 3.0,   // Tightened: >3% already priced in
+        timeMin: 3,         // Minimum minutes remaining (was 2)
+        timeMax: 8,         // Catch momentum before fully priced in
+        priceMin: 65,       // Need profit margin (tightened from 55)
+        priceMax: 88        // Avoid overpaying (tightened from 97)
       }
     },
     ETH: {
@@ -212,12 +216,12 @@ const DEFAULT_EMPIRICAL_TABLES = {
       noBias: 0,
       volatilityRank: 2,
       optimalEntryWindows: {
-        distanceMin: 0.1,   // Learned data shows 99.84% win rate even at 0.1%
-        distanceMax: 5.0,
-        timeMin: 2,
-        timeMax: 10,
-        priceMin: 55,
-        priceMax: 97
+        distanceMin: 0.4,   // ETH more volatile, need more buffer
+        distanceMax: 3.0,
+        timeMin: 3,
+        timeMax: 8,
+        priceMin: 65,
+        priceMax: 88
       }
     },
     SOL: {
@@ -229,23 +233,23 @@ const DEFAULT_EMPIRICAL_TABLES = {
       noBias: 0,
       volatilityRank: 3,  // SOL typically most volatile
       optimalEntryWindows: {
-        distanceMin: 0.15,  // Slightly higher for volatile SOL
-        distanceMax: 5.0,
-        timeMin: 2,
-        timeMax: 10,
-        priceMin: 55,
-        priceMax: 97
+        distanceMin: 0.5,   // Highest buffer for most volatile token
+        distanceMax: 3.0,
+        timeMin: 3,
+        timeMax: 8,
+        priceMin: 65,
+        priceMax: 88
       }
     }
   },
 
   // Selectivity rules (learned thresholds for when to bet)
   selectivityRules: {
-    minSignalStrength: 60,      // 0-100 score required to bet
-    minEmpiricalWinRate: 62,    // Minimum win rate from lookup tables
-    minEdgeAfterFees: 3,        // 3% minimum edge after all fees
-    maxBetsPerHour: 6,          // Rate limiting for discipline
-    maxBetsPerToken: 3,         // Per-token concentration limit
+    minSignalStrength: 65,      // 0-100 score required to bet (raised from 60)
+    minEmpiricalWinRate: 65,    // Minimum win rate from lookup tables (raised from 62)
+    minEdgeAfterFees: 5,        // 5% minimum edge after all fees (raised from 3)
+    maxBetsPerHour: 4,          // Rate limiting for discipline (lowered from 6)
+    maxBetsPerToken: 2,         // Per-token concentration limit (lowered from 3)
     requireRegimeCheck: true    // Must pass volatility regime check
   },
 
@@ -1285,6 +1289,11 @@ function settleBet(betId, outcome, settlementPrice, actualProfit) {
   bet.settlementPrice = settlementPrice;
   bet.actualProfit = actualProfit;
   bet.settledAt = new Date().toISOString();
+
+  // Track losses for daily loss limit
+  if (outcome === 'lost') {
+    trackDailyLoss(bet.userId || 'default', bet.totalCost || 0);
+  }
 
   // Update summary
   performanceData.summary.pending--;
@@ -3390,7 +3399,89 @@ function validateBetWontExceedLimits(ticker, betCostCents, userState, userConfig
   if (token && newTokenExposure > maxPerToken) {
     return { valid: false, reason: `Would exceed ${token} limit: $${(newTokenExposure/100).toFixed(2)} > $${(maxPerToken/100).toFixed(2)}` };
   }
+
+  // NEW: Per-market cap — prevents scale-in from accumulating beyond maxPerMarket on a single ticker
+  const maxPerMarket = userConfig?.riskLimits?.maxPerMarket || userConfig?.riskLimits?.maxPerBet || 500;
+  const existingMarketExposure = getExposureForTicker(ticker, userState);
+  const newMarketExposure = existingMarketExposure + betCostCents;
+  if (newMarketExposure > maxPerMarket) {
+    return { valid: false, reason: `Would exceed per-market limit on ${ticker}: $${(newMarketExposure/100).toFixed(2)} > $${(maxPerMarket/100).toFixed(2)}` };
+  }
+
   return { valid: true };
+}
+
+// Get total exposure for a specific ticker (across all bets on that market)
+function getExposureForTicker(ticker, userState = null) {
+  const userBetHistory = userState?.betHistory || betHistory;
+  let exposure = 0;
+  for (const bet of userBetHistory) {
+    if (bet.ticker !== ticker) continue;
+    if (isTickerExpired(bet.ticker)) continue;
+    if (bet.status === 'settled' || bet.status === 'closed') continue;
+    exposure += bet.totalCost || (bet.count * bet.price) || 0;
+  }
+  // Also check Kalshi positions
+  const userPortfolio = userState?.portfolio || portfolio;
+  if (userPortfolio.positions && Array.isArray(userPortfolio.positions)) {
+    for (const pos of userPortfolio.positions) {
+      if (pos.ticker !== ticker) continue;
+      if (isTickerExpired(pos.ticker)) continue;
+      // Only add if not already counted from betHistory
+      const alreadyCounted = userBetHistory.some(b => b.ticker === ticker && b.status !== 'settled' && b.status !== 'closed');
+      if (!alreadyCounted) {
+        const contracts = Math.abs(pos.position || 0);
+        let avgPrice = pos.average_price || 0;
+        if (avgPrice > 0 && avgPrice <= 1) avgPrice = Math.round(avgPrice * 100);
+        exposure += pos.market_exposure || (contracts * avgPrice) || 0;
+      }
+    }
+  }
+  return exposure;
+}
+
+// Daily loss tracking — rolling 24-hour P&L
+const dailyLossTracker = new Map(); // userId -> { losses: [{amount, timestamp}], startBalance: number }
+
+function trackDailyLoss(userId, lossCents) {
+  const key = userId || 'default';
+  if (!dailyLossTracker.has(key)) {
+    dailyLossTracker.set(key, { losses: [], startBalance: 0 });
+  }
+  const tracker = dailyLossTracker.get(key);
+  tracker.losses.push({ amount: lossCents, timestamp: Date.now() });
+  // Clean entries older than 24 hours
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  tracker.losses = tracker.losses.filter(l => l.timestamp > cutoff);
+}
+
+function getDailyLossCents(userId) {
+  const key = userId || 'default';
+  const tracker = dailyLossTracker.get(key);
+  if (!tracker) return 0;
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  return tracker.losses
+    .filter(l => l.timestamp > cutoff)
+    .reduce((sum, l) => sum + l.amount, 0);
+}
+
+function shouldStopForDailyLoss(userId, userConfig) {
+  const cfg = userConfig || config;
+  const limitPct = cfg.dailyLossLimitPct || 30;
+  const bankroll = cfg.bankroll || 1000;
+  const maxLossCents = Math.round(bankroll * (limitPct / 100));
+  const currentLoss = getDailyLossCents(userId);
+  if (currentLoss >= maxLossCents) {
+    return { stop: true, reason: `Daily loss limit hit: lost $${(currentLoss/100).toFixed(2)} (${limitPct}% of $${(bankroll/100).toFixed(2)} bankroll)` };
+  }
+  return { stop: false, currentLoss, maxLoss: maxLossCents };
+}
+
+function isBankrollTooLow(userConfig) {
+  const cfg = userConfig || config;
+  const minBankroll = cfg.minBankrollCents || 200;
+  const bankroll = cfg.bankroll || 0;
+  return bankroll < minBankroll;
 }
 
 // Get remaining budget for a specific token
@@ -5917,6 +6008,14 @@ app.post('/api/bet', async (req, res) => {
     const userPortfolio = req.userState?.portfolio || portfolio;
     const userBetHistory = req.userState?.betHistory || betHistory;
 
+    // SAFETY: Bankroll floor check
+    if (isBankrollTooLow(userConfig)) {
+      return res.status(400).json({
+        success: false,
+        error: `Balance too low ($${((userConfig.bankroll || 0)/100).toFixed(2)}). Minimum $${((userConfig.minBankrollCents || 200)/100).toFixed(2)} required.`
+      });
+    }
+
     // CRITICAL: Refresh positions from Kalshi FIRST to get accurate risk
     if (userConfig.isAuthenticated) {
       try {
@@ -6272,6 +6371,25 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     const userPortfolio = req.userState?.portfolio || portfolio;
     const userBetHistory = req.userState?.betHistory || betHistory;
 
+    // SAFETY: Bankroll floor check
+    if (isBankrollTooLow(userConfig)) {
+      return res.json({
+        success: true,
+        message: `Balance too low ($${((userConfig.bankroll || 0)/100).toFixed(2)}). Minimum $${((userConfig.minBankrollCents || 200)/100).toFixed(2)} required.`,
+        bet: null
+      });
+    }
+
+    // SAFETY: Daily loss limit check
+    const dailyLossCheck = shouldStopForDailyLoss(req.userId, userConfig);
+    if (dailyLossCheck.stop) {
+      return res.json({
+        success: true,
+        message: dailyLossCheck.reason,
+        bet: null
+      });
+    }
+
     // CRITICAL: Refresh positions from Kalshi FIRST to get accurate risk
     if (userConfig.isAuthenticated) {
       try {
@@ -6352,7 +6470,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       });
     }
     const category = best.marketCategory || 'crypto';
-    const maxPerBet = getMaxPerBet(poolName === 'HOURLY' ? 'hourly' : 'other', userConfig);
+    const maxPerBet = getMaxPerBet(poolName === 'hourly' ? 'hourly' : 'other', userConfig);
     const remainingTokenBudget = getRemainingTokenBudget(best.ticker, best.assetType || best.cryptoType, req.userState, userConfig);
     console.log(`Auto-bet found [${category}]: ${best.title} | Win prob: ${best.winProbability}% | Side: ${best.betSide}`);
 
@@ -6664,6 +6782,36 @@ async function runAutoBet(userId = null) {
 
     console.log('\n🤖 ========== AUTO-BET SCAN ==========');
     if (userId) console.log(`   User: ${userId}`);
+
+    // SAFETY CHECK 1: Bankroll floor — don't bet if balance too low
+    if (isBankrollTooLow(userConfig)) {
+      const minBankroll = userConfig.minBankrollCents || 200;
+      console.log(`🛑 BANKROLL FLOOR: Balance $${((userConfig.bankroll || 0)/100).toFixed(2)} < minimum $${(minBankroll/100).toFixed(2)} — auto-bet paused`);
+      lastScanStatus = {
+        ...lastScanStatus,
+        timestamp: new Date().toISOString(),
+        status: 'bankroll_floor',
+        statusMessage: `Balance too low ($${((userConfig.bankroll || 0)/100).toFixed(2)} < $${(minBankroll/100).toFixed(2)} min)`,
+        blockedReasons: ['Bankroll below minimum floor']
+      };
+      console.log('========================================\n');
+      return;
+    }
+
+    // SAFETY CHECK 2: Daily loss limit — stop if lost too much in rolling 24 hours
+    const dailyLossCheck = shouldStopForDailyLoss(userId, userConfig);
+    if (dailyLossCheck.stop) {
+      console.log(`🛑 DAILY LOSS LIMIT: ${dailyLossCheck.reason}`);
+      lastScanStatus = {
+        ...lastScanStatus,
+        timestamp: new Date().toISOString(),
+        status: 'daily_loss_limit',
+        statusMessage: dailyLossCheck.reason,
+        blockedReasons: [dailyLossCheck.reason]
+      };
+      console.log('========================================\n');
+      return;
+    }
 
     // Reset scan status
     lastScanStatus = {
@@ -7046,36 +7194,39 @@ async function runAutoBet(userId = null) {
 
     const priceCents = Math.round(best.betPrice * 100);
 
-    // KELLY CRITERION POSITION SIZING
-    // Bet size = (edge% / 100) × bankroll × fraction (0.25 = quarter Kelly for safety)
-    // This sizes bets proportionally to edge - bigger edge = bigger bet
-    const kellyFraction = 0.25; // Conservative: 1/4 Kelly
-    const bankrollCents = userConfig.bankroll ?? 1000; // BUG FIX: use ?? to allow bankroll=0
-    const edgeDecimal = (best.edge || 5) / 100; // Convert edge% to decimal
+    // KELLY CRITERION POSITION SIZING (CONSERVATIVE)
+    // Reduced to 1/8 Kelly and hard-capped at 10% of bankroll to prevent overbet
+    const kellyFraction = 0.125; // Very conservative: 1/8 Kelly (was 1/4)
+    const bankrollCents = userConfig.bankroll ?? 1000;
     const winProb = (best.winProbability || 60) / 100;
 
-    // Kelly formula: f* = (bp - q) / b where b = odds, p = win prob, q = lose prob
-    // For binary options: b = (1 - price) / price
     const priceDecimal = priceCents / 100;
 
-    // BUG FIX: Guard against division by zero at extreme prices
+    // Guard against extreme prices
     if (priceDecimal <= 0.01 || priceDecimal >= 0.99) {
       console.log(`[KELLY] Skipping extreme price ${priceCents}¢ - too risky`);
-      return { betAmount: 100, method: 'minimum_extreme_price' }; // Return minimum bet
+      lastScanStatus.status = 'price_extreme';
+      lastScanStatus.statusMessage = `Price ${priceCents}¢ too extreme`;
+      console.log('========================================\n');
+      return;
     }
 
-    // BUG FIX: Verify positive edge before Kelly calculation
+    // Verify positive edge before Kelly
     if (winProb <= priceDecimal) {
       console.log(`[KELLY] No edge: winProb ${(winProb*100).toFixed(1)}% <= price ${priceCents}¢`);
-      return { betAmount: 100, method: 'minimum_no_edge' }; // Return minimum bet
+      lastScanStatus.status = 'no_edge';
+      lastScanStatus.statusMessage = `No edge: ${(winProb*100).toFixed(0)}% <= ${priceCents}¢`;
+      console.log('========================================\n');
+      return;
     }
 
     const oddsRatio = (1 - priceDecimal) / priceDecimal;
     const kellyOptimal = ((oddsRatio * winProb) - (1 - winProb)) / oddsRatio;
 
-    // Apply fractional Kelly with floor/ceiling
-    // BUG FIX: Removed signal multiplier - Kelly already factors in edge optimally
+    // Apply fractional Kelly with HARD 10% bankroll cap
     let kellyBetCents = Math.round(bankrollCents * Math.max(0, kellyOptimal) * kellyFraction);
+    const maxBankrollPct = Math.round(bankrollCents * 0.10); // Never bet more than 10% of bankroll
+    kellyBetCents = Math.min(kellyBetCents, maxBankrollPct);
 
     // Apply min/max constraints: minimum $1, maximum from hard cap
     const MIN_BET_CENTS = 100; // $1 minimum
@@ -7666,15 +7817,21 @@ function shouldSitOut(tables, token = null) {
   const now = Date.now();
   const oneHourAgo = now - 60 * 60 * 1000;
 
-  // Clean up old timestamps (keep for tracking, but no longer rate limit)
+  // Clean up old timestamps and enforce hourly rate limit
   empiricalBetTracking.recentBetsThisHour = empiricalBetTracking.recentBetsThisHour
     .filter(ts => ts > oneHourAgo);
 
-  // Token-specific rate limiting (diversification - keep this)
+  // HOURLY RATE LIMIT: prevent runaway betting
+  const maxPerHour = rules?.maxBetsPerHour || 4;
+  if (empiricalBetTracking.recentBetsThisHour.length >= maxPerHour) {
+    reasons.push(`Hourly limit: ${empiricalBetTracking.recentBetsThisHour.length}/${maxPerHour} bets this hour`);
+  }
+
+  // Token-specific rate limiting (diversification)
   if (token) {
     const tokenBets = empiricalBetTracking.betsByToken.get(token) || 0;
-    if (tokenBets >= (rules?.maxBetsPerToken || 3)) {
-      reasons.push(`Token limit: ${tokenBets}/${rules?.maxBetsPerToken || 3} ${token} bets this hour`);
+    if (tokenBets >= (rules?.maxBetsPerToken || 2)) {
+      reasons.push(`Token limit: ${tokenBets}/${rules?.maxBetsPerToken || 2} ${token} bets this hour`);
     }
   }
 
