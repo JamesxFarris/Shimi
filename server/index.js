@@ -4004,12 +4004,22 @@ async function evaluateTakeProfit(position, userConfig = null) {
   let currentBid = side === 'yes' ? orderbook.bestYesBid : orderbook.bestNoBid;
   const spread = side === 'yes' ? orderbook.yesSpread : orderbook.noSpread;
 
-  // CRITICAL FIX: If no bid exists, use 1¢ as emergency exit price
-  // This allows stop-loss to trigger even when market has no buyers
-  // Getting 1¢ is better than $0 when market expires worthless
+  // If no bid exists on our side, infer price from opposite side
   if (!currentBid || currentBid <= 0) {
-    console.log(`[StopLoss] ${ticker}: NO BID in orderbook! Using emergency price of 1¢`);
-    currentBid = 1; // Minimum price - at least try to exit
+    const oppositeAsk = side === 'yes' ? orderbook.bestNoAsk : orderbook.bestYesAsk;
+    const oppositeBid = side === 'yes' ? orderbook.bestNoBid : orderbook.bestYesBid;
+    if (oppositeAsk && oppositeAsk > 0) {
+      currentBid = 100 - oppositeAsk;
+      console.log(`[StopLoss] ${ticker}: No ${side} bid — inferred ${currentBid}¢ from opposite ask (${oppositeAsk}¢)`);
+    } else if (oppositeBid && oppositeBid > 0) {
+      currentBid = 100 - oppositeBid;
+      console.log(`[StopLoss] ${ticker}: No ${side} bid — inferred ${currentBid}¢ from opposite bid (${oppositeBid}¢)`);
+    } else {
+      console.log(`[StopLoss] ${ticker}: No bids on either side — skipping (no liquidity)`);
+      return { shouldExit: false, reason: 'No liquidity — no bids on either side of orderbook' };
+    }
+    // Clamp inferred price to at least 1¢
+    if (currentBid < 1) currentBid = 1;
   }
 
   // Calculate current profit WITH KALSHI FEES
@@ -4042,7 +4052,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
     || cfg.limitOrderSettings?.stopLoss?.threshold
     || -40;
 
-  const stopLossEnabled = cfg.activeMonitoring?.stopLossEnabled !== false;
+  const stopLossEnabled = cfg.activeMonitoring?.stopLossEnabled === true;
 
   if (stopLossEnabled) {
     console.log(`[StopLoss] ${ticker}: Checking ${profitPercent.toFixed(1)}% vs threshold ${stopLossThreshold}%`);
@@ -4366,8 +4376,8 @@ async function executeTakeProfitExit(position, analysis, userConfig = null, user
   const cfg = userConfig || config;
   const settings = cfg.takeProfitSettings || {};
 
-  // Only bypass logOnly mode for stop-loss if stop-loss is enabled
-  const stopLossEnabled = cfg.activeMonitoring?.stopLossEnabled !== false;
+  // Only bypass logOnly mode for stop-loss if stop-loss is explicitly enabled
+  const stopLossEnabled = cfg.activeMonitoring?.stopLossEnabled === true;
   const isStopLoss = stopLossEnabled && (analysis.stopLossTriggered || analysis.profitPercent < 0);
 
   // Safety check - don't execute if logOnly mode (but ALWAYS execute stop-loss)
@@ -4394,6 +4404,16 @@ async function executeTakeProfitExit(position, analysis, userConfig = null, user
 
     // Place sell order at current bid (or slightly below for faster fill)
     const sellPrice = Math.max(1, analysis.currentBid - 1); // 1 cent below bid for faster fill
+
+    // SAFETY: Refuse to sell at catastrophically low prices (e.g., empty orderbook → 1¢)
+    // Exception: allow if < 1 minute to expiry (position genuinely expiring worthless)
+    const minSellPrice = Math.max(1, Math.round(analysis.avgCost * 0.3));
+    const nearExpiry = analysis.timeRemaining != null && analysis.timeRemaining < 60 * 1000;
+    if (sellPrice < minSellPrice && !nearExpiry) {
+      console.log(`\n⚠️ [SELL GUARD] Refusing to sell ${ticker} at ${sellPrice}¢ — below 30% of entry (${analysis.avgCost}¢). Min sell: ${minSellPrice}¢`);
+      console.log(`   This likely means the orderbook is empty/thin. Position may still be worth more.`);
+      return { executed: false, reason: `Sell price ${sellPrice}¢ too far below entry ${analysis.avgCost}¢ (floor: ${minSellPrice}¢)` };
+    }
 
     const orderRequest = {
       ticker,
@@ -4469,7 +4489,7 @@ async function scanTakeProfitOpportunities(userConfig = null, userPortfolio = nu
 
   // If take-profit is disabled AND stop-loss is disabled, nothing to do
   const takeProfitEnabled = settings.enabled !== false; // default true for backwards compat
-  const stopLossEnabled = cfg.activeMonitoring?.stopLossEnabled !== false;
+  const stopLossEnabled = cfg.activeMonitoring?.stopLossEnabled === true;
   if (!takeProfitEnabled && !stopLossEnabled) {
     return [];
   }
@@ -7199,7 +7219,7 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
     userAutoBetIntervals.set(req.userId, setInterval(() => runAutoBet(req.userId), intervalSeconds * 1000));
 
     // Start take-profit scanning to monitor positions for exit opportunities
-    if (userConfig.takeProfitSettings?.enabled !== false || userConfig.activeMonitoring?.stopLossEnabled !== false) {
+    if (userConfig.takeProfitSettings?.enabled === true || userConfig.activeMonitoring?.stopLossEnabled === true) {
       startTakeProfitScanning(15000, req.userId, userConfig, userPortfolio);
     }
 
@@ -7250,7 +7270,7 @@ app.get('/api/auto-bet/status', (req, res) => {
 
     // Also restore take-profit scanning (per-user)
     if (!userTakeProfitIntervals.has(req.userId) &&
-        (userConfig.takeProfitSettings?.enabled !== false || userConfig.activeMonitoring?.stopLossEnabled !== false)) {
+        (userConfig.takeProfitSettings?.enabled === true || userConfig.activeMonitoring?.stopLossEnabled === true)) {
       startTakeProfitScanning(15000, req.userId, userConfig, userPortfolio);
     }
   }
@@ -9899,7 +9919,7 @@ app.get('/api/portfolio', async (req, res) => {
 
       // Start position protection monitoring if user has open positions
       if (req.userId && userPortfolio.positions?.length > 0 && !userTakeProfitIntervals.has(req.userId) &&
-          (userConfig.takeProfitSettings?.enabled !== false || userConfig.activeMonitoring?.stopLossEnabled !== false)) {
+          (userConfig.takeProfitSettings?.enabled === true || userConfig.activeMonitoring?.stopLossEnabled === true)) {
         console.log(`🛡️ Starting position protection for user ${req.userId} (${userPortfolio.positions.length} open positions)`);
         startTakeProfitScanning(15000, req.userId, userConfig, userPortfolio);
       }
