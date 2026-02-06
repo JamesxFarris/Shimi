@@ -240,9 +240,9 @@ const DEFAULT_EMPIRICAL_TABLES = {
 
   // Selectivity rules (learned thresholds for when to bet)
   selectivityRules: {
-    minSignalStrength: 70,      // 0-100 score required to bet
+    minSignalStrength: 60,      // 0-100 score required to bet
     minEmpiricalWinRate: 62,    // Minimum win rate from lookup tables
-    minEdgeAfterFees: 5,        // 5% minimum edge after all fees
+    minEdgeAfterFees: 3,        // 3% minimum edge after all fees
     maxBetsPerHour: 6,          // Rate limiting for discipline
     maxBetsPerToken: 3,         // Per-token concentration limit
     requireRegimeCheck: true    // Must pass volatility regime check
@@ -6782,7 +6782,7 @@ async function runAutoBet(userId = null) {
     }
 
     // Show markets that almost qualified (signal 60-70)
-    const minSignal = learnedParams.selectivityRules?.minSignalStrength || 70;
+    const minSignal = learnedParams.selectivityRules?.minSignalStrength || 60;
     const almostQualified = allOpps.filter(m => {
       const sig = m.signalStrength || 0;
       return sig >= minSignal - 15 && sig < minSignal && m.edge > 0;
@@ -7834,11 +7834,11 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
   }
 
-  // Account for fill slippage: we may pay up to N cents above ask to ensure fill
-  // Each cent of slippage = 1 percentage point reduction in edge (prices are cents out of 100)
+  // Account for fill slippage: convert cents to % of market price (same units as feePct/spreadPenalty)
   const slippageCents = userRules.fillSlippageCents ?? 3;
+  const slippagePct = (slippageCents / (marketPrice * 100)) * 100;
   const grossEdge = adjustedWinRate - marketImpliedProb;
-  const netEdge = grossEdge - feePct - spreadPenalty - slippageCents;
+  const netEdge = grossEdge - feePct - spreadPenalty - slippagePct;
 
   // Calculate signal strength
   const signalStrength = calculateSignalStrength(
@@ -7856,16 +7856,16 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // Build rejection reasons
   const reasons = [];
 
-  if (signalStrength < (rules.minSignalStrength || 70)) {
-    reasons.push(`Signal strength ${signalStrength} < ${rules.minSignalStrength || 70}`);
+  if (signalStrength < (rules.minSignalStrength || 60)) {
+    reasons.push(`Signal strength ${signalStrength} < ${rules.minSignalStrength || 60}`);
   }
 
   if (adjustedWinRate < (rules.minEmpiricalWinRate || 62)) {
     reasons.push(`Win rate ${adjustedWinRate.toFixed(1)}% < ${rules.minEmpiricalWinRate || 62}%`);
   }
 
-  if (netEdge < (rules.minEdgeAfterFees || 5)) {
-    reasons.push(`Edge ${netEdge.toFixed(1)}% < ${rules.minEdgeAfterFees || 5}%`);
+  if (netEdge < (rules.minEdgeAfterFees || 3)) {
+    reasons.push(`Edge ${netEdge.toFixed(1)}% < ${rules.minEdgeAfterFees || 3}%`);
   }
 
   if (!withinDistanceWindow) {
@@ -7881,7 +7881,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   }
 
   // Final decision
-  const shouldBet = reasons.length === 0 && signalStrength >= (rules.minSignalStrength || 70);
+  const shouldBet = reasons.length === 0 && signalStrength >= (rules.minSignalStrength || 60);
 
   return {
     shouldBet,
