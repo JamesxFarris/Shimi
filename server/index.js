@@ -667,18 +667,16 @@ function buildMLTrainingData(settlements) {
   for (const s of settlements) {
     if (!s.token || !s.strikePrice || !s.result) continue;
 
+    // Skip samples without betting-time data — using settlement price causes data leakage
+    if (s.bettingTimePct === undefined) continue;
+
     // Calculate distance
-    const usesBettingTime = s.bettingTimePct !== undefined;
-    const absDistance = usesBettingTime
-      ? Math.abs(s.bettingTimePct)
-      : Math.abs((s.settlementPrice - s.strikePrice) / s.strikePrice * 100);
+    const absDistance = Math.abs(s.bettingTimePct);
 
     if (absDistance > 10) continue; // Skip outliers
 
     // Determine the favored side at betting time
-    const wasAboveStrike = usesBettingTime
-      ? s.bettingTimePct > 0
-      : s.settlementPrice > s.strikePrice;
+    const wasAboveStrike = s.bettingTimePct > 0;
 
     const token = s.token;
     const side = wasAboveStrike ? 'YES' : 'NO'; // Favored side
@@ -1000,6 +998,12 @@ async function getUserStateAsync(userId) {
               ...DEFAULT_CONFIG.riskLimits.other,
               ...(row.config.riskLimits?.other || {})
             }
+          };
+        }
+        if (row.config?.activeMonitoring) {
+          loadedConfig.activeMonitoring = {
+            ...DEFAULT_CONFIG.activeMonitoring,
+            ...row.config.activeMonitoring,
           };
         }
         userStates.set(userId, {
@@ -1527,10 +1531,12 @@ async function loadCredentialsFromEnv() {
 const recentBets = new Map();
 
 // Check if we should allow a scale-in bet on this market
-function shouldAllowScaleIn(ticker, currentProbability, currentSide) {
-  if (!config.scaleIn.enabled) return false;
+function shouldAllowScaleIn(ticker, currentProbability, currentSide, userConfig, userId) {
+  const cfg = userConfig || config;
+  if (!cfg.scaleIn.enabled) return false;
 
-  const existing = recentBets.get(ticker);
+  const betKey = `${userId || 'default'}:${ticker}`;
+  const existing = recentBets.get(betKey);
   if (!existing) return false; // No existing bet, this isn't a scale-in
 
   // CRITICAL: Reject if bet side flipped (YES->NO or NO->YES)
@@ -1544,24 +1550,24 @@ function shouldAllowScaleIn(ticker, currentProbability, currentSide) {
   const timeSinceLastBet = now - existing.timestamp;
 
   // Check time between bets
-  if (timeSinceLastBet < config.scaleIn.minTimeBetweenBets) {
+  if (timeSinceLastBet < cfg.scaleIn.minTimeBetweenBets) {
     return false;
   }
 
   // Check max bets per market
-  if ((existing.betCount || 1) >= config.scaleIn.maxBetsPerMarket) {
+  if ((existing.betCount || 1) >= cfg.scaleIn.maxBetsPerMarket) {
     return false;
   }
 
   // Check probability improvement
   const probIncrease = currentProbability - (existing.probability || 0);
-  if (probIncrease < config.scaleIn.minProbabilityIncrease) {
+  if (probIncrease < cfg.scaleIn.minProbabilityIncrease) {
     return false;
   }
 
   console.log(`📈 SCALE-IN OPPORTUNITY: ${ticker}`);
   console.log(`   Previous prob: ${existing.probability}% → Current: ${currentProbability}% (+${probIncrease.toFixed(1)}%)`);
-  console.log(`   Bet #${(existing.betCount || 1) + 1} of max ${config.scaleIn.maxBetsPerMarket}`);
+  console.log(`   Bet #${(existing.betCount || 1) + 1} of max ${cfg.scaleIn.maxBetsPerMarket}`);
 
   return true;
 }
@@ -5371,6 +5377,7 @@ app.get('/api/opportunities/all', async (req, res) => {
         // Per-token limit
         maxPerToken: getMaxPerToken(userConfig),
         byToken: getExposureByToken(req.userState),
+        positionCount: (userPortfolio.positions || []).length,
         // Hourly pool
         hourly: {
           current: riskByType.hourly,
@@ -6197,9 +6204,10 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
         if (winProb < minAutoProb) return false;
 
         // Check if we already bet on this market
-        if (recentBets.has(m.ticker)) {
+        const betKey = `${req.userId || 'default'}:${m.ticker}`;
+        if (recentBets.has(betKey)) {
           // Allow scale-in if probability improved significantly AND same side
-          if (shouldAllowScaleIn(m.ticker, winProb, m.betSide)) {
+          if (shouldAllowScaleIn(m.ticker, winProb, m.betSide, userConfig, req.userId)) {
             m.isScaleIn = true; // Mark as scale-in opportunity
           } else {
             return false; // Skip - already bet and not a valid scale-in
@@ -6287,7 +6295,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     const totalCost = count * priceCents;
 
     // HARD LIMIT CHECK: Validate bet won't exceed ANY limit
-    const validation = validateBetWontExceedLimits(best.ticker, totalCost, req.userState, req.userConfig);
+    const validation = validateBetWontExceedLimits(best.ticker, totalCost, req.userState, req.userState?.config);
     if (!validation.valid) {
       console.log(`🚫 Bet blocked: ${validation.reason}`);
       return res.json({
@@ -6299,7 +6307,8 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     }
 
     // Get existing bet info for scale-in tracking
-    const existingBet = recentBets.get(best.ticker);
+    const autoBetKey = `${req.userId || 'default'}:${best.ticker}`;
+    const existingBet = recentBets.get(autoBetKey);
     const newBetCount = best.isScaleIn ? ((existingBet?.betCount || 1) + 1) : 1;
 
     const betRecord = {
@@ -6324,7 +6333,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     };
 
     // Mark this market as bet on (or update for scale-in)
-    recentBets.set(best.ticker, {
+    recentBets.set(autoBetKey, {
       timestamp: now,
       side: best.betSide,
       probability: parseFloat(best.winProbability),
@@ -6408,7 +6417,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
           }
         }
         // Remove from recent bets so we can try again
-        recentBets.delete(best.ticker);
+        recentBets.delete(autoBetKey);
         return res.status(400).json({
           success: false,
           error: `Order not filled. Status: ${status}. No liquidity at current price.`
@@ -6487,7 +6496,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     } catch (orderError) {
       console.error('Kalshi auto-bet order error:', orderError.message);
       // Remove from recent bets on error so we can try again
-      recentBets.delete(best.ticker);
+      recentBets.delete(autoBetKey);
       res.status(400).json({ success: false, error: `Kalshi: ${orderError.message}` });
     }
 
@@ -6708,10 +6717,11 @@ async function runAutoBet(userId = null) {
         }
 
         // Check if we already bet on this market
-        if (recentBets.has(m.ticker)) {
+        const betKey = `${userId || 'default'}:${m.ticker}`;
+        if (recentBets.has(betKey)) {
           // Allow scale-in if win rate improved significantly AND same side
           const currentWinRate = parseFloat(m.winProbability) || 0;
-          if (shouldAllowScaleIn(m.ticker, currentWinRate, m.betSide || m.side)) {
+          if (shouldAllowScaleIn(m.ticker, currentWinRate, m.betSide || m.side, userConfig, userId)) {
             m.isScaleIn = true; // Mark as scale-in opportunity
           } else {
             return false; // Skip - already bet and not a valid scale-in
@@ -6823,7 +6833,7 @@ async function runAutoBet(userId = null) {
     console.log(`   Momentum: ${momentum.direction} (5m: ${(momentum.m5*100).toFixed(2)}%, 15m: ${(momentum.m15*100).toFixed(2)}%)`);
 
     // Apply momentum adjustment to edge
-    const momentumSettings = config.momentumSettings || {};
+    const momentumSettings = userConfig.momentumSettings || {};
     if (momentumSettings.enabled !== false) {
       if (momentumAligned && momentum.strength === 'strong') {
         console.log(`   ✅ Momentum ALIGNED with bet (+${momentumSettings.alignmentBonus || 2}% edge bonus)`);
@@ -6960,7 +6970,8 @@ async function runAutoBet(userId = null) {
     }
 
     // Get existing bet info for scale-in tracking
-    const existingBet = recentBets.get(best.ticker);
+    const runBetKey = `${userId || 'default'}:${best.ticker}`;
+    const existingBet = recentBets.get(runBetKey);
     const newBetCount = best.isScaleIn ? ((existingBet?.betCount || 1) + 1) : 1;
 
     const betRecord = {
@@ -6983,7 +6994,7 @@ async function runAutoBet(userId = null) {
     };
 
     // Mark this market as bet on BEFORE placing the bet (or update for scale-in)
-    recentBets.set(best.ticker, {
+    recentBets.set(runBetKey, {
       timestamp: now,
       side: best.betSide,
       probability: parseFloat(best.winProbability),
@@ -7073,7 +7084,7 @@ async function runAutoBet(userId = null) {
     const order = orderResponse.order;
     if (!order) {
       console.error('❌ No order in response');
-      recentBets.delete(best.ticker);
+      recentBets.delete(runBetKey);
       console.log('========================================\n');
       return;
     }
@@ -7093,7 +7104,7 @@ async function runAutoBet(userId = null) {
         }
       }
       console.error(`❌ Order not filled. Status: ${status}. No liquidity.`);
-      recentBets.delete(best.ticker);
+      recentBets.delete(runBetKey);
       console.log('========================================\n');
       return;
     }
@@ -7799,7 +7810,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     if (spread && spread > 0 && spread < 50) {
       // Spread is in cents - convert to % of price for edge calculation
       // Half spread paid on entry. Example: 4¢ spread at 50¢ = (4/2)/50 * 100 = 4%
-      spreadPenalty = ((spread / 2) / marketPrice) * 100;
+      spreadPenalty = (spread / 2) / marketPrice;
     }
   }
 
@@ -9180,7 +9191,7 @@ app.post('/api/historical/snapshot', async (req, res) => {
     let snapshotCount = 0;
 
     for (const token of tokens) {
-      const price = latestPrices[token];
+      const price = cryptoPrices[token]?.price;
       if (!price) continue;
 
       // Get active markets for this token
@@ -10473,7 +10484,7 @@ initDatabase().then(() => {
       let snapshotCount = 0;
 
       for (const token of tokens) {
-        const price = latestPrices[token];
+        const price = cryptoPrices[token]?.price;
         if (!price) continue;
 
         // Get active markets for this token (use cached if available to reduce API calls)
@@ -10555,3 +10566,26 @@ initDatabase().then(() => {
   console.error('❌ Failed to initialize database:', err);
   process.exit(1);
 });
+
+// Graceful shutdown — flush debounced writes before exit
+function gracefulShutdown(signal) {
+  console.log(`\n🛑 ${signal} received — flushing data before exit...`);
+  // Flush all pending debounced writes immediately
+  for (const [key, timer] of Object.entries(_debouncedTimers)) {
+    if (timer) {
+      clearTimeout(timer);
+      _debouncedTimers[key] = null;
+    }
+  }
+  // Force synchronous saves
+  try { saveTakeProfitHistory(); } catch (e) {}
+  try { savePerformanceData(); } catch (e) {}
+  try { savePriceSnapshots(); } catch (e) {}
+  // Give writes a moment to complete
+  setTimeout(() => {
+    console.log('👋 Goodbye!');
+    process.exit(0);
+  }, 500);
+}
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));

@@ -279,7 +279,7 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
         {/* Edge */}
         <div className={`stat-row edge ${opp.edge >= 0 ? 'positive' : 'negative'}`}>
           <span className="stat-label">Your Edge</span>
-          <span className="stat-value">{opp.edge >= 0 ? '+' : ''}{formatPercent(opp.edge || 0)}%</span>
+          <span className="stat-value">{opp.edge >= 0 ? '+' : ''}{formatPercent(opp.edge || 0)}</span>
         </div>
 
         {/* Price vs Strike */}
@@ -490,7 +490,6 @@ function App() {
   const tabRef = useRef('dashboard') // Ref to avoid stale closure in intervals
   const [opportunities, setOpportunities] = useState([])
   const [prices, setPrices] = useState({})
-  const [prevPrices, setPrevPrices] = useState({})
   const [priceLastUpdated, setPriceLastUpdated] = useState(null)
   const [balance, setBalance] = useState(null) // null = loading
   const [balanceLoading, setBalanceLoading] = useState(true)
@@ -564,13 +563,6 @@ function App() {
     currentDollars: '0.00',
     maxDollars: '15.00'
   })
-  const [portfolioWorth, setPortfolioWorth] = useState({
-    balance: 0,
-    positionValue: '0.00',
-    portfolioWorth: '0.00',
-    projectedMax: '0.00',
-    positionCount: 0
-  })
   const [riskSettings, setRiskSettings] = useState({
     maxPerBet: 500,
     maxPerToken: 500,
@@ -595,7 +587,7 @@ function App() {
     stopLoss: { enabled: true, threshold: -40 },
     takeProfit: { enabled: false, threshold: 25 }
   })
-  const [settingsSaved, setSettingsSaved] = useState(false)
+  const [settingsSavedSection, setSettingsSavedSection] = useState(null)
   const [settingsSaving, setSettingsSaving] = useState(false)
   // Model monitoring state
   const [prospectiveData, setProspectiveData] = useState(null)
@@ -607,31 +599,6 @@ function App() {
   const [performance, setPerformance] = useState(null)
 
   // Fetch prices directly (faster updates)
-  const fetchPrices = useCallback(async () => {
-    try {
-      const res = await authFetch(`${API_BASE}/api/crypto/prices`)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
-
-      if (data.success && data.prices) {
-        // Extract just the price values
-        const newPrices = {}
-        for (const [token, info] of Object.entries(data.prices)) {
-          newPrices[token] = info.price
-        }
-
-        // Store previous prices before updating (use functional update to avoid dependency)
-        setPrices(currentPrices => {
-          setPrevPrices(currentPrices)
-          return newPrices
-        })
-        setPriceLastUpdated(Date.now())
-      }
-    } catch (err) {
-      console.error('Price fetch error:', err)
-    }
-  }, []) // No dependencies - prevents infinite loop
-
   // Fetch opportunities (now uses unified endpoint for all market types)
   // Always fetch ALL markets to show cards even without edge
   // IMPORTANT: Don't clear cards when API returns empty - keep last known markets visible
@@ -733,20 +700,6 @@ function App() {
     }
   }, [])
 
-  // Fetch portfolio worth (projected value based on current market prices)
-  const fetchPortfolioWorth = useCallback(async () => {
-    try {
-      const res = await authFetch(`${API_BASE}/api/portfolio/worth`)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
-      if (data.success) {
-        setPortfolioWorth(data)
-      }
-    } catch (err) {
-      console.error('Portfolio worth fetch error:', err)
-    }
-  }, [])
-
   // Fetch performance data
   const fetchPerformance = useCallback(async () => {
     try {
@@ -797,18 +750,25 @@ function App() {
     fetchTakeProfitSettings()  // Get take-profit settings
     fetchLimitOrderSettings()  // Get limit order settings (stop-loss/take-profit via Kalshi)
     fetchRiskSettings()     // Get saved risk settings
+    fetchScaleInSettings()  // Get saved scale-in settings
     fetchModelMonitoring()  // Get prospective data, take-profit history, selectivity rules
     checkAuth()
 
+    // Track whether fast polling is active to avoid double-fetching opportunities
+    let fastPollingActive = false
+
     // Merged data polling: opportunities + portfolio every 10 seconds (was 2 separate intervals)
     const dataInterval = setInterval(() => {
-      fetchOpportunities()
+      if (!fastPollingActive) {
+        fetchOpportunities()
+      }
       fetchPortfolio()
     }, 10000)
 
     // Faster exposure updates: poll every 3 seconds when there are pending bets
     const fastExposureInterval = setInterval(() => {
       const hasPendingBets = betHistoryRef.current.some(b => b.outcome !== 'won' && b.outcome !== 'lost')
+      fastPollingActive = hasPendingBets
       if (hasPendingBets) {
         fetchOpportunities()
       }
@@ -1016,6 +976,7 @@ function App() {
 
   // Update limit order settings
   const updateLimitOrderSettings = async (newSettings) => {
+    const prev = limitOrderSettings
     setLimitOrderSettings(newSettings)
     try {
       const res = await authFetch(`${API_BASE}/api/limit-order-settings`, {
@@ -1026,16 +987,18 @@ function App() {
       const data = await res.json()
       if (data.success && data.limitOrderSettings) {
         setLimitOrderSettings(data.limitOrderSettings)
-        setSettingsSaved(true)
-        setTimeout(() => setSettingsSaved(false), 3000)
+        setSettingsSavedSection('limitOrder')
+        setTimeout(() => setSettingsSavedSection(null), 3000)
       }
     } catch (err) {
       console.error('Error saving limit order settings:', err)
+      setLimitOrderSettings(prev)
     }
   }
 
   // Toggle take-profit
   const toggleTakeProfit = async () => {
+    const prev = takeProfitSettings
     const newEnabled = !takeProfitSettings.enabled
     setTakeProfitSettings(prev => ({ ...prev, enabled: newEnabled }))
     try {
@@ -1050,6 +1013,7 @@ function App() {
       }
     } catch (err) {
       console.error('Error toggling take-profit:', err)
+      setTakeProfitSettings(prev)
     }
   }
 
@@ -1090,6 +1054,7 @@ function App() {
 
   // Update selectivity rules (min edge threshold)
   const updateSelectivityRules = async (field, value) => {
+    const prev = selectivityRules
     const newRules = { ...selectivityRules, [field]: value }
     setSelectivityRules(newRules)
     try {
@@ -1101,11 +1066,12 @@ function App() {
       const data = await res.json()
       if (data.success && data.selectivityRules) {
         setSelectivityRules(data.selectivityRules)
-        setSettingsSaved(true)
-        setTimeout(() => setSettingsSaved(false), 3000)
+        setSettingsSavedSection('selectivity')
+        setTimeout(() => setSettingsSavedSection(null), 3000)
       }
     } catch (err) {
       console.error('Error updating selectivity rules:', err)
+      setSelectivityRules(prev)
     }
   }
 
@@ -1161,9 +1127,23 @@ function App() {
     }
   }
 
+  // Fetch scale-in settings from server
+  const fetchScaleInSettings = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/settings/scale-in`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      if (data.success && data.scaleIn) {
+        setScaleInSettings(data.scaleIn)
+      }
+    } catch (err) {
+      console.error('Error fetching scale-in settings:', err)
+    }
+  }
+
   // Update local risk settings state (doesn't save until Save clicked)
   const updateRiskSettings = (field, value) => {
-    setSettingsSaved(false)
+    setSettingsSavedSection(null)
     setRiskSettings(prev => ({
       ...prev,
       [field]: value
@@ -1190,8 +1170,8 @@ function App() {
         setRiskSettings(data.riskLimits)
         // Refresh opportunities to update exposure bar
         await fetchOpportunities()
-        setSettingsSaved(true)
-        setTimeout(() => setSettingsSaved(false), 3000)
+        setSettingsSavedSection('risk')
+        setTimeout(() => setSettingsSavedSection(null), 3000)
       }
     } catch (err) {
       console.error('Error saving risk settings:', err)
@@ -1202,7 +1182,7 @@ function App() {
 
   // Update local scale-in settings state
   const updateScaleInSettings = (field, value) => {
-    setSettingsSaved(false)
+    setSettingsSavedSection(null)
     setScaleInSettings(prev => ({
       ...prev,
       [field]: value
@@ -1220,8 +1200,8 @@ function App() {
       const data = await res.json()
       if (data.success) {
         setScaleInSettings(data.scaleIn)
-        setSettingsSaved(true)
-        setTimeout(() => setSettingsSaved(false), 3000)
+        setSettingsSavedSection('scaleIn')
+        setTimeout(() => setSettingsSavedSection(null), 3000)
       }
     } catch (err) {
       console.error('Error saving scale-in settings:', err)
@@ -1286,7 +1266,7 @@ function App() {
 
   // Calculate stats
   const totalBets = betHistory.length
-  const winningBets = betHistory.filter(b => b.status === 'won').length
+  const winningBets = betHistory.filter(b => b.outcome === 'won').length
   const totalWagered = betHistory.reduce((sum, b) => sum + (b.totalCost || 0), 0) / 100
   const avgEdge = opportunities.length > 0
     ? opportunities.reduce((sum, o) => sum + (o.edge || 0), 0) / opportunities.length
@@ -1452,6 +1432,15 @@ function App() {
         </div>
 
         {/* News Alert Banner - disabled, view in Sentiment tab instead */}
+
+        {/* Error Banner */}
+        {error && (
+          <div className="status-banner error" onClick={() => setError(null)}>
+            <span className="status-icon">✕</span>
+            <span className="status-message">{error}</span>
+            <button className="status-close">×</button>
+          </div>
+        )}
 
         {/* Status Banner */}
         {betStatus && (
@@ -1859,7 +1848,7 @@ function App() {
                     </div>
                     <div className="settings-item">
                       <span className="settings-label">Min Edge</span>
-                      <span className="settings-value">5%</span>
+                      <span className="settings-value">{selectivityRules.minEdgeAfterFees || 5}%</span>
                     </div>
                     <div className="settings-item">
                       <span className="settings-label">Auto-bet Status</span>
@@ -1906,8 +1895,8 @@ function App() {
                       />
                     </div>
                   </div>
-                  <button className={`save-settings-btn ${settingsSaved ? 'saved' : ''}`} onClick={saveRiskSettings}>
-                    {settingsSaved ? '✓ Saved' : 'Save Risk Settings'}
+                  <button className={`save-settings-btn ${settingsSavedSection === 'risk' ? 'saved' : ''}`} onClick={saveRiskSettings}>
+                    {settingsSavedSection === 'risk' ? '✓ Saved' : 'Save Risk Settings'}
                   </button>
                 </div>
 
@@ -1958,8 +1947,8 @@ function App() {
                       />
                     </div>
                   </div>
-                  <button className={`save-settings-btn ${settingsSaved ? 'saved' : ''}`} onClick={saveScaleInSettings}>
-                    {settingsSaved ? '✓ Saved' : 'Save Scale-In Settings'}
+                  <button className={`save-settings-btn ${settingsSavedSection === 'scaleIn' ? 'saved' : ''}`} onClick={saveScaleInSettings}>
+                    {settingsSavedSection === 'scaleIn' ? '✓ Saved' : 'Save Scale-In Settings'}
                   </button>
                 </div>
 
