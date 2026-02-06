@@ -656,6 +656,10 @@ function App() {
         betHistoryRef.current = newHistory // Keep ref in sync
         setBetStats(data.stats || { totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 })
         setIsAuthenticated(!data.simulated)
+        // Update risk/exposure if returned
+        if (data.risk) {
+          setRisk(data.risk)
+        }
         // Track new bets for notification badge using bet IDs
         // Only show badge for NEW bets placed AFTER initial load
         // Using refs to avoid stale closures since this callback has [] deps

@@ -10094,6 +10094,10 @@ app.get('/api/portfolio', async (req, res) => {
         startTakeProfitScanning(15000, req.userId, userConfig, userPortfolio);
       }
 
+      // Calculate risk for response
+      const portfolioRisk = getRiskByType(req.userState);
+      const portfolioMaxTotal = getMaxTotalRisk(userConfig);
+
       res.json({
         success: true,
         simulated: false,
@@ -10105,28 +10109,102 @@ app.get('/api/portfolio', async (req, res) => {
           losses,
           winRate: settled.length > 0 ? ((wins / settled.length) * 100).toFixed(1) : '0',
           totalProfit: totalProfit / 100 // in dollars
+        },
+        risk: {
+          current: portfolioRisk.total,
+          max: portfolioMaxTotal,
+          remaining: Math.max(0, portfolioMaxTotal - portfolioRisk.total),
+          currentDollars: (portfolioRisk.total / 100).toFixed(2),
+          maxDollars: (portfolioMaxTotal / 100).toFixed(2),
+          remainingDollars: (Math.max(0, portfolioMaxTotal - portfolioRisk.total) / 100).toFixed(2),
+          maxPerToken: getMaxPerToken(userConfig),
+          byToken: getExposureByToken(req.userState),
+          positionCount: (userPortfolio.positions || []).length,
+          hourly: {
+            current: portfolioRisk.hourly,
+            max: getMaxRisk('hourly', userConfig),
+            currentDollars: (portfolioRisk.hourly / 100).toFixed(2),
+            maxDollars: (getMaxRisk('hourly', userConfig) / 100).toFixed(2)
+          },
+          other: {
+            current: portfolioRisk.other,
+            max: getMaxRisk('other', userConfig),
+            currentDollars: (portfolioRisk.other / 100).toFixed(2),
+            maxDollars: (getMaxRisk('other', userConfig) / 100).toFixed(2)
+          }
         }
       });
     } else {
       // Return simulated data
+      const simRisk = getRiskByType(req.userState);
+      const simMaxTotal = getMaxTotalRisk(userConfig);
+
       res.json({
         success: true,
         simulated: true,
         balance: userConfig.bankroll / 100,
         betHistory: userBetHistory.slice(0, 20),
-        stats: { totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 }
+        stats: { totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 },
+        risk: {
+          current: simRisk.total,
+          max: simMaxTotal,
+          remaining: Math.max(0, simMaxTotal - simRisk.total),
+          currentDollars: (simRisk.total / 100).toFixed(2),
+          maxDollars: (simMaxTotal / 100).toFixed(2),
+          remainingDollars: (Math.max(0, simMaxTotal - simRisk.total) / 100).toFixed(2),
+          maxPerToken: getMaxPerToken(userConfig),
+          byToken: getExposureByToken(req.userState),
+          positionCount: 0,
+          hourly: {
+            current: simRisk.hourly,
+            max: getMaxRisk('hourly', userConfig),
+            currentDollars: (simRisk.hourly / 100).toFixed(2),
+            maxDollars: (getMaxRisk('hourly', userConfig) / 100).toFixed(2)
+          },
+          other: {
+            current: simRisk.other,
+            max: getMaxRisk('other', userConfig),
+            currentDollars: (simRisk.other / 100).toFixed(2),
+            maxDollars: (getMaxRisk('other', userConfig) / 100).toFixed(2)
+          }
+        }
       });
     }
   } catch (error) {
     console.error('Portfolio error:', error.message);
     const userConfig = req.userState?.config || config;
     const userBetHistory = req.userState?.betHistory || betHistory;
+    const errRisk = getRiskByType(req.userState);
+    const errMaxTotal = getMaxTotalRisk(userConfig);
     res.json({
       success: true,
       simulated: !userConfig.isAuthenticated,
       balance: userConfig.bankroll / 100,
       betHistory: userBetHistory.slice(0, 20),
       stats: { totalBets: 0, wins: 0, losses: 0, winRate: '0', totalProfit: 0 },
+      risk: {
+        current: errRisk.total,
+        max: errMaxTotal,
+        remaining: Math.max(0, errMaxTotal - errRisk.total),
+        currentDollars: (errRisk.total / 100).toFixed(2),
+        maxDollars: (errMaxTotal / 100).toFixed(2),
+        remainingDollars: (Math.max(0, errMaxTotal - errRisk.total) / 100).toFixed(2),
+        maxPerToken: getMaxPerToken(userConfig),
+        byToken: getExposureByToken(req.userState),
+        positionCount: 0,
+        hourly: {
+          current: errRisk.hourly,
+          max: getMaxRisk('hourly', userConfig),
+          currentDollars: (errRisk.hourly / 100).toFixed(2),
+          maxDollars: (getMaxRisk('hourly', userConfig) / 100).toFixed(2)
+        },
+        other: {
+          current: errRisk.other,
+          max: getMaxRisk('other', userConfig),
+          currentDollars: (errRisk.other / 100).toFixed(2),
+          maxDollars: (getMaxRisk('other', userConfig) / 100).toFixed(2)
+        }
+      },
       error: error.message
     });
   }
