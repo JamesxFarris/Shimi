@@ -3191,6 +3191,7 @@ function getRiskByType(userState = null) {
     const betTime = new Date(bet.timestamp).getTime();
     if (betTime < twoHoursAgo) continue;
     if (kalshiTickers.has(bet.ticker)) continue;
+    if (isTickerExpired(bet.ticker)) continue; // Don't count expired market bets
 
     const betRisk = bet.totalCost || (bet.count * bet.price) || 0;
     if (isHourlyMarket(bet.ticker)) {
@@ -3323,6 +3324,7 @@ function getExposureByToken(userState = null) {
     if (betTime < twoHoursAgo) continue;
     // Skip bets already counted via Kalshi positions or synced from Kalshi
     if (kalshiTickers.has(bet.ticker) || bet.source === 'kalshi-sync') continue;
+    if (isTickerExpired(bet.ticker)) continue; // Don't count expired market bets
 
     const betRisk = bet.totalCost || (bet.count * bet.price) || 0;
     const token = getTokenFromTicker(bet.ticker) || bet.assetType;
