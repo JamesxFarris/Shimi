@@ -348,7 +348,9 @@ const tradingQuotes = [
 // History Item - Shows bet with clear win/loss and profit/loss
 const HistoryItem = ({ bet, currentTime }) => {
   const totalCostCents = bet.totalCost || (bet.count * bet.price) || 0
-  const profitCents = bet.profit || 0
+  const rawProfitCents = bet.profit || 0
+  // Guard: if lost but profit=0 (bad price data), show -totalCost as the loss
+  const profitCents = (bet.outcome === 'lost' && rawProfitCents === 0) ? -totalCostCents : rawProfitCents
 
   // Determine outcome display
   const hasOutcome = bet.outcome === 'won' || bet.outcome === 'lost'

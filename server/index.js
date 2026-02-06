@@ -9698,14 +9698,18 @@ app.get('/api/portfolio', async (req, res) => {
           return fillTime >= new Date(historyStartDate);
         });
 
+        // Filter out sell fills - these are take-profit exits, not bets
+        fills = fills.filter(fill => (fill.action || 'buy').toLowerCase() !== 'sell');
+
         // Transform fills into our bet history format
         realBetHistory = fills.map(fill => {
           const count = fill.count || 1;
-          // Kalshi API can return price in different formats:
-          // - As cents (0-100): e.g., 10 = 10 cents
-          // - As decimal probability (0-1): e.g., 0.10 = 10 cents
-          // We need to normalize to cents
-          let priceCents = fill.price || 0;
+          // Kalshi API v2 uses yes_price/no_price (integer cents).
+          // fall back to fill.price for older data.
+          const fillSide = (fill.side || '').toLowerCase();
+          let priceCents = fillSide === 'yes'
+            ? (fill.yes_price || fill.price || 0)
+            : (fill.no_price || fill.price || 0);
           if (priceCents > 0 && priceCents <= 1) {
             // Price is a decimal probability, convert to cents
             priceCents = Math.round(priceCents * 100);
@@ -9733,6 +9737,27 @@ app.get('/api/portfolio', async (req, res) => {
             profit: 0
           };
         });
+
+        // Aggregate fills by ticker+side (scale-in / partial fills become one record)
+        const aggMap = new Map();
+        for (const bet of realBetHistory) {
+          const key = `${bet.ticker}|${(bet.side || '').toLowerCase()}`;
+          if (aggMap.has(key)) {
+            const agg = aggMap.get(key);
+            agg.count += bet.count;
+            agg.totalCost += bet.totalCost;
+            // Keep earliest timestamp
+            if (new Date(bet.timestamp) < new Date(agg.timestamp)) {
+              agg.timestamp = bet.timestamp;
+            }
+          } else {
+            aggMap.set(key, { ...bet });
+          }
+        }
+        realBetHistory = Array.from(aggMap.values()).map(bet => ({
+          ...bet,
+          price: bet.count > 0 ? Math.round(bet.totalCost / bet.count) : 0
+        }));
 
         // Get market data including settlement results - FETCH IN PARALLEL for speed
         const uniqueTickers = [...new Set(realBetHistory.map(b => b.ticker))].slice(0, 50);
@@ -9819,10 +9844,12 @@ app.get('/api/portfolio', async (req, res) => {
         realBetHistory = userBetHistory.slice(0, 20);
       }
 
-      // Merge with in-memory history
+      // Merge with in-memory history (dedup by ticker+side)
       const combinedHistory = [...realBetHistory];
+      const fillTickers = new Set(realBetHistory.map(b => `${b.ticker}|${(b.side || '').toLowerCase()}`));
       userBetHistory.forEach(memBet => {
-        if (!combinedHistory.some(b => b.orderId === memBet.orderId || b.id === memBet.id)) {
+        const key = `${memBet.ticker}|${(memBet.side || '').toLowerCase()}`;
+        if (!fillTickers.has(key)) {
           combinedHistory.push(memBet);
         }
       });
@@ -10006,6 +10033,9 @@ app.get('/api/performance', async (req, res) => {
           return fillTime >= new Date(historyStartDate);
         });
 
+        // Filter out sell fills - these are take-profit exits, not bets
+        fills = fills.filter(fill => (fill.action || 'buy').toLowerCase() !== 'sell');
+
         // Get unique tickers to fetch market results
         const uniqueTickers = [...new Set(fills.map(f => f.ticker))].slice(0, 50);
         const marketData = {};
@@ -10024,38 +10054,62 @@ app.get('/api/performance', async (req, res) => {
         const marketResults = await Promise.all(marketPromises);
         marketResults.forEach(m => { if (m) marketData[m.ticker] = m; });
 
-        // Process fills into bet records with outcomes
-        const bets = fills.map(fill => {
+        // Process fills into raw bet records
+        let bets = fills.map(fill => {
           const count = fill.count || 1;
-          let priceCents = fill.price || 0;
+          const fillSide = (fill.side || '').toLowerCase();
+          let priceCents = fillSide === 'yes'
+            ? (fill.yes_price || fill.price || 0)
+            : (fill.no_price || fill.price || 0);
           if (priceCents > 0 && priceCents <= 1) priceCents = Math.round(priceCents * 100);
           const totalCost = count * priceCents;
 
-          const market = marketData[fill.ticker] || {};
-          const result = market.result;
-          const betSide = fill.side?.toLowerCase();
-          const isBuy = fill.action?.toLowerCase() !== 'sell';
-
-          let outcome = 'pending';
-          let profit = 0;
-
-          if (result && isBuy) {
-            const won = betSide === result;
-            outcome = won ? 'won' : 'lost';
-            profit = won ? (count * 100 - totalCost) : -totalCost;
-          }
-
           return {
             ticker: fill.ticker,
-            side: betSide,
+            side: fillSide,
             count,
             price: priceCents,
             totalCost,
             timestamp: fill.created_time || fill.ts,
-            outcome,
-            profit,
+            outcome: 'pending',
+            profit: 0,
             token: getTokenFromTicker(fill.ticker)
           };
+        });
+
+        // Aggregate fills by ticker+side
+        const perfAggMap = new Map();
+        for (const bet of bets) {
+          const key = `${bet.ticker}|${bet.side}`;
+          if (perfAggMap.has(key)) {
+            const agg = perfAggMap.get(key);
+            agg.count += bet.count;
+            agg.totalCost += bet.totalCost;
+            if (new Date(bet.timestamp) < new Date(agg.timestamp)) {
+              agg.timestamp = bet.timestamp;
+            }
+          } else {
+            perfAggMap.set(key, { ...bet });
+          }
+        }
+        bets = Array.from(perfAggMap.values()).map(bet => ({
+          ...bet,
+          price: bet.count > 0 ? Math.round(bet.totalCost / bet.count) : 0
+        }));
+
+        // Compute outcomes on aggregated records
+        bets = bets.map(bet => {
+          const market = marketData[bet.ticker] || {};
+          const result = market.result;
+          if (result) {
+            const won = bet.side === result;
+            return {
+              ...bet,
+              outcome: won ? 'won' : 'lost',
+              profit: won ? (bet.count * 100 - bet.totalCost) : -bet.totalCost
+            };
+          }
+          return bet;
         });
 
         // Calculate stats
@@ -10283,7 +10337,7 @@ app.get('/api/debug/kalshi-fills', async (req, res) => {
 
     for (const ticker of uniqueTickers.slice(0, 20)) {
       try {
-        const market = await kalshiRequest('GET', `/markets/${ticker}`, null, userConfig);
+        const market = await kalshiRequest('GET', `/markets/${ticker}`, null, useConfig);
         marketResults[ticker] = {
           result: market.market?.result,
           status: market.market?.status,
@@ -10305,6 +10359,8 @@ app.get('/api/debug/kalshi-fills', async (req, res) => {
         action: f.action,
         count: f.count,
         price: f.price,
+        yes_price: f.yes_price,
+        no_price: f.no_price,
         created_time: f.created_time
       })),
       marketResults
