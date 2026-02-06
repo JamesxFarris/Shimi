@@ -3604,6 +3604,69 @@ body {
   font-size: 13px;
   color: var(--text-muted);
   line-height: 1.5;
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+}
+
+/* Settings Page Container */
+.settings-page {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+/* Model Monitoring Grids */
+.threshold-controls-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.model-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.model-stats-grid > div {
+  text-align: center;
+  padding: 12px;
+  background: #1a1a2e;
+  border-radius: 8px;
+}
+
+.model-stats-grid .stat-number {
+  font-size: 24px;
+  font-weight: bold;
+}
+
+.model-stats-grid .stat-label-small {
+  font-size: 11px;
+  color: #888;
+}
+
+.execution-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.execution-stats-grid > div {
+  text-align: center;
+  padding: 8px;
+  background: #1a1a2e;
+  border-radius: 6px;
+}
+
+.execution-stats-grid .stat-number {
+  font-size: 18px;
+  font-weight: bold;
+}
+
+.execution-stats-grid .stat-label-small {
+  font-size: 10px;
+  color: #888;
 }
 
 /* Tokens Grid */
@@ -5901,6 +5964,89 @@ body {
   /* Settings card breathing room */
   .settings-card {
     padding: 14px;
+    overflow-x: hidden;
+    max-width: 100%;
+  }
+
+  /* Settings page overflow containment */
+  .settings-page {
+    overflow-x: hidden;
+    max-width: 100%;
+  }
+
+  .settings-grid {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  /* Settings text wrapping */
+  .settings-description,
+  .limit-order-note,
+  .feature-desc,
+  .step-content p {
+    overflow-wrap: break-word;
+    word-wrap: break-word;
+    word-break: break-word;
+  }
+
+  /* Model Monitoring: stack 3-col grids to 1-col on mobile */
+  .threshold-controls-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .model-stats-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Execution history: 4-col to 2-col on mobile */
+  .execution-stats-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+
+  /* Execution history list items: wrap on mobile */
+  .execution-history-row {
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  /* How It Works steps */
+  .step {
+    gap: 8px;
+  }
+
+  .step-content h4 {
+    font-size: 13px;
+  }
+
+  .step-content p {
+    font-size: 11px;
+  }
+
+  /* Model section inline grid overrides */
+  .model-section [style*="grid-template-columns"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Threshold control labels */
+  .threshold-control label {
+    font-size: 11px;
+  }
+
+  /* Degen card: full width on mobile single-column */
+  .settings-card.degen-card {
+    max-width: 100%;
+  }
+
+  /* Account email: prevent overflow */
+  .account-value {
+    overflow-wrap: break-word;
+    word-break: break-all;
+  }
+
+  /* Connected badge: prevent overflow */
+  .connected-badge {
+    padding: 10px 14px;
+    font-size: 12px;
   }
 }
 
