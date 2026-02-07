@@ -203,7 +203,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
         distanceMax: 5.0,   // Don't reject large moves
         timeMin: 2,         // Allow late entries
         timeMax: 13,        // 15-min markets: allow entries from minute 2-13
-        priceMin: 20,       // Let edge/signal filters handle quality
+        priceMin: 40,       // Below 40¢ fees are 5%+ and edge model has no signal
         priceMax: 95        // Capture near-certainty late-game bets
       }
     },
@@ -220,7 +220,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
         distanceMax: 5.0,
         timeMin: 2,
         timeMax: 13,
-        priceMin: 20,
+        priceMin: 40,
         priceMax: 95
       }
     },
@@ -237,7 +237,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
         distanceMax: 5.0,
         timeMin: 2,
         timeMax: 13,
-        priceMin: 20,
+        priceMin: 40,
         priceMax: 95
       }
     }
@@ -8114,8 +8114,8 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   console.log(`    📊 ${token} prices: yesAsk=${(parsed.yesAsk*100).toFixed(0)}¢ noAsk=${(parsed.noAsk*100).toFixed(0)}¢ | betSide=${betSide} | marketPrice=${marketPriceCents}¢`);
 
   // Check price window - allow up to 97¢ for high-confidence near-expiry bets
-  const withinPriceWindow = marketPriceCents >= (entryWindows.priceMin || 20) &&
-                            marketPriceCents <= (entryWindows.priceMax || 97);
+  const withinPriceWindow = marketPriceCents >= (entryWindows.priceMin || 40) &&
+                            marketPriceCents <= (entryWindows.priceMax || 95);
 
   // STALE MOMENTUM: Flag for soft penalty instead of hard block
   // Markets >90¢ with >5min left are likely priced in, but edge calc handles this naturally
