@@ -7835,23 +7835,9 @@ function shouldSitOut(tables, token = null) {
   const now = Date.now();
   const oneHourAgo = now - 60 * 60 * 1000;
 
-  // Clean up old timestamps and enforce hourly rate limit
+  // Clean up old timestamps (keep for tracking, no rate limit enforced)
   empiricalBetTracking.recentBetsThisHour = empiricalBetTracking.recentBetsThisHour
     .filter(ts => ts > oneHourAgo);
-
-  // HOURLY RATE LIMIT: prevent runaway betting
-  const maxPerHour = rules?.maxBetsPerHour || 4;
-  if (empiricalBetTracking.recentBetsThisHour.length >= maxPerHour) {
-    reasons.push(`Hourly limit: ${empiricalBetTracking.recentBetsThisHour.length}/${maxPerHour} bets this hour`);
-  }
-
-  // Token-specific rate limiting (diversification)
-  if (token) {
-    const tokenBets = empiricalBetTracking.betsByToken.get(token) || 0;
-    if (tokenBets >= (rules?.maxBetsPerToken || 2)) {
-      reasons.push(`Token limit: ${tokenBets}/${rules?.maxBetsPerToken || 2} ${token} bets this hour`);
-    }
-  }
 
   // Check if we have sufficient data
   if ((tables?.sampleSize || learnedParams.sampleSize) < 100) {
