@@ -5683,6 +5683,16 @@ app.get('/api/opportunities/all', async (req, res) => {
         maxPerToken: getMaxPerToken(userConfig),
         byToken: getExposureByToken(req.userState),
         positionCount: (userPortfolio.positions || []).length,
+        rollingSpend: getRollingSpend(req.userId),
+        rollingSpendDollars: (getRollingSpend(req.userId) / 100).toFixed(2),
+        rollingSpendCap: getMaxTotalRisk(userConfig) * 3,
+        rollingSpendCapDollars: ((getMaxTotalRisk(userConfig) * 3) / 100).toFixed(2),
+        rollingSpendByToken: {
+          BTC: getRollingSpendByToken(req.userId, 'BTC'),
+          ETH: getRollingSpendByToken(req.userId, 'ETH'),
+          SOL: getRollingSpendByToken(req.userId, 'SOL')
+        },
+        rollingTokenCap: getMaxPerToken(userConfig) * 3,
         // Hourly pool
         hourly: {
           current: riskByType.hourly,
@@ -10491,6 +10501,12 @@ app.get('/api/portfolio', async (req, res) => {
           rollingSpendDollars: (getRollingSpend(req.userId) / 100).toFixed(2),
           rollingSpendCap: portfolioMaxTotal * 3,
           rollingSpendCapDollars: ((portfolioMaxTotal * 3) / 100).toFixed(2),
+          rollingSpendByToken: {
+            BTC: getRollingSpendByToken(req.userId, 'BTC'),
+            ETH: getRollingSpendByToken(req.userId, 'ETH'),
+            SOL: getRollingSpendByToken(req.userId, 'SOL')
+          },
+          rollingTokenCap: getMaxPerToken(userConfig) * 3,
           hourly: {
             current: portfolioRisk.hourly,
             max: getMaxRisk('hourly', userConfig),
@@ -10530,6 +10546,12 @@ app.get('/api/portfolio', async (req, res) => {
           rollingSpendDollars: (getRollingSpend(req.userId) / 100).toFixed(2),
           rollingSpendCap: simMaxTotal * 3,
           rollingSpendCapDollars: ((simMaxTotal * 3) / 100).toFixed(2),
+          rollingSpendByToken: {
+            BTC: getRollingSpendByToken(req.userId, 'BTC'),
+            ETH: getRollingSpendByToken(req.userId, 'ETH'),
+            SOL: getRollingSpendByToken(req.userId, 'SOL')
+          },
+          rollingTokenCap: getMaxPerToken(userConfig) * 3,
           hourly: {
             current: simRisk.hourly,
             max: getMaxRisk('hourly', userConfig),

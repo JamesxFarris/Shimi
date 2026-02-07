@@ -4802,6 +4802,13 @@ body {
   color: var(--accent-red);
 }
 
+.risk-token-rolling {
+  font-size: var(--font-size-xs);
+  font-weight: 400;
+  color: var(--text-secondary);
+  opacity: 0.8;
+}
+
 @media (max-width: 768px) {
   .sidebar {
     display: none;
