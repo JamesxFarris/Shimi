@@ -1,56 +1,56 @@
 {
-  "lastUpdated": "2026-02-04T04:08:35.786Z",
-  "sampleSize": 2400,
+  "lastUpdated": "2026-02-07T04:30:31.491Z",
+  "sampleSize": 12452,
   "winRateByDistance": {
     "1": {
-      "count": 2269,
-      "favoredWinRate": 99.96,
-      "surpriseRate": 0.04
+      "count": 171,
+      "favoredWinRate": 86,
+      "surpriseRate": 14
     },
     "2": {
-      "count": 2371,
-      "favoredWinRate": 99.96,
-      "surpriseRate": 0.04
+      "count": 171,
+      "favoredWinRate": 91,
+      "surpriseRate": 9
     },
     "3": {
-      "count": 2396,
-      "favoredWinRate": 99.96,
-      "surpriseRate": 0.04
+      "count": 171,
+      "favoredWinRate": 93,
+      "surpriseRate": 7
     },
     "5": {
-      "count": 2399,
-      "favoredWinRate": 99.96,
-      "surpriseRate": 0.04
+      "count": 171,
+      "favoredWinRate": 95,
+      "surpriseRate": 5
     },
     "0.1": {
-      "count": 645,
-      "favoredWinRate": 99.84,
-      "surpriseRate": 0.16
+      "count": 120,
+      "favoredWinRate": 62,
+      "surpriseRate": 38
     },
     "0.2": {
-      "count": 1200,
-      "favoredWinRate": 99.92,
-      "surpriseRate": 0.08
+      "count": 144,
+      "favoredWinRate": 68,
+      "surpriseRate": 32
     },
     "0.3": {
-      "count": 1566,
-      "favoredWinRate": 99.94,
-      "surpriseRate": 0.06
+      "count": 156,
+      "favoredWinRate": 73,
+      "surpriseRate": 27
     },
     "0.5": {
-      "count": 1931,
-      "favoredWinRate": 99.95,
-      "surpriseRate": 0.05
+      "count": 167,
+      "favoredWinRate": 78,
+      "surpriseRate": 22
     },
     "0.75": {
-      "count": 2163,
-      "favoredWinRate": 99.95,
-      "surpriseRate": 0.05
+      "count": 170,
+      "favoredWinRate": 82,
+      "surpriseRate": 18
     },
     "1.5": {
-      "count": 2350,
-      "favoredWinRate": 99.96,
-      "surpriseRate": 0.04
+      "count": 171,
+      "favoredWinRate": 89,
+      "surpriseRate": 11
     }
   },
   "volatilityRegimes": {
@@ -81,69 +81,69 @@
   },
   "byToken": {
     "BTC": {
-      "sampleSize": 800,
-      "avgSettlementDistance": 0.2477,
-      "settlementDistanceStdDev": 0.2752,
-      "yesWinRate": 46,
-      "noWinRate": 54,
-      "noBias": 8,
+      "sampleSize": 4837,
+      "avgSettlementDistance": null,
+      "settlementDistanceStdDev": null,
+      "yesWinRate": 49.51,
+      "noWinRate": 50.49,
+      "noBias": 0.97,
       "volatilityRank": 1,
       "optimalEntryWindows": {
-        "distanceMin": 0.3,
-        "distanceMax": 3,
-        "timeMin": 3,
-        "timeMax": 7,
-        "priceMin": 65,
-        "priceMax": 88
+        "distanceMin": 0.1,
+        "distanceMax": 5,
+        "timeMin": 2,
+        "timeMax": 13,
+        "priceMin": 55,
+        "priceMax": 92
       },
-      "coinFlipThreshold": 0.15,
-      "coinFlipPct": 16.6
+      "coinFlipThreshold": 0.05,
+      "coinFlipPct": 12.5
     },
     "ETH": {
-      "sampleSize": 800,
-      "avgSettlementDistance": 0.371,
-      "settlementDistanceStdDev": 0.4553,
-      "yesWinRate": 45.63,
-      "noWinRate": 54.38,
-      "noBias": 8.75,
-      "volatilityRank": 3,
-      "optimalEntryWindows": {
-        "distanceMin": 0.4,
-        "distanceMax": 3,
-        "timeMin": 3,
-        "timeMax": 7,
-        "priceMin": 65,
-        "priceMax": 88
-      },
-      "coinFlipThreshold": 0.2,
-      "coinFlipPct": 25
-    },
-    "SOL": {
-      "sampleSize": 800,
-      "avgSettlementDistance": 0.361,
-      "settlementDistanceStdDev": 0.4426,
-      "yesWinRate": 45.75,
-      "noWinRate": 54.25,
-      "noBias": 8.5,
+      "sampleSize": 4825,
+      "avgSettlementDistance": null,
+      "settlementDistanceStdDev": null,
+      "yesWinRate": 49.62,
+      "noWinRate": 50.38,
+      "noBias": 0.77,
       "volatilityRank": 2,
       "optimalEntryWindows": {
-        "distanceMin": 0.4,
-        "distanceMax": 3,
-        "timeMin": 3,
-        "timeMax": 7,
-        "priceMin": 65,
-        "priceMax": 88
+        "distanceMin": 0.15,
+        "distanceMax": 5,
+        "timeMin": 2,
+        "timeMax": 13,
+        "priceMin": 55,
+        "priceMax": 92
       },
-      "coinFlipThreshold": 0.2,
-      "coinFlipPct": 22.9
+      "coinFlipThreshold": 0.15,
+      "coinFlipPct": 23
+    },
+    "SOL": {
+      "sampleSize": 2790,
+      "avgSettlementDistance": null,
+      "settlementDistanceStdDev": null,
+      "yesWinRate": 47.78,
+      "noWinRate": 52.22,
+      "noBias": 4.44,
+      "volatilityRank": 3,
+      "optimalEntryWindows": {
+        "distanceMin": 0.2,
+        "distanceMax": 5,
+        "timeMin": 2,
+        "timeMax": 13,
+        "priceMin": 55,
+        "priceMax": 92
+      },
+      "coinFlipThreshold": 0.4,
+      "coinFlipPct": 64.1
     }
   },
   "selectivityRules": {
-    "minSignalStrength": 65,
-    "minEmpiricalWinRate": 65,
-    "minEdgeAfterFees": 5,
-    "maxBetsPerHour": 4,
-    "maxBetsPerToken": 2,
+    "minSignalStrength": 55,
+    "minEmpiricalWinRate": 62,
+    "minEdgeAfterFees": 3,
+    "maxBetsPerHour": 8,
+    "maxBetsPerToken": 3,
     "requireRegimeCheck": true
   },
   "performanceTracking": {
@@ -166,21 +166,21 @@
     "lastCalibrationUpdate": null
   },
   "thresholds": {
-    "coinFlipExit": 0.1,
+    "coinFlipExit": 0.12,
     "nearStrikeExit": 0.25,
     "timeBuffer": 180000
   },
   "yesNoBias": {
     "global": {
-      "yesWinRate": 45.79,
-      "noWinRate": 54.21,
-      "noBias": 8.42,
-      "sampleSize": 2400
+      "yesWinRate": 49.16,
+      "noWinRate": 50.84,
+      "noBias": 1.67,
+      "sampleSize": 12452
     }
   },
   "probabilityThresholds": {
-    "autoMinProbability": 68,
-    "manualMinProbability": 61
+    "autoMinProbability": 62,
+    "manualMinProbability": 55
   },
-  "confidence": 0.48
+  "confidence": 0.99
 }

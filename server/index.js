@@ -199,12 +199,12 @@ const DEFAULT_EMPIRICAL_TABLES = {
       noBias: 0,
       volatilityRank: 2,
       optimalEntryWindows: {
-        distanceMin: 0.3,   // Tightened: 0.1% is coin-flip territory
-        distanceMax: 3.0,   // Tightened: >3% already priced in
-        timeMin: 3,         // Minimum minutes remaining (was 2)
-        timeMax: 8,         // Catch momentum before fully priced in
-        priceMin: 65,       // Need profit margin (tightened from 55)
-        priceMax: 88        // Avoid overpaying (tightened from 97)
+        distanceMin: 0.1,   // Low-vol hours produce 0.09-0.22% distances
+        distanceMax: 5.0,   // Don't reject large moves
+        timeMin: 2,         // Allow late entries
+        timeMax: 13,        // 15-min markets: allow entries from minute 2-13
+        priceMin: 55,       // Allow cheaper entries
+        priceMax: 92        // Allow higher-confidence entries
       }
     },
     ETH: {
@@ -216,12 +216,12 @@ const DEFAULT_EMPIRICAL_TABLES = {
       noBias: 0,
       volatilityRank: 2,
       optimalEntryWindows: {
-        distanceMin: 0.4,   // ETH more volatile, need more buffer
-        distanceMax: 3.0,
-        timeMin: 3,
-        timeMax: 8,
-        priceMin: 65,
-        priceMax: 88
+        distanceMin: 0.15,  // ETH slightly higher min than BTC
+        distanceMax: 5.0,
+        timeMin: 2,
+        timeMax: 13,
+        priceMin: 55,
+        priceMax: 92
       }
     },
     SOL: {
@@ -233,23 +233,23 @@ const DEFAULT_EMPIRICAL_TABLES = {
       noBias: 0,
       volatilityRank: 3,  // SOL typically most volatile
       optimalEntryWindows: {
-        distanceMin: 0.5,   // Highest buffer for most volatile token
-        distanceMax: 3.0,
-        timeMin: 3,
-        timeMax: 8,
-        priceMin: 65,
-        priceMax: 88
+        distanceMin: 0.2,   // Slightly higher buffer for most volatile token
+        distanceMax: 5.0,
+        timeMin: 2,
+        timeMax: 13,
+        priceMin: 55,
+        priceMax: 92
       }
     }
   },
 
   // Selectivity rules (learned thresholds for when to bet)
   selectivityRules: {
-    minSignalStrength: 65,      // 0-100 score required to bet (raised from 60)
-    minEmpiricalWinRate: 65,    // Minimum win rate from lookup tables (raised from 62)
-    minEdgeAfterFees: 5,        // 5% minimum edge after all fees (raised from 3)
-    maxBetsPerHour: 4,          // Rate limiting for discipline (lowered from 6)
-    maxBetsPerToken: 2,         // Per-token concentration limit (lowered from 3)
+    minSignalStrength: 55,      // 0-100 score required to bet (with soft penalties, 55 is appropriate)
+    minEmpiricalWinRate: 62,    // Minimum win rate from lookup tables (empirically grounded)
+    minEdgeAfterFees: 3,        // 3% minimum edge after all fees (still +EV)
+    maxBetsPerHour: 8,          // Rate limit shouldn't block good opportunities
+    maxBetsPerToken: 3,         // Per-token concentration limit
     requireRegimeCheck: true    // Must pass volatility regime check
   },
 
@@ -3084,6 +3084,17 @@ let priceInterval = setInterval(() => {
   if (!binanceWsConnected) {
     console.log('📡 WebSocket disconnected - falling back to REST polling');
     fetchCryptoPrices();
+  } else {
+    // Even when WS is connected, check for per-token staleness
+    // Some tokens (SOL, ETH) may not get WS updates if their stream drops
+    const now = Date.now();
+    const staleTokens = Object.entries(cryptoPrices)
+      .filter(([, data]) => data?.price && (now - data.timestamp) > 60000)
+      .map(([token]) => token);
+    if (staleTokens.length > 0) {
+      console.log(`📡 WS connected but stale prices for: ${staleTokens.join(', ')} - triggering REST fetch`);
+      fetchCryptoPrices();
+    }
   }
 }, 30000);
 initBinanceWebSocket();
@@ -6916,9 +6927,14 @@ async function runAutoBet(userId = null) {
       const parsed = parseMarket(m);
       if (!parsed.cryptoType || !parsed.strikePrice) return null;
 
-      // Get current price for this token
+      // Get current price for this token - skip if missing or stale (>60s old)
       const priceData = cryptoPrices[parsed.cryptoType];
       if (!priceData?.price) return null;
+      const priceAge = Date.now() - priceData.timestamp;
+      if (priceAge > 60000) {
+        console.log(`⚠️ Stale price for ${parsed.cryptoType} in autoBet: ${(priceAge/1000).toFixed(0)}s old - skipping`);
+        return null;
+      }
 
       // Fetch orderbook for liquidity check
       let orderbook = null;
@@ -7797,8 +7813,10 @@ function calculateSignalStrength(winRate, edge, sampleSize, regime, timeRemainin
     timePoints = 5; // Sweet spot
   } else if (timeRemaining >= 2 && timeRemaining <= 12) {
     timePoints = 2; // Acceptable range
+  } else if (timeRemaining > 12 && timeRemaining <= 15) {
+    timePoints = 1; // Early market entry - small contribution
   } else {
-    timePoints = 0; // Too early or too late
+    timePoints = 0; // Too late (<2 min)
   }
   score += timePoints;
 
@@ -8126,12 +8144,8 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const defaultRules = empiricalTables.selectivityRules || DEFAULT_EMPIRICAL_TABLES.selectivityRules;
   const rules = { ...defaultRules, ...userRules };
 
-  // Build rejection reasons
+  // Build rejection reasons - only hard rejections for genuine deal-breakers
   const reasons = [];
-
-  if (signalStrength < (rules.minSignalStrength || 60)) {
-    reasons.push(`Signal strength ${signalStrength} < ${rules.minSignalStrength || 60}`);
-  }
 
   if (adjustedWinRate < (rules.minEmpiricalWinRate || 62)) {
     reasons.push(`Win rate ${adjustedWinRate.toFixed(1)}% < ${rules.minEmpiricalWinRate || 62}%`);
@@ -8141,24 +8155,47 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     reasons.push(`Edge ${netEdge.toFixed(1)}% < ${rules.minEdgeAfterFees || 3}%`);
   }
 
-  if (!withinDistanceWindow) {
-    reasons.push(`Distance ${absDistance.toFixed(2)}% outside optimal window [${entryWindows.distanceMin}-${entryWindows.distanceMax}%]`);
-  }
-
-  if (!withinTimeWindow) {
-    reasons.push(`Time ${timeRemaining}min outside optimal window [${entryWindows.timeMin}-${entryWindows.timeMax}min]`);
-  }
-
   if (!withinPriceWindow) {
     reasons.push(`Price ${marketPriceCents}¢ outside optimal window [${entryWindows.priceMin}-${entryWindows.priceMax}¢]`);
   }
 
+  // Apply soft penalties for distance/time instead of hard rejections
+  let adjustedSignalStrength = signalStrength;
+  let windowPenalties = [];
+
+  if (!withinDistanceWindow) {
+    const dMin = entryWindows.distanceMin || 0.1;
+    const dMax = entryWindows.distanceMax || 5.0;
+    const farOutside = absDistance < dMin * 0.5 || absDistance > dMax * 1.5;
+    const penalty = farOutside ? -20 : -10;
+    adjustedSignalStrength += penalty;
+    windowPenalties.push(`distance ${penalty}pts`);
+  }
+
+  if (!withinTimeWindow) {
+    const tMin = entryWindows.timeMin || 2;
+    const tMax = entryWindows.timeMax || 13;
+    const farOutside = timeRemaining < tMin * 0.5 || timeRemaining > tMax * 1.15;
+    const penalty = farOutside ? -10 : -5;
+    adjustedSignalStrength += penalty;
+    windowPenalties.push(`time ${penalty}pts`);
+  }
+
+  if (windowPenalties.length > 0) {
+    console.log(`    📉 Window penalties: ${windowPenalties.join(', ')} → signal ${signalStrength}→${adjustedSignalStrength}`);
+  }
+
+  if (adjustedSignalStrength < (rules.minSignalStrength || 55)) {
+    reasons.push(`Signal strength ${adjustedSignalStrength} < ${rules.minSignalStrength || 55} (base: ${signalStrength}, penalties: ${windowPenalties.join(', ') || 'none'})`);
+  }
+
   // Final decision
-  const shouldBet = reasons.length === 0 && signalStrength >= (rules.minSignalStrength || 60);
+  const shouldBet = reasons.length === 0 && adjustedSignalStrength >= (rules.minSignalStrength || 55);
 
   return {
     shouldBet,
-    signalStrength,
+    signalStrength: adjustedSignalStrength,
+    rawSignalStrength: signalStrength,
     side: betSide,
     edge: netEdge,
     grossEdge,
