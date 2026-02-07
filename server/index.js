@@ -8038,21 +8038,9 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const withinPriceWindow = marketPriceCents >= (entryWindows.priceMin || 35) &&
                             marketPriceCents <= (entryWindows.priceMax || 97);
 
-  // STALE MOMENTUM FILTER: Skip markets where momentum already happened and is fully priced in
-  // If market is > 90¢ with > 5 min left, the opportunity window has passed - no edge possible
+  // STALE MOMENTUM: Flag for soft penalty instead of hard block
+  // Markets >90¢ with >5min left are likely priced in, but edge calc handles this naturally
   const isStaleMomentum = marketPriceCents > 90 && timeRemaining > 5;
-  if (isStaleMomentum) {
-    return {
-      shouldBet: false,
-      signalStrength: 0,
-      side: betSide,
-      edge: 0,
-      marketPrice,
-      marketPriceCents,
-      reasons: [`Stale momentum: market at ${marketPriceCents}¢ with ${timeRemaining.toFixed(1)}min left - opportunity already priced in`],
-      staleMomentum: true
-    };
-  }
 
   // EDGE CALCULATION: Use distance-based empirical win rate vs market implied probability
   // Our win rate comes from how often the favored side wins at this distance from strike
@@ -8064,11 +8052,78 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // This is the key insight: at 0.5% from strike, favored side wins ~88%, not what market implies
   let adjustedWinRate = empirical.winRate;
 
-  // Apply regime multiplier (reduces confidence in high volatility)
-  if (regime.multiplier && regime.multiplier < 1) {
-    // In high vol, shrink our edge estimate toward market price
+  // VOLATILITY-TIME THEORETICAL MODEL: z-score-based probability from price history
+  // During low-vol hours, empirical tables underestimate probability because they average all conditions
+  // The theoretical model uses current volatility to compute a more accurate probability
+  let theoreticalWinRate = null;
+  let theoreticalWeight = 0;
+  const priceHistory = cryptoPrices[token]?.history || [];
+  if (priceHistory.length >= 10) {
+    // Compute log-return std dev (NO floor — we want raw volatility for accurate z-score)
+    const histArr = [...priceHistory]; // spread ring buffer to array
+    const logReturns = [];
+    for (let i = 1; i < histArr.length; i++) {
+      if (histArr[i].price && histArr[i-1].price) {
+        logReturns.push(Math.log(histArr[i].price / histArr[i-1].price));
+      }
+    }
+    if (logReturns.length >= 5) {
+      const meanRet = logReturns.reduce((a, b) => a + b, 0) / logReturns.length;
+      const variance = logReturns.reduce((sum, r) => sum + Math.pow(r - meanRet, 2), 0) / logReturns.length;
+      const stdDev = Math.sqrt(variance);
+
+      // Scale to remaining time
+      const avgInterval = (histArr[histArr.length - 1].time - histArr[0].time) / (histArr.length - 1);
+      const ticksInRemaining = (timeRemaining * 60 * 1000) / avgInterval;
+      const volRemaining = stdDev * Math.sqrt(Math.max(1, ticksInRemaining));
+
+      // Z-score: how many std devs is the distance from strike?
+      const zScore = (absDistance / 100) / Math.max(volRemaining, 1e-10);
+      theoreticalWinRate = Math.min(98, normalCDF(zScore) * 100);
+
+      // Determine blend weight based on vol regime
+      const tokenData = learnedParams.byToken?.[token];
+      const typicalVol = tokenData?.avgSettlementDistance || 0.5;
+      const currentVol = (regime.volatility !== undefined) ? regime.volatility : (stdDev * 100);
+      const volRatio = currentVol / Math.max(typicalVol, 0.01);
+
+      // Time bonus: near expiry, theoretical model is more reliable
+      const timeBonus = timeRemaining < 5 ? Math.max(0, (5 - timeRemaining) / 5) : 0;
+
+      if (volRatio < 0.5) {
+        // Very low vol: 40% base + up to 20% near expiry
+        theoreticalWeight = 0.40 + timeBonus * 0.20;
+      } else if (volRatio < 0.8) {
+        // Low vol: 20% base + up to 15% near expiry
+        theoreticalWeight = 0.20 + timeBonus * 0.15;
+      } else if (volRatio < 1.3) {
+        // Normal vol: 0-10% (near expiry only)
+        theoreticalWeight = timeBonus * 0.10;
+      } else {
+        // High vol: 0% (empirical tables are better)
+        theoreticalWeight = 0;
+      }
+
+      // Only blend when theoretical > empirical (boost confidence in calm conditions)
+      if (theoreticalWeight > 0 && theoreticalWinRate > adjustedWinRate) {
+        const blendedWinRate = adjustedWinRate * (1 - theoreticalWeight) + theoreticalWinRate * theoreticalWeight;
+        console.log(`    🔬 Vol-time model: theoretical=${theoreticalWinRate.toFixed(1)}% (weight=${(theoreticalWeight*100).toFixed(0)}%) | empirical=${adjustedWinRate.toFixed(1)}% → blended=${blendedWinRate.toFixed(1)}% [volRatio=${volRatio.toFixed(2)}, z=${zScore.toFixed(2)}]`);
+        adjustedWinRate = blendedWinRate;
+      }
+    }
+  }
+
+  // Apply regime multiplier for BOTH directions
+  if (regime.multiplier && regime.multiplier !== 1) {
     const empiricalEdge = adjustedWinRate - marketImpliedProb;
-    adjustedWinRate = marketImpliedProb + (empiricalEdge * regime.multiplier);
+    if (regime.multiplier < 1) {
+      // High vol: shrink edge toward market price
+      adjustedWinRate = marketImpliedProb + (empiricalEdge * regime.multiplier);
+    } else {
+      // Low vol: modestly boost edge (cap at 5% boost)
+      const boost = Math.min(5, empiricalEdge * (regime.multiplier - 1));
+      adjustedWinRate = adjustedWinRate + boost;
+    }
   }
 
   // ML MODEL BLENDING: Blend ML prediction with empirical win rate (max 30% weight)
@@ -8151,8 +8206,12 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     reasons.push(`Win rate ${adjustedWinRate.toFixed(1)}% < ${rules.minEmpiricalWinRate || 62}%`);
   }
 
-  if (netEdge < (rules.minEdgeAfterFees || 3)) {
-    reasons.push(`Edge ${netEdge.toFixed(1)}% < ${rules.minEdgeAfterFees || 3}%`);
+  // In low vol, outcomes are more predictable - smaller edge is more reliable
+  const effectiveMinEdge = regime.regime === 'low'
+    ? Math.max(2, (rules.minEdgeAfterFees || 3) - 1)
+    : (rules.minEdgeAfterFees || 3);
+  if (netEdge < effectiveMinEdge) {
+    reasons.push(`Edge ${netEdge.toFixed(1)}% < ${effectiveMinEdge}%${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
   }
 
   if (!withinPriceWindow) {
@@ -8179,6 +8238,12 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     const penalty = farOutside ? -10 : -5;
     adjustedSignalStrength += penalty;
     windowPenalties.push(`time ${penalty}pts`);
+  }
+
+  // Stale momentum: soft penalty instead of hard block
+  if (isStaleMomentum) {
+    adjustedSignalStrength += -15;
+    windowPenalties.push(`stale momentum -15pts`);
   }
 
   if (windowPenalties.length > 0) {
