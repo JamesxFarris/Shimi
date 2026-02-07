@@ -2341,8 +2341,12 @@ function calculateMomentum(history, lookbackMinutes = 5) {
     sumX2 += i * i;
   });
 
-  const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+  const denominator = n * sumX2 - sumX * sumX;
   const avgPrice = sumY / n;
+  if (denominator === 0 || avgPrice === 0) {
+    return { trend: 0, strength: 'weak', direction: 'neutral' };
+  }
+  const slope = (n * sumXY - sumX * sumY) / denominator;
 
   // Normalize slope as percentage per minute
   const trendPctPerMin = (slope / avgPrice) * 100;
@@ -2588,6 +2592,9 @@ function calculateRobustVolatility(history, windowMinutes = 60) {
   const recentHistory = history.filter(p => now - p.time < windowMs);
 
   if (recentHistory.length < 5) {
+    return { volatility: 0.03, method: 'default', confidence: 'low' };
+  }
+  if (recentHistory.length < 2) {
     return { volatility: 0.03, method: 'default', confidence: 'low' };
   }
 
@@ -6325,9 +6332,13 @@ app.post('/api/bet', async (req, res) => {
       // Stop-loss and take-profit are now handled by active monitoring (evaluateTakeProfit)
       // which runs every 15 seconds and executes market sells when thresholds are hit
 
-      const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
-      userPortfolio.balance = balanceData.balance || 0;
-      userConfig.bankroll = userPortfolio.balance;
+      try {
+        const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
+        userPortfolio.balance = balanceData.balance || 0;
+        userConfig.bankroll = userPortfolio.balance;
+      } catch (e) {
+        console.log('Could not refresh balance after bet:', e.message);
+      }
 
       // Refresh positions for risk tracking
       try {
@@ -6766,9 +6777,13 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       // NOTE: Limit orders removed - Kalshi doesn't support them for crypto markets
       // Stop-loss and take-profit handled by active monitoring (evaluateTakeProfit)
 
-      const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
-      userPortfolio.balance = balanceData.balance || 0;
-      userConfig.bankroll = userPortfolio.balance;
+      try {
+        const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
+        userPortfolio.balance = balanceData.balance || 0;
+        userConfig.bankroll = userPortfolio.balance;
+      } catch (e) {
+        console.log('Could not refresh balance after auto-bet:', e.message);
+      }
 
       // Refresh positions for accurate risk calculation
       try {
@@ -7501,8 +7516,12 @@ async function runAutoBet(userId = null) {
     // NOTE: Limit orders removed - Kalshi doesn't support them for crypto markets
     // Stop-loss and take-profit handled by active monitoring (evaluateTakeProfit)
 
-    const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
-    userConfig.bankroll = balanceData.balance || 0;
+    try {
+      const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
+      userConfig.bankroll = balanceData.balance || 0;
+    } catch (e) {
+      console.log('Could not refresh balance after auto-bet:', e.message);
+    }
 
     // Save user state after successful bet
     if (userId) saveUserState(userId);
@@ -8122,43 +8141,48 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       const variance = logReturns.reduce((sum, r) => sum + Math.pow(r - meanRet, 2), 0) / logReturns.length;
       const stdDev = Math.sqrt(variance);
 
-      // Scale to remaining time
-      const avgInterval = (histArr[histArr.length - 1].time - histArr[0].time) / (histArr.length - 1);
-      const ticksInRemaining = (timeRemaining * 60 * 1000) / avgInterval;
-      const volRemaining = stdDev * Math.sqrt(Math.max(1, ticksInRemaining));
-
-      // Z-score: how many std devs is the distance from strike?
-      const zScore = (absDistance / 100) / Math.max(volRemaining, 1e-10);
-      theoreticalWinRate = Math.min(98, normalCDF(zScore) * 100);
-
-      // Determine blend weight based on vol regime
-      const tokenData = learnedParams.byToken?.[token];
-      const typicalVol = tokenData?.avgSettlementDistance || 0.5;
-      const currentVol = (regime.volatility !== undefined) ? regime.volatility : (stdDev * 100);
-      const volRatio = currentVol / Math.max(typicalVol, 0.01);
-
-      // Time bonus: near expiry, theoretical model is more reliable
-      const timeBonus = timeRemaining < 5 ? Math.max(0, (5 - timeRemaining) / 5) : 0;
-
-      if (volRatio < 0.5) {
-        // Very low vol: 40% base + up to 20% near expiry
-        theoreticalWeight = 0.40 + timeBonus * 0.20;
-      } else if (volRatio < 0.8) {
-        // Low vol: 20% base + up to 15% near expiry
-        theoreticalWeight = 0.20 + timeBonus * 0.15;
-      } else if (volRatio < 1.3) {
-        // Normal vol: 0-10% (near expiry only)
-        theoreticalWeight = timeBonus * 0.10;
+      if (stdDev === 0) {
+        // No price movement — theoretical model has no information, skip it
+        // (theoreticalWeight stays 0, no blending applied)
       } else {
-        // High vol: 0% (empirical tables are better)
-        theoreticalWeight = 0;
-      }
+        // Scale to remaining time
+        const avgInterval = (histArr[histArr.length - 1].time - histArr[0].time) / (histArr.length - 1);
+        const ticksInRemaining = (timeRemaining * 60 * 1000) / avgInterval;
+        const volRemaining = stdDev * Math.sqrt(Math.max(1, ticksInRemaining));
 
-      // Only blend when theoretical > empirical (boost confidence in calm conditions)
-      if (theoreticalWeight > 0 && theoreticalWinRate > adjustedWinRate) {
-        const blendedWinRate = adjustedWinRate * (1 - theoreticalWeight) + theoreticalWinRate * theoreticalWeight;
-        console.log(`    🔬 Vol-time model: theoretical=${theoreticalWinRate.toFixed(1)}% (weight=${(theoreticalWeight*100).toFixed(0)}%) | empirical=${adjustedWinRate.toFixed(1)}% → blended=${blendedWinRate.toFixed(1)}% [volRatio=${volRatio.toFixed(2)}, z=${zScore.toFixed(2)}]`);
-        adjustedWinRate = blendedWinRate;
+        // Z-score: how many std devs is the distance from strike?
+        const zScore = (absDistance / 100) / Math.max(volRemaining, 1e-10);
+        theoreticalWinRate = Math.min(98, normalCDF(zScore) * 100);
+
+        // Determine blend weight based on vol regime
+        const tokenData = learnedParams.byToken?.[token];
+        const typicalVol = tokenData?.avgSettlementDistance || 0.5;
+        const currentVol = (regime.volatility !== undefined) ? regime.volatility : (stdDev * 100);
+        const volRatio = currentVol / Math.max(typicalVol, 0.01);
+
+        // Time bonus: near expiry, theoretical model is more reliable
+        const timeBonus = timeRemaining < 5 ? Math.max(0, (5 - timeRemaining) / 5) : 0;
+
+        if (volRatio < 0.5) {
+          // Very low vol: 40% base + up to 20% near expiry
+          theoreticalWeight = 0.40 + timeBonus * 0.20;
+        } else if (volRatio < 0.8) {
+          // Low vol: 20% base + up to 15% near expiry
+          theoreticalWeight = 0.20 + timeBonus * 0.15;
+        } else if (volRatio < 1.3) {
+          // Normal vol: 0-10% (near expiry only)
+          theoreticalWeight = timeBonus * 0.10;
+        } else {
+          // High vol: 0% (empirical tables are better)
+          theoreticalWeight = 0;
+        }
+
+        // Only blend when theoretical > empirical (boost confidence in calm conditions)
+        if (theoreticalWeight > 0 && theoreticalWinRate > adjustedWinRate) {
+          const blendedWinRate = adjustedWinRate * (1 - theoreticalWeight) + theoreticalWinRate * theoreticalWeight;
+          console.log(`    🔬 Vol-time model: theoretical=${theoreticalWinRate.toFixed(1)}% (weight=${(theoreticalWeight*100).toFixed(0)}%) | empirical=${adjustedWinRate.toFixed(1)}% → blended=${blendedWinRate.toFixed(1)}% [volRatio=${volRatio.toFixed(2)}, z=${zScore.toFixed(2)}]`);
+          adjustedWinRate = blendedWinRate;
+        }
       }
     }
   }
@@ -8197,7 +8221,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     });
 
     mlPrediction = mlPredict(features);
-    if (mlPrediction !== null) {
+    if (mlPrediction !== null && isFinite(mlPrediction) && mlPrediction > 0 && mlPrediction < 1) {
       // Scale ML weight by accuracy above baseline (55%)
       // At 55% accuracy: 0% weight, at 70% accuracy: 30% weight
       mlWeight = Math.min(0.30, Math.max(0, (mlModel.performance.accuracy - 0.55) * 2));

@@ -511,6 +511,7 @@ function App() {
   const [authLoading, setAuthLoading] = useState(false)
   const [betStatus, setBetStatus] = useState(null)
   const [placingBet, setPlacingBet] = useState(null)
+  const placingBetRef = useRef(false)
   const [tickerTime, setTickerTime] = useState(Date.now())
 
   // Keep refs in sync with state for use in callbacks with [] deps
@@ -813,7 +814,8 @@ function App() {
 
   // Place a bet
   const placeBet = async (opp, qty = 1) => {
-    if (placingBet) return // Prevent double-clicks
+    if (placingBetRef.current) return // Prevent double-clicks (synchronous ref check)
+    placingBetRef.current = true
 
     setPlacingBet(opp.ticker)
     setBetStatus(null)
@@ -880,13 +882,15 @@ function App() {
       }
     }
 
+    placingBetRef.current = false
     setPlacingBet(null)
     setTimeout(() => setBetStatus(null), 5000)
   }
 
   // Auto-bet
   const placeAutoBet = async () => {
-    if (placingBet) return // Prevent double-clicks
+    if (placingBetRef.current) return // Prevent double-clicks (synchronous ref check)
+    placingBetRef.current = true
 
     setPlacingBet('auto')
     setBetStatus(null)
@@ -931,6 +935,7 @@ function App() {
       }
     }
 
+    placingBetRef.current = false
     setPlacingBet(null)
     setTimeout(() => setBetStatus(null), 5000)
   }
