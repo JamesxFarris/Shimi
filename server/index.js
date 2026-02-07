@@ -47,7 +47,7 @@ const DEFAULT_CONFIG = {
   // Risk management settings (in cents) - bet sizing uses maxPerBet
   riskLimits: {
     maxPerBet: 500,      // $5.00 max per bet (unified)
-    maxPerToken: 500,    // $5.00 max per token
+    maxPerTokenPerCycle: 500,   // $5.00 max per token per 15-min cycle
     maxTotal: 500,       // $5.00 max total exposure (unified)
     maxPerMarket: 500,   // $5.00 max TOTAL per single market ticker (caps scale-in accumulation)
     // Legacy nested structure for compatibility
@@ -3420,6 +3420,8 @@ function filterExpiredPositions(positions, log = false) {
   });
 }
 
+const CYCLE_WINDOW_MS = 15 * 60 * 1000; // 15-minute market cycle window
+
 // Get total exposure per token across all positions
 function getExposureByToken(userState = null) {
   const tokenExposure = {};
@@ -3466,33 +3468,37 @@ function getExposureByToken(userState = null) {
   return tokenExposure;
 }
 
-// Get max allowed per token (configurable)
-function getMaxPerToken(userConfig = null) {
+// Get max allowed per token per 15-min cycle (configurable)
+function getMaxPerTokenPerCycle(userConfig = null) {
   const cfg = userConfig || config;
-  return cfg.riskLimits.maxPerToken || 500; // Default $5.00
+  return cfg.riskLimits.maxPerTokenPerCycle || cfg.riskLimits.maxPerToken || 500; // Default $5.00
 }
 
 // HARD CAP validation - ensures bet won't exceed ANY limit before placing
 // This is the final safety check to prevent exposure limit violations
 function validateBetWontExceedLimits(ticker, betCostCents, userState, userConfig, userId = null) {
   const currentExposure = getRiskByType(userState);
-  const tokenExposure = getExposureByToken(userState);
   const token = getTokenFromTicker(ticker);
 
   const newTotalExposure = currentExposure.total + betCostCents;
-  const newTokenExposure = (tokenExposure[token] || 0) + betCostCents;
 
   const maxTotal = getMaxTotalRisk(userConfig);
-  const maxPerToken = getMaxPerToken(userConfig);
+  const resolvedUserId = userId || userState?.userId || 'default';
 
   if (newTotalExposure > maxTotal) {
     return { valid: false, reason: `Would exceed total limit: $${(newTotalExposure/100).toFixed(2)} > $${(maxTotal/100).toFixed(2)}` };
   }
-  if (token && newTokenExposure > maxPerToken) {
-    return { valid: false, reason: `Would exceed ${token} limit: $${(newTokenExposure/100).toFixed(2)} > $${(maxPerToken/100).toFixed(2)}` };
+
+  // Check 2: Per-token per-cycle limit (rolling 15-min spend)
+  const maxPerCycle = getMaxPerTokenPerCycle(userConfig);
+  if (token) {
+    const cycleSpend = getRollingSpendByToken(resolvedUserId, token, CYCLE_WINDOW_MS);
+    if (cycleSpend + betCostCents > maxPerCycle) {
+      return { valid: false, reason: `Would exceed ${token} cycle limit: $${((cycleSpend + betCostCents)/100).toFixed(2)} > $${(maxPerCycle/100).toFixed(2)}` };
+    }
   }
 
-  // NEW: Per-market cap — prevents scale-in from accumulating beyond maxPerMarket on a single ticker
+  // Check 3: Per-market cap — prevents scale-in from accumulating beyond maxPerMarket on a single ticker
   const maxPerMarket = userConfig?.riskLimits?.maxPerMarket || userConfig?.riskLimits?.maxPerBet || 500;
   const existingMarketExposure = getExposureForTicker(ticker, userState);
   const newMarketExposure = existingMarketExposure + betCostCents;
@@ -3501,17 +3507,16 @@ function validateBetWontExceedLimits(ticker, betCostCents, userState, userConfig
   }
 
   // Check 4: Rolling window spend limit (prevents cumulative overspend after markets expire)
-  const resolvedUserId = userId || userState?.userId || 'default';
   const rollingSpend = getRollingSpend(resolvedUserId);
   const rollingSpendCap = maxTotal * 2; // 2x exposure limit over 2hr window
   if (rollingSpend + betCostCents > rollingSpendCap) {
     return { valid: false, reason: `Rolling spend $${((rollingSpend + betCostCents)/100).toFixed(2)} would exceed 2hr cap $${(rollingSpendCap/100).toFixed(2)}` };
   }
 
-  // Check 5: Per-token rolling spend (prevents single token from eating entire budget across cycles)
+  // Check 5: Per-token 2hr rolling spend (8 cycles worth = safety net above cycle limit)
   if (token) {
     const tokenRollingSpend = getRollingSpendByToken(resolvedUserId, token);
-    const tokenRollingCap = maxPerToken * 2; // 2x per-token limit over 2 hours
+    const tokenRollingCap = getMaxPerTokenPerCycle(userConfig) * 8; // 8 cycles in 2 hours
     if (tokenRollingSpend + betCostCents > tokenRollingCap) {
       return { valid: false, reason: `Rolling ${token} spend $${((tokenRollingSpend + betCostCents)/100).toFixed(2)} would exceed 2hr cap $${(tokenRollingCap/100).toFixed(2)}` };
     }
@@ -3658,14 +3663,14 @@ function isBankrollTooLow(userConfig) {
   return bankroll < minBankroll;
 }
 
-// Get remaining budget for a specific token
-function getRemainingTokenBudget(ticker, assetType, userState = null, userConfig = null) {
+// Get remaining budget for a specific token (rolling 15-min cycle spend)
+function getRemainingTokenBudget(ticker, assetType, userState = null, userConfig = null, userId = null) {
   const token = getTokenFromTicker(ticker) || assetType;
-  if (!token) return getMaxPerToken(userConfig); // If can't determine token, use full budget
-
-  const tokenExposure = getExposureByToken(userState);
-  const currentExposure = tokenExposure[token] || 0;
-  return Math.max(0, getMaxPerToken(userConfig) - currentExposure);
+  const cycleLimit = getMaxPerTokenPerCycle(userConfig);
+  if (!token) return cycleLimit;
+  const resolvedUserId = userId || userState?.userId || 'default';
+  const cycleSpend = getRollingSpendByToken(resolvedUserId, token, CYCLE_WINDOW_MS);
+  return Math.max(0, cycleLimit - cycleSpend);
 }
 
 // ============================================
@@ -5719,7 +5724,7 @@ app.get('/api/opportunities/all', async (req, res) => {
         maxDollars: (getMaxTotalRisk(userConfig) / 100).toFixed(2),
         remainingDollars: (Math.max(0, getMaxTotalRisk(userConfig) - riskByType.total) / 100).toFixed(2),
         // Per-token limit
-        maxPerToken: getMaxPerToken(userConfig),
+        maxPerTokenPerCycle: getMaxPerTokenPerCycle(userConfig),
         byToken: getExposureByToken(req.userState),
         positionCount: (userPortfolio.positions || []).length,
         rollingSpend: getRollingSpend(req.userId),
@@ -5727,11 +5732,11 @@ app.get('/api/opportunities/all', async (req, res) => {
         rollingSpendCap: getMaxTotalRisk(userConfig) * 2,
         rollingSpendCapDollars: ((getMaxTotalRisk(userConfig) * 2) / 100).toFixed(2),
         rollingSpendByToken: {
-          BTC: getRollingSpendByToken(req.userId, 'BTC'),
-          ETH: getRollingSpendByToken(req.userId, 'ETH'),
-          SOL: getRollingSpendByToken(req.userId, 'SOL')
+          BTC: getRollingSpendByToken(req.userId, 'BTC', CYCLE_WINDOW_MS),
+          ETH: getRollingSpendByToken(req.userId, 'ETH', CYCLE_WINDOW_MS),
+          SOL: getRollingSpendByToken(req.userId, 'SOL', CYCLE_WINDOW_MS)
         },
-        rollingTokenCap: getMaxPerToken(userConfig) * 3,
+        rollingTokenCap: getMaxPerTokenPerCycle(userConfig),
         // Hourly pool
         hourly: {
           current: riskByType.hourly,
@@ -5849,7 +5854,7 @@ app.get('/api/settings/risk', (req, res) => {
 
 // Update risk settings - PER-USER
 app.post('/api/settings/risk', (req, res) => {
-  const { hourly, other, maxPerToken, maxPerBet, maxTotal } = req.body;
+  const { hourly, other, maxPerToken, maxPerTokenPerCycle, maxPerBet, maxTotal } = req.body;
 
   // Use per-user config
   const userConfig = req.userState?.config;
@@ -5903,9 +5908,13 @@ app.post('/api/settings/risk', (req, res) => {
     }
   }
 
-  // Max per token (e.g., max $5 on all SOL markets combined)
-  if (maxPerToken !== undefined) {
-    userConfig.riskLimits.maxPerToken = Math.max(100, Math.min(50000, parseInt(maxPerToken) || 500));
+  // Max per token per cycle (e.g., max $15 on all SOL markets per 15-min cycle)
+  if (maxPerTokenPerCycle !== undefined) {
+    userConfig.riskLimits.maxPerTokenPerCycle = Math.max(200, Math.min(50000, parseInt(maxPerTokenPerCycle) || 500));
+  }
+  // Legacy: if client sends old maxPerToken, store as maxPerTokenPerCycle
+  if (maxPerToken !== undefined && maxPerTokenPerCycle === undefined) {
+    userConfig.riskLimits.maxPerTokenPerCycle = Math.max(200, Math.min(50000, parseInt(maxPerToken) || 500));
   }
 
   // Create unified maxTotal for response if not set
@@ -6261,10 +6270,10 @@ app.post('/api/bet', async (req, res) => {
     const isHourly = isHourlyMarket(ticker);
     const poolType = isHourly ? 'hourly' : 'other';
     const remainingBudget = getRemainingRiskBudget(ticker, req.userState, userConfig);
-    const remainingTokenBudget = getRemainingTokenBudget(ticker, market.assetType, req.userState, userConfig);
+    const remainingTokenBudget = getRemainingTokenBudget(ticker, market.assetType, req.userState, userConfig, req.userId);
     const poolMax = getMaxRisk(poolType, userConfig);
     const maxPerBet = getMaxPerBet(poolType, userConfig);
-    const maxPerToken = getMaxPerToken(userConfig);
+    const maxPerTokenPerCycle = getMaxPerTokenPerCycle(userConfig);
 
     // Take minimum of: max per bet, pool budget, and token budget
     const TARGET_BET_CENTS = Math.min(maxPerBet, remainingBudget, remainingTokenBudget);
@@ -6273,7 +6282,7 @@ app.post('/api/bet', async (req, res) => {
       const token = getTokenFromTicker(ticker) || market.assetType || 'token';
       return res.status(400).json({
         success: false,
-        error: `Token limit reached for ${token}. Only $${(remainingTokenBudget/100).toFixed(2)} remaining of $${(maxPerToken/100).toFixed(2)} max per token.`
+        error: `Token cycle limit reached for ${token}. Only $${(remainingTokenBudget/100).toFixed(2)} remaining of $${(maxPerTokenPerCycle/100).toFixed(2)} per cycle.`
       });
     }
 
@@ -6353,7 +6362,7 @@ app.post('/api/bet', async (req, res) => {
           remainingDollars: (getTotalRemainingBudget(req.userState, userConfig) / 100).toFixed(2),
           byToken: getExposureByToken(req.userState),
           positionCount: (userPortfolio.positions || []).length,
-          maxPerToken: getMaxPerToken(userConfig),
+          maxPerTokenPerCycle: getMaxPerTokenPerCycle(userConfig),
           hourly: {
             current: simRisk.hourly,
             max: getMaxRisk('hourly', userConfig),
@@ -6486,7 +6495,7 @@ app.post('/api/bet', async (req, res) => {
           remainingDollars: (getTotalRemainingBudget(req.userState, userConfig) / 100).toFixed(2),
           byToken: getExposureByToken(req.userState),
           positionCount: (userPortfolio.positions || []).length,
-          maxPerToken: getMaxPerToken(userConfig),
+          maxPerTokenPerCycle: getMaxPerTokenPerCycle(userConfig),
           hourly: {
             current: riskByType.hourly,
             max: getMaxRisk('hourly', userConfig),
@@ -6668,16 +6677,16 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     }
     const category = best.marketCategory || 'crypto';
     const maxPerBet = getMaxPerBet(poolName === 'hourly' ? 'hourly' : 'other', userConfig);
-    const remainingTokenBudget = getRemainingTokenBudget(best.ticker, best.assetType || best.cryptoType, req.userState, userConfig);
+    const remainingTokenBudget = getRemainingTokenBudget(best.ticker, best.assetType || best.cryptoType, req.userState, userConfig, req.userId);
     console.log(`Auto-bet found [${category}]: ${best.title} | Win prob: ${best.winProbability}% | Side: ${best.betSide}`);
 
     // Check per-token limit first
     if (remainingTokenBudget < 10) {
       const token = getTokenFromTicker(best.ticker) || best.assetType || best.cryptoType || 'token';
-      console.log(`⚠️ Token limit reached for ${token} - $${(getMaxPerToken(userConfig)/100).toFixed(2)} max per token`);
+      console.log(`⚠️ Token cycle limit reached for ${token} - $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)} max per cycle`);
       return res.json({
         success: true,
-        message: `Token limit reached for ${token}. Max $${(getMaxPerToken(userConfig)/100).toFixed(2)} per token.`,
+        message: `Token cycle limit reached for ${token}. Max $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)} per cycle.`,
         bet: null,
         risk: getRiskByType(req.userState)
       });
@@ -6801,7 +6810,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
           remainingDollars: (getTotalRemainingBudget(req.userState, userConfig) / 100).toFixed(2),
           byToken: getExposureByToken(req.userState),
           positionCount: (userPortfolio.positions || []).length,
-          maxPerToken: getMaxPerToken(userConfig),
+          maxPerTokenPerCycle: getMaxPerTokenPerCycle(userConfig),
           hourly: {
             current: simRiskAuto.hourly,
             max: getMaxRisk('hourly', userConfig),
@@ -6932,7 +6941,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
           remainingDollars: (getTotalRemainingBudget(req.userState, userConfig) / 100).toFixed(2),
           byToken: getExposureByToken(req.userState),
           positionCount: (userPortfolio.positions || []).length,
-          maxPerToken: getMaxPerToken(userConfig),
+          maxPerTokenPerCycle: getMaxPerTokenPerCycle(userConfig),
           hourly: {
             current: riskByType.hourly,
             max: getMaxRisk('hourly', userConfig),
@@ -7056,7 +7065,7 @@ async function runAutoBet(userId = null) {
         const tokenExposure = getExposureByToken(userState);
         console.log(`📊 Calculated token exposure:`);
         for (const [token, exposure] of Object.entries(tokenExposure)) {
-          console.log(`   💵 ${token}: $${(exposure/100).toFixed(2)} exposure (max $${(getMaxPerToken(userConfig)/100).toFixed(2)})`);
+          console.log(`   💵 ${token}: $${(exposure/100).toFixed(2)} exposure (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)})`);
         }
       }
       const preExposure = getRiskByType(userState);
@@ -7371,15 +7380,15 @@ async function runAutoBet(userId = null) {
     }
 
     // Check per-token limit
-    const remainingTokenBudget = getRemainingTokenBudget(best.ticker, best.assetType || best.cryptoType, userState, userConfig);
+    const remainingTokenBudget = getRemainingTokenBudget(best.ticker, best.assetType || best.cryptoType, userState, userConfig, userId);
     const tokenName = getTokenFromTicker(best.ticker) || best.assetType || best.cryptoType || 'token';
     if (remainingTokenBudget < 10) {
-      console.log(`⚠️ Token limit reached for ${tokenName} ($${(getMaxPerToken(userConfig)/100).toFixed(2)} max) - skipping...`);
+      console.log(`⚠️ Token cycle limit reached for ${tokenName} ($${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)} max/cycle) - skipping...`);
       console.log('========================================\n');
 
       lastScanStatus.status = 'token_limit';
-      lastScanStatus.statusMessage = `Token limit reached for ${tokenName}`;
-      lastScanStatus.blockedReasons.push(`${tokenName} limit: $${(getMaxPerToken(userConfig)/100).toFixed(2)} max per token`);
+      lastScanStatus.statusMessage = `Token cycle limit reached for ${tokenName}`;
+      lastScanStatus.blockedReasons.push(`${tokenName} cycle limit: $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)} max per cycle`);
       return;
     }
 
@@ -10533,7 +10542,7 @@ app.get('/api/portfolio', async (req, res) => {
           currentDollars: (portfolioRisk.total / 100).toFixed(2),
           maxDollars: (portfolioMaxTotal / 100).toFixed(2),
           remainingDollars: (Math.max(0, portfolioMaxTotal - portfolioRisk.total) / 100).toFixed(2),
-          maxPerToken: getMaxPerToken(userConfig),
+          maxPerTokenPerCycle: getMaxPerTokenPerCycle(userConfig),
           byToken: getExposureByToken(req.userState),
           positionCount: (userPortfolio.positions || []).length,
           rollingSpend: getRollingSpend(req.userId),
@@ -10541,11 +10550,11 @@ app.get('/api/portfolio', async (req, res) => {
           rollingSpendCap: portfolioMaxTotal * 2,
           rollingSpendCapDollars: ((portfolioMaxTotal * 2) / 100).toFixed(2),
           rollingSpendByToken: {
-            BTC: getRollingSpendByToken(req.userId, 'BTC'),
-            ETH: getRollingSpendByToken(req.userId, 'ETH'),
-            SOL: getRollingSpendByToken(req.userId, 'SOL')
+            BTC: getRollingSpendByToken(req.userId, 'BTC', CYCLE_WINDOW_MS),
+            ETH: getRollingSpendByToken(req.userId, 'ETH', CYCLE_WINDOW_MS),
+            SOL: getRollingSpendByToken(req.userId, 'SOL', CYCLE_WINDOW_MS)
           },
-          rollingTokenCap: getMaxPerToken(userConfig) * 3,
+          rollingTokenCap: getMaxPerTokenPerCycle(userConfig),
           hourly: {
             current: portfolioRisk.hourly,
             max: getMaxRisk('hourly', userConfig),
@@ -10578,7 +10587,7 @@ app.get('/api/portfolio', async (req, res) => {
           currentDollars: (simRisk.total / 100).toFixed(2),
           maxDollars: (simMaxTotal / 100).toFixed(2),
           remainingDollars: (Math.max(0, simMaxTotal - simRisk.total) / 100).toFixed(2),
-          maxPerToken: getMaxPerToken(userConfig),
+          maxPerTokenPerCycle: getMaxPerTokenPerCycle(userConfig),
           byToken: getExposureByToken(req.userState),
           positionCount: 0,
           rollingSpend: getRollingSpend(req.userId),
@@ -10586,11 +10595,11 @@ app.get('/api/portfolio', async (req, res) => {
           rollingSpendCap: simMaxTotal * 2,
           rollingSpendCapDollars: ((simMaxTotal * 2) / 100).toFixed(2),
           rollingSpendByToken: {
-            BTC: getRollingSpendByToken(req.userId, 'BTC'),
-            ETH: getRollingSpendByToken(req.userId, 'ETH'),
-            SOL: getRollingSpendByToken(req.userId, 'SOL')
+            BTC: getRollingSpendByToken(req.userId, 'BTC', CYCLE_WINDOW_MS),
+            ETH: getRollingSpendByToken(req.userId, 'ETH', CYCLE_WINDOW_MS),
+            SOL: getRollingSpendByToken(req.userId, 'SOL', CYCLE_WINDOW_MS)
           },
-          rollingTokenCap: getMaxPerToken(userConfig) * 3,
+          rollingTokenCap: getMaxPerTokenPerCycle(userConfig),
           hourly: {
             current: simRisk.hourly,
             max: getMaxRisk('hourly', userConfig),
@@ -10625,7 +10634,7 @@ app.get('/api/portfolio', async (req, res) => {
         currentDollars: (errRisk.total / 100).toFixed(2),
         maxDollars: (errMaxTotal / 100).toFixed(2),
         remainingDollars: (Math.max(0, errMaxTotal - errRisk.total) / 100).toFixed(2),
-        maxPerToken: getMaxPerToken(userConfig),
+        maxPerTokenPerCycle: getMaxPerTokenPerCycle(userConfig),
         byToken: getExposureByToken(req.userState),
         positionCount: 0,
         rollingSpend: getRollingSpend(req.userId),

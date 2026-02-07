@@ -566,7 +566,7 @@ function App() {
   })
   const [riskSettings, setRiskSettings] = useState({
     maxPerBet: 500,
-    maxPerToken: 500,
+    maxPerTokenPerCycle: 500,
     maxTotal: 1500
   })
   // Profile system removed - Kalshi credentials tied directly to user account
@@ -1524,21 +1524,14 @@ function App() {
                 </div>
                 <div className="risk-tokens">
                   {['BTC', 'ETH', 'SOL'].map(token => {
-                    const active = (risk.byToken?.[token] || 0);
-                    const rolling = (risk.rollingSpendByToken?.[token] || 0);
-                    const cap = risk.rollingTokenCap || ((riskSettings.maxPerToken || 500) * 2);
-                    const atActiveLimit = active >= (riskSettings.maxPerToken || 500);
-                    const atRollingLimit = rolling >= cap * 0.9;
+                    const cycleSpend = (risk.rollingSpendByToken?.[token] || 0);
+                    const cycleLimit = risk.rollingTokenCap || (riskSettings.maxPerTokenPerCycle || 500);
+                    const atLimit = cycleSpend >= cycleLimit * 0.9;
                     return (
                       <div className="risk-token" key={token}>
                         <span className="risk-token-name">{token}</span>
-                        <span className={`risk-token-value ${atActiveLimit ? 'at-limit' : atRollingLimit ? 'at-limit' : ''}`}>
-                          ${(active / 100).toFixed(2)}
-                          {rolling > active && (
-                            <span className="risk-token-rolling" title={`$${(rolling / 100).toFixed(2)} / $${(cap / 100).toFixed(2)} rolling 2hr cap`}>
-                              {' '}(${(rolling / 100).toFixed(2)} 2hr)
-                            </span>
-                          )}
+                        <span className={`risk-token-value ${atLimit ? 'at-limit' : ''}`}>
+                          ${(cycleSpend / 100).toFixed(2)} / ${(cycleLimit / 100).toFixed(2)}
                         </span>
                       </div>
                     );
@@ -1931,10 +1924,10 @@ function App() {
                         max={10}
                       />
                       <DollarStepper
-                        label="Max per token"
-                        value={Math.round((riskSettings.maxPerToken || 500) / 100)}
-                        onChange={(v) => updateRiskSettings('maxPerToken', v * 100)}
-                        min={1}
+                        label="Per token / cycle"
+                        value={Math.round((riskSettings.maxPerTokenPerCycle || 500) / 100)}
+                        onChange={(v) => updateRiskSettings('maxPerTokenPerCycle', v * 100)}
+                        min={2}
                         max={50}
                       />
                       <h4 style={{ marginTop: '16px' }}>Total Exposure</h4>
