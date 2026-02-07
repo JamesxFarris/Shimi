@@ -1012,6 +1012,7 @@ async function getUserStateAsync(userId) {
           };
         }
         userStates.set(userId, {
+          userId,
           config: loadedConfig,
           betHistory: row.bet_history || [],
           portfolio: row.portfolio || { balance: 0, positions: [] }
@@ -1019,12 +1020,16 @@ async function getUserStateAsync(userId) {
         console.log(`📂 Loaded state for user ${userId} from database`);
       } else {
         // New user - create default state
-        userStates.set(userId, createDefaultUserState());
+        const newState = createDefaultUserState();
+        newState.userId = userId;
+        userStates.set(userId, newState);
         console.log(`🆕 Created new state for user ${userId}`);
       }
     } catch (err) {
       console.error(`Error loading user state for ${userId}:`, err);
-      userStates.set(userId, createDefaultUserState());
+      const fallbackState = createDefaultUserState();
+      fallbackState.userId = userId;
+      userStates.set(userId, fallbackState);
     }
   }
   return userStates.get(userId);
@@ -1046,6 +1051,7 @@ function getUserState(userId) {
 
   // If not cached, return default (async load will happen in middleware)
   const defaultState = createDefaultUserState();
+  defaultState.userId = userId;
   userStates.set(userId, defaultState);
   return defaultState;
 }
@@ -3393,7 +3399,7 @@ function getMaxPerToken(userConfig = null) {
 
 // HARD CAP validation - ensures bet won't exceed ANY limit before placing
 // This is the final safety check to prevent exposure limit violations
-function validateBetWontExceedLimits(ticker, betCostCents, userState, userConfig) {
+function validateBetWontExceedLimits(ticker, betCostCents, userState, userConfig, userId = null) {
   const currentExposure = getRiskByType(userState);
   const tokenExposure = getExposureByToken(userState);
   const token = getTokenFromTicker(ticker);
@@ -3420,8 +3426,8 @@ function validateBetWontExceedLimits(ticker, betCostCents, userState, userConfig
   }
 
   // Check 4: Rolling window spend limit (prevents cumulative overspend after markets expire)
-  const userId = userState?.userId || 'default';
-  const rollingSpend = getRollingSpend(userId);
+  const resolvedUserId = userId || userState?.userId || 'default';
+  const rollingSpend = getRollingSpend(resolvedUserId);
   const rollingSpendCap = maxTotal * 3; // 3x exposure limit allows turnover but prevents runaway
   if (rollingSpend + betCostCents > rollingSpendCap) {
     return { valid: false, reason: `Rolling spend $${((rollingSpend + betCostCents)/100).toFixed(2)} would exceed 2hr cap $${(rollingSpendCap/100).toFixed(2)}` };
@@ -3429,7 +3435,7 @@ function validateBetWontExceedLimits(ticker, betCostCents, userState, userConfig
 
   // Check 5: Per-token rolling spend (prevents single token from eating entire budget across cycles)
   if (token) {
-    const tokenRollingSpend = getRollingSpendByToken(userId, token);
+    const tokenRollingSpend = getRollingSpendByToken(resolvedUserId, token);
     const tokenRollingCap = maxPerToken * 3;
     if (tokenRollingSpend + betCostCents > tokenRollingCap) {
       return { valid: false, reason: `Rolling ${token} spend $${((tokenRollingSpend + betCostCents)/100).toFixed(2)} would exceed 2hr cap $${(tokenRollingCap/100).toFixed(2)}` };
@@ -6164,6 +6170,13 @@ app.post('/api/bet', async (req, res) => {
     }
 
     const totalCost = count * priceCents;
+
+    // HARD LIMIT CHECK: Validate bet won't exceed ANY limit (including rolling spend)
+    const validation = validateBetWontExceedLimits(ticker, totalCost, req.userState, userConfig, req.userId);
+    if (!validation.valid) {
+      return res.status(400).json({ success: false, error: `Bet blocked: ${validation.reason}` });
+    }
+
     console.log(`Bet: ${ticker} | ${side} | price=${priceCents}¢ | count=${count} | total=${totalCost}¢`);
 
     const betRecord = {
@@ -6575,7 +6588,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     const totalCost = count * priceCents;
 
     // HARD LIMIT CHECK: Validate bet won't exceed ANY limit
-    const validation = validateBetWontExceedLimits(best.ticker, totalCost, req.userState, req.userState?.config);
+    const validation = validateBetWontExceedLimits(best.ticker, totalCost, req.userState, req.userState?.config, req.userId);
     if (!validation.valid) {
       console.log(`🚫 Bet blocked: ${validation.reason}`);
       return res.json({
@@ -7313,7 +7326,7 @@ async function runAutoBet(userId = null) {
     const totalCost = count * priceCents;
 
     // HARD LIMIT CHECK: Validate bet won't exceed ANY limit
-    const validation = validateBetWontExceedLimits(best.ticker, totalCost, userState, userConfig);
+    const validation = validateBetWontExceedLimits(best.ticker, totalCost, userState, userConfig, userId);
     if (!validation.valid) {
       console.log(`🚫 Bet blocked: ${validation.reason}`);
       lastScanStatus.status = 'limit_exceeded';
