@@ -1526,7 +1526,7 @@ function App() {
                   {['BTC', 'ETH', 'SOL'].map(token => {
                     const active = (risk.byToken?.[token] || 0);
                     const rolling = (risk.rollingSpendByToken?.[token] || 0);
-                    const cap = risk.rollingTokenCap || ((riskSettings.maxPerToken || 500) * 3);
+                    const cap = risk.rollingTokenCap || ((riskSettings.maxPerToken || 500) * 2);
                     const atActiveLimit = active >= (riskSettings.maxPerToken || 500);
                     const atRollingLimit = rolling >= cap * 0.9;
                     return (

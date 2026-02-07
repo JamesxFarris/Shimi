@@ -3503,7 +3503,7 @@ function validateBetWontExceedLimits(ticker, betCostCents, userState, userConfig
   // Check 4: Rolling window spend limit (prevents cumulative overspend after markets expire)
   const resolvedUserId = userId || userState?.userId || 'default';
   const rollingSpend = getRollingSpend(resolvedUserId);
-  const rollingSpendCap = maxTotal * 3; // 3x exposure limit allows turnover but prevents runaway
+  const rollingSpendCap = maxTotal * 2; // 2x exposure limit over 2hr window
   if (rollingSpend + betCostCents > rollingSpendCap) {
     return { valid: false, reason: `Rolling spend $${((rollingSpend + betCostCents)/100).toFixed(2)} would exceed 2hr cap $${(rollingSpendCap/100).toFixed(2)}` };
   }
@@ -3511,7 +3511,7 @@ function validateBetWontExceedLimits(ticker, betCostCents, userState, userConfig
   // Check 5: Per-token rolling spend (prevents single token from eating entire budget across cycles)
   if (token) {
     const tokenRollingSpend = getRollingSpendByToken(resolvedUserId, token);
-    const tokenRollingCap = maxPerToken * 3;
+    const tokenRollingCap = maxPerToken * 2; // 2x per-token limit over 2 hours
     if (tokenRollingSpend + betCostCents > tokenRollingCap) {
       return { valid: false, reason: `Rolling ${token} spend $${((tokenRollingSpend + betCostCents)/100).toFixed(2)} would exceed 2hr cap $${(tokenRollingCap/100).toFixed(2)}` };
     }
@@ -3550,6 +3550,8 @@ function getExposureForTicker(ticker, userState = null) {
 }
 
 // Rolling spend tracker — prevents exposure reset after 15-min market expiry
+// CRITICAL: Also derives from betHistory so it survives server restarts.
+// The in-memory tracker is a fast cache; betHistory is the source of truth.
 const rollingSpendTracker = new Map(); // userId -> [{amount, token, timestamp}]
 
 function trackSpend(userId, amountCents, token) {
@@ -3558,21 +3560,58 @@ function trackSpend(userId, amountCents, token) {
   rollingSpendTracker.get(key).push({ amount: amountCents, token: token || null, timestamp: Date.now() });
 }
 
+// Compute rolling spend from BOTH in-memory tracker AND betHistory (survives restarts)
 function getRollingSpend(userId, windowMs = 2 * 60 * 60 * 1000) {
+  const cutoff = Date.now() - windowMs;
+
+  // In-memory tracker (fast path, covers bets placed this session)
   const key = userId || 'default';
   const entries = rollingSpendTracker.get(key) || [];
-  const cutoff = Date.now() - windowMs;
-  // Clean old entries
   const recent = entries.filter(e => e.timestamp > cutoff);
   rollingSpendTracker.set(key, recent);
-  return recent.reduce((sum, e) => sum + e.amount, 0);
+  const memorySpend = recent.reduce((sum, e) => sum + e.amount, 0);
+
+  // betHistory (source of truth, survives restarts)
+  const userState = userId ? userStates.get(userId) : null;
+  const userBetHistory = userState?.betHistory || betHistory;
+  const historySpend = computeRollingSpendFromHistory(userBetHistory, null, windowMs);
+
+  // Use whichever is higher — memory tracker might have bets not yet in history,
+  // history has bets from before this server session
+  return Math.max(memorySpend, historySpend);
 }
 
 function getRollingSpendByToken(userId, token, windowMs = 2 * 60 * 60 * 1000) {
+  const cutoff = Date.now() - windowMs;
+
+  // In-memory tracker
   const key = userId || 'default';
   const entries = rollingSpendTracker.get(key) || [];
+  const memorySpend = entries.filter(e => e.timestamp > cutoff && e.token === token)
+    .reduce((sum, e) => sum + e.amount, 0);
+
+  // betHistory (source of truth)
+  const userState = userId ? userStates.get(userId) : null;
+  const userBetHistory = userState?.betHistory || betHistory;
+  const historySpend = computeRollingSpendFromHistory(userBetHistory, token, windowMs);
+
+  return Math.max(memorySpend, historySpend);
+}
+
+// Derive rolling spend from betHistory — this is restart-proof
+function computeRollingSpendFromHistory(betHistoryArr, token, windowMs = 2 * 60 * 60 * 1000) {
   const cutoff = Date.now() - windowMs;
-  return entries.filter(e => e.timestamp > cutoff && e.token === token).reduce((sum, e) => sum + e.amount, 0);
+  let total = 0;
+  for (const bet of betHistoryArr) {
+    const ts = new Date(bet.timestamp).getTime();
+    if (ts < cutoff) continue; // Old bet, skip
+    if (token) {
+      const betToken = getTokenFromTicker(bet.ticker) || bet.assetType;
+      if (betToken !== token) continue;
+    }
+    total += bet.totalCost || 0;
+  }
+  return total;
 }
 
 // Daily loss tracking — rolling 24-hour P&L
@@ -5685,8 +5724,8 @@ app.get('/api/opportunities/all', async (req, res) => {
         positionCount: (userPortfolio.positions || []).length,
         rollingSpend: getRollingSpend(req.userId),
         rollingSpendDollars: (getRollingSpend(req.userId) / 100).toFixed(2),
-        rollingSpendCap: getMaxTotalRisk(userConfig) * 3,
-        rollingSpendCapDollars: ((getMaxTotalRisk(userConfig) * 3) / 100).toFixed(2),
+        rollingSpendCap: getMaxTotalRisk(userConfig) * 2,
+        rollingSpendCapDollars: ((getMaxTotalRisk(userConfig) * 2) / 100).toFixed(2),
         rollingSpendByToken: {
           BTC: getRollingSpendByToken(req.userId, 'BTC'),
           ETH: getRollingSpendByToken(req.userId, 'ETH'),
@@ -7023,7 +7062,7 @@ async function runAutoBet(userId = null) {
       const preExposure = getRiskByType(userState);
       const preTokenExposure = getExposureByToken(userState);
       const rollingSpendNow = getRollingSpend(userId);
-      const rollingSpendCapNow = getMaxTotalRisk(userConfig) * 3;
+      const rollingSpendCapNow = getMaxTotalRisk(userConfig) * 2;
       console.log(`📊 Pre-bet exposure: Total=$${(preExposure.total/100).toFixed(2)} (max $${(getMaxTotalRisk(userConfig)/100).toFixed(2)}) | Rolling 2hr spend: $${(rollingSpendNow/100).toFixed(2)} / $${(rollingSpendCapNow/100).toFixed(2)} | Tokens=${JSON.stringify(
         Object.fromEntries(Object.entries(preTokenExposure).map(([k,v]) => [k, '$'+(v/100).toFixed(2)]))
       )}`);
@@ -10499,8 +10538,8 @@ app.get('/api/portfolio', async (req, res) => {
           positionCount: (userPortfolio.positions || []).length,
           rollingSpend: getRollingSpend(req.userId),
           rollingSpendDollars: (getRollingSpend(req.userId) / 100).toFixed(2),
-          rollingSpendCap: portfolioMaxTotal * 3,
-          rollingSpendCapDollars: ((portfolioMaxTotal * 3) / 100).toFixed(2),
+          rollingSpendCap: portfolioMaxTotal * 2,
+          rollingSpendCapDollars: ((portfolioMaxTotal * 2) / 100).toFixed(2),
           rollingSpendByToken: {
             BTC: getRollingSpendByToken(req.userId, 'BTC'),
             ETH: getRollingSpendByToken(req.userId, 'ETH'),
@@ -10544,8 +10583,8 @@ app.get('/api/portfolio', async (req, res) => {
           positionCount: 0,
           rollingSpend: getRollingSpend(req.userId),
           rollingSpendDollars: (getRollingSpend(req.userId) / 100).toFixed(2),
-          rollingSpendCap: simMaxTotal * 3,
-          rollingSpendCapDollars: ((simMaxTotal * 3) / 100).toFixed(2),
+          rollingSpendCap: simMaxTotal * 2,
+          rollingSpendCapDollars: ((simMaxTotal * 2) / 100).toFixed(2),
           rollingSpendByToken: {
             BTC: getRollingSpendByToken(req.userId, 'BTC'),
             ETH: getRollingSpendByToken(req.userId, 'ETH'),
@@ -10591,8 +10630,8 @@ app.get('/api/portfolio', async (req, res) => {
         positionCount: 0,
         rollingSpend: getRollingSpend(req.userId),
         rollingSpendDollars: (getRollingSpend(req.userId) / 100).toFixed(2),
-        rollingSpendCap: errMaxTotal * 3,
-        rollingSpendCapDollars: ((errMaxTotal * 3) / 100).toFixed(2),
+        rollingSpendCap: errMaxTotal * 2,
+        rollingSpendCapDollars: ((errMaxTotal * 2) / 100).toFixed(2),
         hourly: {
           current: errRisk.hourly,
           max: getMaxRisk('hourly', userConfig),
