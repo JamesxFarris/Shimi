@@ -2089,12 +2089,13 @@ let priceSource = 'none';
 let binanceFailCount = 0;
 
 // Helper to update a token's price data
-function updateTokenPrice(token, price, now) {
+function updateTokenPrice(token, price, now, source) {
   if (!cryptoPrices[token]) return;
 
   cryptoPrices[token].price = price;
   cryptoPrices[token].timestamp = now;
-  cryptoPrices[token].source = priceSource;
+  cryptoPrices[token].source = source || priceSource;
+  if (source) priceSource = source;
 
   // Ring buffer: O(1) insert, capped at 120 entries automatically
   cryptoPrices[token].history.push({ price, time: now });
@@ -2128,7 +2129,7 @@ function initBinanceWebSocket() {
   }
 
   const streams = Object.values(BINANCE_SYMBOLS).map(s => `${s.toLowerCase()}@miniTicker`).join('/');
-  const url = `wss://stream.binance.us:9443/stream?streams=${streams}`;
+  const url = `wss://stream.binance.com:9443/stream?streams=${streams}`;
 
   console.log('🔌 Connecting to Binance WebSocket...');
   binanceWs = new WebSocket(url);
@@ -2136,7 +2137,6 @@ function initBinanceWebSocket() {
   binanceWs.on('open', () => {
     binanceWsConnected = true;
     binanceWsReconnectDelay = 1000;
-    priceSource = 'binance-ws';
     console.log('✅ Binance WebSocket connected - real-time prices active');
   });
 
@@ -2153,8 +2153,7 @@ function initBinanceWebSocket() {
       if (!price || price <= 0) return;
 
       const now = Date.now();
-      priceSource = 'binance-ws';
-      updateTokenPrice(token, price, now);
+      updateTokenPrice(token, price, now, 'binance-ws');
       lastWsPriceUpdate = now;
       binanceFailCount = 0;
     } catch (e) {
@@ -2184,7 +2183,81 @@ function scheduleWsReconnect() {
   }, binanceWsReconnectDelay);
 }
 
-// Fetch prices from Binance.US (PRIMARY - very fast, works for US users)
+// Coinbase WebSocket state
+let coinbaseWsConnected = false;
+let coinbaseWs = null;
+let coinbaseWsReconnectDelay = 1000;
+let coinbaseWsReconnectTimer = null;
+
+const COINBASE_SYMBOLS = {
+  'BTC-USD': 'BTC',
+  'ETH-USD': 'ETH',
+  'SOL-USD': 'SOL'
+};
+
+function initCoinbaseWebSocket() {
+  if (coinbaseWs) {
+    try { coinbaseWs.close(); } catch (e) {}
+  }
+
+  console.log('🔌 Connecting to Coinbase WebSocket...');
+  coinbaseWs = new WebSocket('wss://ws-feed.exchange.coinbase.com');
+
+  coinbaseWs.on('open', () => {
+    coinbaseWsConnected = true;
+    coinbaseWsReconnectDelay = 1000;
+    console.log('✅ Coinbase WebSocket connected - real-time prices active');
+
+    const subscribeMsg = JSON.stringify({
+      type: 'subscribe',
+      product_ids: Object.keys(COINBASE_SYMBOLS),
+      channels: ['ticker']
+    });
+    coinbaseWs.send(subscribeMsg);
+  });
+
+  coinbaseWs.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(raw);
+      if (msg.type !== 'ticker') return;
+
+      const token = COINBASE_SYMBOLS[msg.product_id];
+      if (!token) return;
+
+      const price = parseFloat(msg.price);
+      if (!price || price <= 0) return;
+
+      const now = Date.now();
+      updateTokenPrice(token, price, now, 'coinbase-ws');
+      lastWsPriceUpdate = now;
+    } catch (e) {
+      // Ignore parse errors on individual messages
+    }
+  });
+
+  coinbaseWs.on('close', (code, reason) => {
+    coinbaseWsConnected = false;
+    console.log(`⚠️ Coinbase WebSocket closed (code=${code}). Reconnecting in ${coinbaseWsReconnectDelay/1000}s...`);
+    scheduleCoinbaseWsReconnect();
+  });
+
+  coinbaseWs.on('error', (err) => {
+    coinbaseWsConnected = false;
+    console.error('Coinbase WebSocket error:', err.message);
+    // 'close' event will fire after this, triggering reconnect
+  });
+}
+
+function scheduleCoinbaseWsReconnect() {
+  if (coinbaseWsReconnectTimer) clearTimeout(coinbaseWsReconnectTimer);
+  coinbaseWsReconnectTimer = setTimeout(() => {
+    coinbaseWsReconnectTimer = null;
+    initCoinbaseWebSocket();
+    coinbaseWsReconnectDelay = Math.min(coinbaseWsReconnectDelay * 2, 30000);
+  }, coinbaseWsReconnectDelay);
+}
+
+// Fetch prices from Binance (PRIMARY - very fast, works for US users)
 async function fetchBinancePrices() {
   try {
     const res = await fetch(`https://api.binance.us/api/v3/ticker/price`);
@@ -2207,13 +2280,12 @@ async function fetchBinancePrices() {
     for (const [token, symbol] of Object.entries(BINANCE_SYMBOLS)) {
       const price = priceMap[symbol];
       if (price && price > 0) {
-        updateTokenPrice(token, price, now);
+        updateTokenPrice(token, price, now, 'binance');
         updated++;
       }
     }
 
     if (updated > 0) {
-      priceSource = 'binance';
       binanceFailCount = 0;
     }
 
@@ -2246,13 +2318,9 @@ async function fetchCoinGeckoPrices() {
     for (const [token, geckoId] of Object.entries(COINGECKO_IDS)) {
       const priceData = data[geckoId];
       if (priceData && priceData.usd > 0) {
-        updateTokenPrice(token, priceData.usd, now);
+        updateTokenPrice(token, priceData.usd, now, 'coingecko');
         updated++;
       }
-    }
-
-    if (updated > 0) {
-      priceSource = 'coingecko';
     }
 
     return updated > 0 ? cryptoPrices : null;
@@ -3091,26 +3159,26 @@ function normalCDF(x) {
   return isNaN(result) ? 0.5 : Math.max(0.0001, Math.min(0.9999, result));
 }
 
-// Start price tracking: WebSocket primary, REST fallback every 30s
+// Start price tracking: WebSocket primary, REST fallback every 5s
 fetchCryptoPrices(); // Immediate fetch on startup (WebSocket takes a moment to connect)
 let priceInterval = setInterval(() => {
-  if (!binanceWsConnected) {
-    console.log('📡 WebSocket disconnected - falling back to REST polling');
+  if (!binanceWsConnected && !coinbaseWsConnected) {
+    console.log('📡 Both WebSockets disconnected - falling back to REST polling');
     fetchCryptoPrices();
   } else {
     // Even when WS is connected, check for per-token staleness
-    // Some tokens (SOL, ETH) may not get WS updates if their stream drops
     const now = Date.now();
     const staleTokens = Object.entries(cryptoPrices)
-      .filter(([, data]) => data?.price && (now - data.timestamp) > 60000)
+      .filter(([, data]) => data?.price && (now - data.timestamp) > 10000)
       .map(([token]) => token);
     if (staleTokens.length > 0) {
       console.log(`📡 WS connected but stale prices for: ${staleTokens.join(', ')} - triggering REST fetch`);
       fetchCryptoPrices();
     }
   }
-}, 30000);
+}, 5000);
 initBinanceWebSocket();
+initCoinbaseWebSocket();
 
 // ============================================
 // RISK MANAGEMENT
