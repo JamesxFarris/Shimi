@@ -3427,6 +3427,15 @@ function validateBetWontExceedLimits(ticker, betCostCents, userState, userConfig
     return { valid: false, reason: `Rolling spend $${((rollingSpend + betCostCents)/100).toFixed(2)} would exceed 2hr cap $${(rollingSpendCap/100).toFixed(2)}` };
   }
 
+  // Check 5: Per-token rolling spend (prevents single token from eating entire budget across cycles)
+  if (token) {
+    const tokenRollingSpend = getRollingSpendByToken(userId, token);
+    const tokenRollingCap = maxPerToken * 3;
+    if (tokenRollingSpend + betCostCents > tokenRollingCap) {
+      return { valid: false, reason: `Rolling ${token} spend $${((tokenRollingSpend + betCostCents)/100).toFixed(2)} would exceed 2hr cap $${(tokenRollingCap/100).toFixed(2)}` };
+    }
+  }
+
   return { valid: true };
 }
 
@@ -3460,12 +3469,12 @@ function getExposureForTicker(ticker, userState = null) {
 }
 
 // Rolling spend tracker — prevents exposure reset after 15-min market expiry
-const rollingSpendTracker = new Map(); // userId -> [{amount, timestamp}]
+const rollingSpendTracker = new Map(); // userId -> [{amount, token, timestamp}]
 
-function trackSpend(userId, amountCents) {
+function trackSpend(userId, amountCents, token) {
   const key = userId || 'default';
   if (!rollingSpendTracker.has(key)) rollingSpendTracker.set(key, []);
-  rollingSpendTracker.get(key).push({ amount: amountCents, timestamp: Date.now() });
+  rollingSpendTracker.get(key).push({ amount: amountCents, token: token || null, timestamp: Date.now() });
 }
 
 function getRollingSpend(userId, windowMs = 2 * 60 * 60 * 1000) {
@@ -3476,6 +3485,13 @@ function getRollingSpend(userId, windowMs = 2 * 60 * 60 * 1000) {
   const recent = entries.filter(e => e.timestamp > cutoff);
   rollingSpendTracker.set(key, recent);
   return recent.reduce((sum, e) => sum + e.amount, 0);
+}
+
+function getRollingSpendByToken(userId, token, windowMs = 2 * 60 * 60 * 1000) {
+  const key = userId || 'default';
+  const entries = rollingSpendTracker.get(key) || [];
+  const cutoff = Date.now() - windowMs;
+  return entries.filter(e => e.timestamp > cutoff && e.token === token).reduce((sum, e) => sum + e.amount, 0);
 }
 
 // Daily loss tracking — rolling 24-hour P&L
@@ -6167,7 +6183,7 @@ app.post('/api/bet', async (req, res) => {
       betRecord.orderId = 'SIM-' + Date.now();
       userBetHistory.unshift(betRecord);
       userConfig.bankroll = (userConfig.bankroll ?? 10000) - betRecord.totalCost;
-      trackSpend(req.userId, betRecord.totalCost);
+      trackSpend(req.userId, betRecord.totalCost, getTokenFromTicker(ticker) || market.assetType);
 
       // Track for performance analysis
       trackBet({
@@ -6276,7 +6292,7 @@ app.post('/api/bet', async (req, res) => {
       betRecord.avgPrice = order.average_fill_price || priceCents;
       betRecord.totalCost = filledCount * (order.average_fill_price || priceCents);
       userBetHistory.unshift(betRecord);
-      trackSpend(req.userId, betRecord.totalCost);
+      trackSpend(req.userId, betRecord.totalCost, getTokenFromTicker(ticker) || market.assetType);
 
       // Track for performance analysis
       trackBet({
@@ -6612,7 +6628,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       betRecord.orderId = 'SIM-' + Date.now();
       userBetHistory.unshift(betRecord);
       userConfig.bankroll -= betRecord.totalCost;
-      trackSpend(req.userId, betRecord.totalCost);
+      trackSpend(req.userId, betRecord.totalCost, getTokenFromTicker(best.ticker) || best.cryptoType || best.assetType);
 
       // Track for performance analysis
       trackBet({
@@ -6720,7 +6736,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       betRecord.avgPrice = order.average_fill_price || priceCents;
       betRecord.totalCost = filledCount * (order.average_fill_price || priceCents);
       userBetHistory.unshift(betRecord);
-      trackSpend(req.userId, betRecord.totalCost);
+      trackSpend(req.userId, betRecord.totalCost, getTokenFromTicker(best.ticker) || best.cryptoType || best.assetType);
 
       // Track for performance analysis
       trackBet({
@@ -7353,7 +7369,7 @@ async function runAutoBet(userId = null) {
       betRecord.orderId = 'SIM-' + Date.now();
       userBetHistory.unshift(betRecord);
       userConfig.bankroll -= betRecord.totalCost;
-      trackSpend(userId, betRecord.totalCost);
+      trackSpend(userId, betRecord.totalCost, getTokenFromTicker(best.ticker) || best.cryptoType || best.assetType);
 
       // Track for performance analysis
       trackBet({
@@ -7453,7 +7469,7 @@ async function runAutoBet(userId = null) {
     betRecord.avgPrice = order.average_fill_price || priceCents;
     betRecord.totalCost = filledCount * (order.average_fill_price || priceCents);
     userBetHistory.unshift(betRecord);
-    trackSpend(userId, betRecord.totalCost);
+    trackSpend(userId, betRecord.totalCost, getTokenFromTicker(best.ticker) || best.cryptoType || best.assetType);
 
     // Track for performance analysis
     trackBet({
