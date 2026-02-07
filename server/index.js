@@ -7014,9 +7014,11 @@ async function runAutoBet(userId = null) {
       }
 
       // Price history gate: don't bet without enough data for vol/momentum estimates
+      // 10 ticks = enough for basic vol calc (theoretical model needs 10+5 log-returns)
+      // Was 30 but REST fallback only delivers ~2 ticks/min when WS is flaky
       const historyLength = priceData.history?.length || 0;
-      if (historyLength < 30) {
-        console.log(`⏳ Waiting for price history on ${parsed.cryptoType}: ${historyLength}/30 ticks - skipping`);
+      if (historyLength < 10) {
+        console.log(`⏳ Waiting for price history on ${parsed.cryptoType}: ${historyLength}/10 ticks - skipping`);
         return null;
       }
 
