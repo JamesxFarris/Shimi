@@ -203,8 +203,8 @@ const DEFAULT_EMPIRICAL_TABLES = {
         distanceMax: 5.0,   // Don't reject large moves
         timeMin: 2,         // Allow late entries
         timeMax: 13,        // 15-min markets: allow entries from minute 2-13
-        priceMin: 55,       // Allow cheaper entries
-        priceMax: 92        // Allow higher-confidence entries
+        priceMin: 20,       // Let edge/signal filters handle quality
+        priceMax: 95        // Capture near-certainty late-game bets
       }
     },
     ETH: {
@@ -220,8 +220,8 @@ const DEFAULT_EMPIRICAL_TABLES = {
         distanceMax: 5.0,
         timeMin: 2,
         timeMax: 13,
-        priceMin: 55,
-        priceMax: 92
+        priceMin: 20,
+        priceMax: 95
       }
     },
     SOL: {
@@ -237,8 +237,8 @@ const DEFAULT_EMPIRICAL_TABLES = {
         distanceMax: 5.0,
         timeMin: 2,
         timeMax: 13,
-        priceMin: 55,
-        priceMax: 92
+        priceMin: 20,
+        priceMax: 95
       }
     }
   },
@@ -7013,6 +7013,13 @@ async function runAutoBet(userId = null) {
         return null;
       }
 
+      // Price history gate: don't bet without enough data for vol/momentum estimates
+      const historyLength = priceData.history?.length || 0;
+      if (historyLength < 30) {
+        console.log(`⏳ Waiting for price history on ${parsed.cryptoType}: ${historyLength}/30 ticks - skipping`);
+        return null;
+      }
+
       // Fetch orderbook for liquidity check
       let orderbook = null;
       if (userConfig.liquiditySettings?.enabled !== false) {
@@ -7287,9 +7294,10 @@ async function runAutoBet(userId = null) {
 
     const priceCents = Math.round(best.betPrice * 100);
 
-    // KELLY CRITERION POSITION SIZING (CONSERVATIVE)
-    // Reduced to 1/8 Kelly and hard-capped at 10% of bankroll to prevent overbet
-    const kellyFraction = 0.125; // Very conservative: 1/8 Kelly (was 1/4)
+    // KELLY CRITERION POSITION SIZING (ADAPTIVE)
+    // Low vol: 1/5 Kelly + 15% bankroll cap (high certainty). Normal: 1/8 Kelly + 10% cap.
+    const isLowVol = best.regime === 'low';
+    const kellyFraction = isLowVol ? 0.20 : 0.125; // 1/5 Kelly in low vol, 1/8 otherwise
     const bankrollCents = userConfig.bankroll ?? 1000;
     const winProb = (best.winProbability || 60) / 100;
 
@@ -7318,14 +7326,14 @@ async function runAutoBet(userId = null) {
 
     // Apply fractional Kelly with HARD 10% bankroll cap
     let kellyBetCents = Math.round(bankrollCents * Math.max(0, kellyOptimal) * kellyFraction);
-    const maxBankrollPct = Math.round(bankrollCents * 0.10); // Never bet more than 10% of bankroll
+    const maxBankrollPct = Math.round(bankrollCents * (isLowVol ? 0.15 : 0.10)); // 15% in low vol, 10% otherwise
     kellyBetCents = Math.min(kellyBetCents, maxBankrollPct);
 
     // Apply min/max constraints: minimum $1, maximum from hard cap
     const MIN_BET_CENTS = 100; // $1 minimum
     const MAX_BET_CENTS = Math.min(hardCapCents, Math.max(MIN_BET_CENTS, kellyBetCents));
 
-    console.log(`   Kelly sizing: edge=${((winProb - priceDecimal)*100).toFixed(1)}%, kelly=${kellyOptimal.toFixed(3)}, bet=$${(kellyBetCents/100).toFixed(2)} → capped=$${(MAX_BET_CENTS/100).toFixed(2)}`);
+    console.log(`   Kelly sizing: edge=${((winProb - priceDecimal)*100).toFixed(1)}%, kelly=${kellyOptimal.toFixed(3)}, fraction=${kellyFraction}${isLowVol ? ' (low-vol)' : ''}, bet=$${(kellyBetCents/100).toFixed(2)} → capped=$${(MAX_BET_CENTS/100).toFixed(2)}`);
 
     // Calculate contracts but cap total cost
     let count = Math.floor(MAX_BET_CENTS / priceCents);
@@ -7833,7 +7841,7 @@ function _detectVolatilityRegimeInner(token, priceHistory = null) {
     return {
       regime: 'low',
       reason: `Low vol (${volatility.toFixed(3)}% vs avg ${avgVol.toFixed(3)}%)`,
-      multiplier: 1.05,
+      multiplier: 1.15,
       volatility
     };
   } else if (volatility > avgVol * 1.5) {
@@ -7892,14 +7900,16 @@ function calculateSignalStrength(winRate, edge, sampleSize, regime, timeRemainin
   // Time sweet spot contribution: 0-5 points
   // Optimal: 3-8 minutes (enough time for price to stabilize but not too much uncertainty)
   let timePoints = 0;
-  if (timeRemaining >= 3 && timeRemaining <= 8) {
-    timePoints = 5; // Sweet spot
-  } else if (timeRemaining >= 2 && timeRemaining <= 12) {
-    timePoints = 2; // Acceptable range
-  } else if (timeRemaining > 12 && timeRemaining <= 15) {
-    timePoints = 1; // Early market entry - small contribution
+  if (timeRemaining >= 2 && timeRemaining <= 5) {
+    timePoints = 8; // Near expiry with data = highest certainty
+  } else if (timeRemaining > 5 && timeRemaining <= 10) {
+    timePoints = 5; // Good data, reasonable time horizon
+  } else if (timeRemaining > 10 && timeRemaining <= 13) {
+    timePoints = 2; // Data still accumulating
+  } else if (timeRemaining > 13) {
+    timePoints = 0; // Too early, limited data
   } else {
-    timePoints = 0; // Too late (<2 min)
+    timePoints = 3; // <2 min: very late but confirmed positions still valuable
   }
   score += timePoints;
 
@@ -8104,7 +8114,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   console.log(`    📊 ${token} prices: yesAsk=${(parsed.yesAsk*100).toFixed(0)}¢ noAsk=${(parsed.noAsk*100).toFixed(0)}¢ | betSide=${betSide} | marketPrice=${marketPriceCents}¢`);
 
   // Check price window - allow up to 97¢ for high-confidence near-expiry bets
-  const withinPriceWindow = marketPriceCents >= (entryWindows.priceMin || 35) &&
+  const withinPriceWindow = marketPriceCents >= (entryWindows.priceMin || 20) &&
                             marketPriceCents <= (entryWindows.priceMax || 97);
 
   // STALE MOMENTUM: Flag for soft penalty instead of hard block
@@ -8282,7 +8292,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   // In low vol, outcomes are more predictable - smaller edge is more reliable
   const effectiveMinEdge = regime.regime === 'low'
-    ? Math.max(2, (rules.minEdgeAfterFees || 3) - 1)
+    ? Math.max(1, (rules.minEdgeAfterFees || 3) - 2)
     : (rules.minEdgeAfterFees || 3);
   if (netEdge < effectiveMinEdge) {
     reasons.push(`Edge ${netEdge.toFixed(1)}% < ${effectiveMinEdge}%${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
@@ -8306,12 +8316,20 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   }
 
   if (!withinTimeWindow) {
-    const tMin = entryWindows.timeMin || 2;
-    const tMax = entryWindows.timeMax || 13;
-    const farOutside = timeRemaining < tMin * 0.5 || timeRemaining > tMax * 1.15;
-    const penalty = farOutside ? -10 : -5;
-    adjustedSignalStrength += penalty;
-    windowPenalties.push(`time ${penalty}pts`);
+    if (timeRemaining < (entryWindows.timeMin || 2) && netEdge > 3) {
+      // Near expiry with confirmed edge = BONUS, not penalty
+      const bonus = Math.min(10, Math.round(netEdge));
+      adjustedSignalStrength += bonus;
+      windowPenalties.push(`late-game confirmed +${bonus}pts`);
+    } else {
+      // Too early or no edge — standard penalty
+      const tMin = entryWindows.timeMin || 2;
+      const tMax = entryWindows.timeMax || 13;
+      const farOutside = timeRemaining < tMin * 0.5 || timeRemaining > tMax * 1.15;
+      const penalty = farOutside ? -10 : -5;
+      adjustedSignalStrength += penalty;
+      windowPenalties.push(`time ${penalty}pts`);
+    }
   }
 
   // Stale momentum: soft penalty instead of hard block
