@@ -2089,12 +2089,13 @@ let priceSource = 'none';
 let binanceFailCount = 0;
 
 // Helper to update a token's price data
-function updateTokenPrice(token, price, now) {
+function updateTokenPrice(token, price, now, source) {
   if (!cryptoPrices[token]) return;
 
   cryptoPrices[token].price = price;
   cryptoPrices[token].timestamp = now;
-  cryptoPrices[token].source = priceSource;
+  cryptoPrices[token].source = source || priceSource;
+  if (source) priceSource = source;
 
   // Ring buffer: O(1) insert, capped at 120 entries automatically
   cryptoPrices[token].history.push({ price, time: now });
@@ -2128,7 +2129,7 @@ function initBinanceWebSocket() {
   }
 
   const streams = Object.values(BINANCE_SYMBOLS).map(s => `${s.toLowerCase()}@miniTicker`).join('/');
-  const url = `wss://stream.binance.us:9443/stream?streams=${streams}`;
+  const url = `wss://stream.binance.com:9443/stream?streams=${streams}`;
 
   console.log('🔌 Connecting to Binance WebSocket...');
   binanceWs = new WebSocket(url);
@@ -2136,7 +2137,6 @@ function initBinanceWebSocket() {
   binanceWs.on('open', () => {
     binanceWsConnected = true;
     binanceWsReconnectDelay = 1000;
-    priceSource = 'binance-ws';
     console.log('✅ Binance WebSocket connected - real-time prices active');
   });
 
@@ -2153,8 +2153,7 @@ function initBinanceWebSocket() {
       if (!price || price <= 0) return;
 
       const now = Date.now();
-      priceSource = 'binance-ws';
-      updateTokenPrice(token, price, now);
+      updateTokenPrice(token, price, now, 'binance-ws');
       lastWsPriceUpdate = now;
       binanceFailCount = 0;
     } catch (e) {
@@ -2184,7 +2183,81 @@ function scheduleWsReconnect() {
   }, binanceWsReconnectDelay);
 }
 
-// Fetch prices from Binance.US (PRIMARY - very fast, works for US users)
+// Coinbase WebSocket state
+let coinbaseWsConnected = false;
+let coinbaseWs = null;
+let coinbaseWsReconnectDelay = 1000;
+let coinbaseWsReconnectTimer = null;
+
+const COINBASE_SYMBOLS = {
+  'BTC-USD': 'BTC',
+  'ETH-USD': 'ETH',
+  'SOL-USD': 'SOL'
+};
+
+function initCoinbaseWebSocket() {
+  if (coinbaseWs) {
+    try { coinbaseWs.close(); } catch (e) {}
+  }
+
+  console.log('🔌 Connecting to Coinbase WebSocket...');
+  coinbaseWs = new WebSocket('wss://ws-feed.exchange.coinbase.com');
+
+  coinbaseWs.on('open', () => {
+    coinbaseWsConnected = true;
+    coinbaseWsReconnectDelay = 1000;
+    console.log('✅ Coinbase WebSocket connected - real-time prices active');
+
+    const subscribeMsg = JSON.stringify({
+      type: 'subscribe',
+      product_ids: Object.keys(COINBASE_SYMBOLS),
+      channels: ['ticker']
+    });
+    coinbaseWs.send(subscribeMsg);
+  });
+
+  coinbaseWs.on('message', (raw) => {
+    try {
+      const msg = JSON.parse(raw);
+      if (msg.type !== 'ticker') return;
+
+      const token = COINBASE_SYMBOLS[msg.product_id];
+      if (!token) return;
+
+      const price = parseFloat(msg.price);
+      if (!price || price <= 0) return;
+
+      const now = Date.now();
+      updateTokenPrice(token, price, now, 'coinbase-ws');
+      lastWsPriceUpdate = now;
+    } catch (e) {
+      // Ignore parse errors on individual messages
+    }
+  });
+
+  coinbaseWs.on('close', (code, reason) => {
+    coinbaseWsConnected = false;
+    console.log(`⚠️ Coinbase WebSocket closed (code=${code}). Reconnecting in ${coinbaseWsReconnectDelay/1000}s...`);
+    scheduleCoinbaseWsReconnect();
+  });
+
+  coinbaseWs.on('error', (err) => {
+    coinbaseWsConnected = false;
+    console.error('Coinbase WebSocket error:', err.message);
+    // 'close' event will fire after this, triggering reconnect
+  });
+}
+
+function scheduleCoinbaseWsReconnect() {
+  if (coinbaseWsReconnectTimer) clearTimeout(coinbaseWsReconnectTimer);
+  coinbaseWsReconnectTimer = setTimeout(() => {
+    coinbaseWsReconnectTimer = null;
+    initCoinbaseWebSocket();
+    coinbaseWsReconnectDelay = Math.min(coinbaseWsReconnectDelay * 2, 30000);
+  }, coinbaseWsReconnectDelay);
+}
+
+// Fetch prices from Binance (PRIMARY - very fast, works for US users)
 async function fetchBinancePrices() {
   try {
     const res = await fetch(`https://api.binance.us/api/v3/ticker/price`);
@@ -2207,13 +2280,12 @@ async function fetchBinancePrices() {
     for (const [token, symbol] of Object.entries(BINANCE_SYMBOLS)) {
       const price = priceMap[symbol];
       if (price && price > 0) {
-        updateTokenPrice(token, price, now);
+        updateTokenPrice(token, price, now, 'binance');
         updated++;
       }
     }
 
     if (updated > 0) {
-      priceSource = 'binance';
       binanceFailCount = 0;
     }
 
@@ -2246,13 +2318,9 @@ async function fetchCoinGeckoPrices() {
     for (const [token, geckoId] of Object.entries(COINGECKO_IDS)) {
       const priceData = data[geckoId];
       if (priceData && priceData.usd > 0) {
-        updateTokenPrice(token, priceData.usd, now);
+        updateTokenPrice(token, priceData.usd, now, 'coingecko');
         updated++;
       }
-    }
-
-    if (updated > 0) {
-      priceSource = 'coingecko';
     }
 
     return updated > 0 ? cryptoPrices : null;
@@ -3091,26 +3159,26 @@ function normalCDF(x) {
   return isNaN(result) ? 0.5 : Math.max(0.0001, Math.min(0.9999, result));
 }
 
-// Start price tracking: WebSocket primary, REST fallback every 30s
+// Start price tracking: WebSocket primary, REST fallback every 5s
 fetchCryptoPrices(); // Immediate fetch on startup (WebSocket takes a moment to connect)
 let priceInterval = setInterval(() => {
-  if (!binanceWsConnected) {
-    console.log('📡 WebSocket disconnected - falling back to REST polling');
+  if (!binanceWsConnected && !coinbaseWsConnected) {
+    console.log('📡 Both WebSockets disconnected - falling back to REST polling');
     fetchCryptoPrices();
   } else {
     // Even when WS is connected, check for per-token staleness
-    // Some tokens (SOL, ETH) may not get WS updates if their stream drops
     const now = Date.now();
     const staleTokens = Object.entries(cryptoPrices)
-      .filter(([, data]) => data?.price && (now - data.timestamp) > 60000)
+      .filter(([, data]) => data?.price && (now - data.timestamp) > 10000)
       .map(([token]) => token);
     if (staleTokens.length > 0) {
       console.log(`📡 WS connected but stale prices for: ${staleTokens.join(', ')} - triggering REST fetch`);
       fetchCryptoPrices();
     }
   }
-}, 30000);
+}, 5000);
 initBinanceWebSocket();
+initCoinbaseWebSocket();
 
 // ============================================
 // RISK MANAGEMENT
@@ -3435,7 +3503,7 @@ function validateBetWontExceedLimits(ticker, betCostCents, userState, userConfig
   // Check 4: Rolling window spend limit (prevents cumulative overspend after markets expire)
   const resolvedUserId = userId || userState?.userId || 'default';
   const rollingSpend = getRollingSpend(resolvedUserId);
-  const rollingSpendCap = maxTotal * 3; // 3x exposure limit allows turnover but prevents runaway
+  const rollingSpendCap = maxTotal * 2; // 2x exposure limit over 2hr window
   if (rollingSpend + betCostCents > rollingSpendCap) {
     return { valid: false, reason: `Rolling spend $${((rollingSpend + betCostCents)/100).toFixed(2)} would exceed 2hr cap $${(rollingSpendCap/100).toFixed(2)}` };
   }
@@ -3443,7 +3511,7 @@ function validateBetWontExceedLimits(ticker, betCostCents, userState, userConfig
   // Check 5: Per-token rolling spend (prevents single token from eating entire budget across cycles)
   if (token) {
     const tokenRollingSpend = getRollingSpendByToken(resolvedUserId, token);
-    const tokenRollingCap = maxPerToken * 3;
+    const tokenRollingCap = maxPerToken * 2; // 2x per-token limit over 2 hours
     if (tokenRollingSpend + betCostCents > tokenRollingCap) {
       return { valid: false, reason: `Rolling ${token} spend $${((tokenRollingSpend + betCostCents)/100).toFixed(2)} would exceed 2hr cap $${(tokenRollingCap/100).toFixed(2)}` };
     }
@@ -3482,6 +3550,8 @@ function getExposureForTicker(ticker, userState = null) {
 }
 
 // Rolling spend tracker — prevents exposure reset after 15-min market expiry
+// CRITICAL: Also derives from betHistory so it survives server restarts.
+// The in-memory tracker is a fast cache; betHistory is the source of truth.
 const rollingSpendTracker = new Map(); // userId -> [{amount, token, timestamp}]
 
 function trackSpend(userId, amountCents, token) {
@@ -3490,21 +3560,58 @@ function trackSpend(userId, amountCents, token) {
   rollingSpendTracker.get(key).push({ amount: amountCents, token: token || null, timestamp: Date.now() });
 }
 
+// Compute rolling spend from BOTH in-memory tracker AND betHistory (survives restarts)
 function getRollingSpend(userId, windowMs = 2 * 60 * 60 * 1000) {
+  const cutoff = Date.now() - windowMs;
+
+  // In-memory tracker (fast path, covers bets placed this session)
   const key = userId || 'default';
   const entries = rollingSpendTracker.get(key) || [];
-  const cutoff = Date.now() - windowMs;
-  // Clean old entries
   const recent = entries.filter(e => e.timestamp > cutoff);
   rollingSpendTracker.set(key, recent);
-  return recent.reduce((sum, e) => sum + e.amount, 0);
+  const memorySpend = recent.reduce((sum, e) => sum + e.amount, 0);
+
+  // betHistory (source of truth, survives restarts)
+  const userState = userId ? userStates.get(userId) : null;
+  const userBetHistory = userState?.betHistory || betHistory;
+  const historySpend = computeRollingSpendFromHistory(userBetHistory, null, windowMs);
+
+  // Use whichever is higher — memory tracker might have bets not yet in history,
+  // history has bets from before this server session
+  return Math.max(memorySpend, historySpend);
 }
 
 function getRollingSpendByToken(userId, token, windowMs = 2 * 60 * 60 * 1000) {
+  const cutoff = Date.now() - windowMs;
+
+  // In-memory tracker
   const key = userId || 'default';
   const entries = rollingSpendTracker.get(key) || [];
+  const memorySpend = entries.filter(e => e.timestamp > cutoff && e.token === token)
+    .reduce((sum, e) => sum + e.amount, 0);
+
+  // betHistory (source of truth)
+  const userState = userId ? userStates.get(userId) : null;
+  const userBetHistory = userState?.betHistory || betHistory;
+  const historySpend = computeRollingSpendFromHistory(userBetHistory, token, windowMs);
+
+  return Math.max(memorySpend, historySpend);
+}
+
+// Derive rolling spend from betHistory — this is restart-proof
+function computeRollingSpendFromHistory(betHistoryArr, token, windowMs = 2 * 60 * 60 * 1000) {
   const cutoff = Date.now() - windowMs;
-  return entries.filter(e => e.timestamp > cutoff && e.token === token).reduce((sum, e) => sum + e.amount, 0);
+  let total = 0;
+  for (const bet of betHistoryArr) {
+    const ts = new Date(bet.timestamp).getTime();
+    if (ts < cutoff) continue; // Old bet, skip
+    if (token) {
+      const betToken = getTokenFromTicker(bet.ticker) || bet.assetType;
+      if (betToken !== token) continue;
+    }
+    total += bet.totalCost || 0;
+  }
+  return total;
 }
 
 // Daily loss tracking — rolling 24-hour P&L
@@ -5615,6 +5722,16 @@ app.get('/api/opportunities/all', async (req, res) => {
         maxPerToken: getMaxPerToken(userConfig),
         byToken: getExposureByToken(req.userState),
         positionCount: (userPortfolio.positions || []).length,
+        rollingSpend: getRollingSpend(req.userId),
+        rollingSpendDollars: (getRollingSpend(req.userId) / 100).toFixed(2),
+        rollingSpendCap: getMaxTotalRisk(userConfig) * 2,
+        rollingSpendCapDollars: ((getMaxTotalRisk(userConfig) * 2) / 100).toFixed(2),
+        rollingSpendByToken: {
+          BTC: getRollingSpendByToken(req.userId, 'BTC'),
+          ETH: getRollingSpendByToken(req.userId, 'ETH'),
+          SOL: getRollingSpendByToken(req.userId, 'SOL')
+        },
+        rollingTokenCap: getMaxPerToken(userConfig) * 3,
         // Hourly pool
         hourly: {
           current: riskByType.hourly,
@@ -6945,7 +7062,7 @@ async function runAutoBet(userId = null) {
       const preExposure = getRiskByType(userState);
       const preTokenExposure = getExposureByToken(userState);
       const rollingSpendNow = getRollingSpend(userId);
-      const rollingSpendCapNow = getMaxTotalRisk(userConfig) * 3;
+      const rollingSpendCapNow = getMaxTotalRisk(userConfig) * 2;
       console.log(`📊 Pre-bet exposure: Total=$${(preExposure.total/100).toFixed(2)} (max $${(getMaxTotalRisk(userConfig)/100).toFixed(2)}) | Rolling 2hr spend: $${(rollingSpendNow/100).toFixed(2)} / $${(rollingSpendCapNow/100).toFixed(2)} | Tokens=${JSON.stringify(
         Object.fromEntries(Object.entries(preTokenExposure).map(([k,v]) => [k, '$'+(v/100).toFixed(2)]))
       )}`);
@@ -10421,8 +10538,14 @@ app.get('/api/portfolio', async (req, res) => {
           positionCount: (userPortfolio.positions || []).length,
           rollingSpend: getRollingSpend(req.userId),
           rollingSpendDollars: (getRollingSpend(req.userId) / 100).toFixed(2),
-          rollingSpendCap: portfolioMaxTotal * 3,
-          rollingSpendCapDollars: ((portfolioMaxTotal * 3) / 100).toFixed(2),
+          rollingSpendCap: portfolioMaxTotal * 2,
+          rollingSpendCapDollars: ((portfolioMaxTotal * 2) / 100).toFixed(2),
+          rollingSpendByToken: {
+            BTC: getRollingSpendByToken(req.userId, 'BTC'),
+            ETH: getRollingSpendByToken(req.userId, 'ETH'),
+            SOL: getRollingSpendByToken(req.userId, 'SOL')
+          },
+          rollingTokenCap: getMaxPerToken(userConfig) * 3,
           hourly: {
             current: portfolioRisk.hourly,
             max: getMaxRisk('hourly', userConfig),
@@ -10460,8 +10583,14 @@ app.get('/api/portfolio', async (req, res) => {
           positionCount: 0,
           rollingSpend: getRollingSpend(req.userId),
           rollingSpendDollars: (getRollingSpend(req.userId) / 100).toFixed(2),
-          rollingSpendCap: simMaxTotal * 3,
-          rollingSpendCapDollars: ((simMaxTotal * 3) / 100).toFixed(2),
+          rollingSpendCap: simMaxTotal * 2,
+          rollingSpendCapDollars: ((simMaxTotal * 2) / 100).toFixed(2),
+          rollingSpendByToken: {
+            BTC: getRollingSpendByToken(req.userId, 'BTC'),
+            ETH: getRollingSpendByToken(req.userId, 'ETH'),
+            SOL: getRollingSpendByToken(req.userId, 'SOL')
+          },
+          rollingTokenCap: getMaxPerToken(userConfig) * 3,
           hourly: {
             current: simRisk.hourly,
             max: getMaxRisk('hourly', userConfig),
@@ -10501,8 +10630,8 @@ app.get('/api/portfolio', async (req, res) => {
         positionCount: 0,
         rollingSpend: getRollingSpend(req.userId),
         rollingSpendDollars: (getRollingSpend(req.userId) / 100).toFixed(2),
-        rollingSpendCap: errMaxTotal * 3,
-        rollingSpendCapDollars: ((errMaxTotal * 3) / 100).toFixed(2),
+        rollingSpendCap: errMaxTotal * 2,
+        rollingSpendCapDollars: ((errMaxTotal * 2) / 100).toFixed(2),
         hourly: {
           current: errRisk.hourly,
           max: getMaxRisk('hourly', userConfig),

@@ -1523,29 +1523,48 @@ function App() {
                   </div>
                 </div>
                 <div className="risk-tokens">
-                  <div className="risk-token">
-                    <span className="risk-token-name">BTC</span>
-                    <span className={`risk-token-value ${risk.byToken?.BTC >= (riskSettings.maxPerToken || 500) ? 'at-limit' : ''}`}>
-                      ${((risk.byToken?.BTC || 0) / 100).toFixed(2)}
-                    </span>
-                  </div>
-                  <div className="risk-token">
-                    <span className="risk-token-name">ETH</span>
-                    <span className={`risk-token-value ${risk.byToken?.ETH >= (riskSettings.maxPerToken || 500) ? 'at-limit' : ''}`}>
-                      ${((risk.byToken?.ETH || 0) / 100).toFixed(2)}
-                    </span>
-                  </div>
-                  <div className="risk-token">
-                    <span className="risk-token-name">SOL</span>
-                    <span className={`risk-token-value ${risk.byToken?.SOL >= (riskSettings.maxPerToken || 500) ? 'at-limit' : ''}`}>
-                      ${((risk.byToken?.SOL || 0) / 100).toFixed(2)}
-                    </span>
-                  </div>
+                  {['BTC', 'ETH', 'SOL'].map(token => {
+                    const active = (risk.byToken?.[token] || 0);
+                    const rolling = (risk.rollingSpendByToken?.[token] || 0);
+                    const cap = risk.rollingTokenCap || ((riskSettings.maxPerToken || 500) * 2);
+                    const atActiveLimit = active >= (riskSettings.maxPerToken || 500);
+                    const atRollingLimit = rolling >= cap * 0.9;
+                    return (
+                      <div className="risk-token" key={token}>
+                        <span className="risk-token-name">{token}</span>
+                        <span className={`risk-token-value ${atActiveLimit ? 'at-limit' : atRollingLimit ? 'at-limit' : ''}`}>
+                          ${(active / 100).toFixed(2)}
+                          {rolling > active && (
+                            <span className="risk-token-rolling" title={`$${(rolling / 100).toFixed(2)} / $${(cap / 100).toFixed(2)} rolling 2hr cap`}>
+                              {' '}(${(rolling / 100).toFixed(2)} 2hr)
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })}
                   <div className="risk-token">
                     <span className="risk-token-name">Positions</span>
                     <span className="risk-token-value">{risk.positionCount || 0}</span>
                   </div>
                 </div>
+                {risk.rollingSpend > 0 && (
+                  <div className="risk-exposure-bar" style={{ marginTop: '6px' }}>
+                    <div className="risk-exposure-label">
+                      <span>2hr Spend: ${risk.rollingSpendDollars || '0.00'}</span>
+                      <span>Cap: ${risk.rollingSpendCapDollars || '0.00'}</span>
+                    </div>
+                    <div className="risk-exposure-track">
+                      <div
+                        className={`risk-exposure-fill ${
+                          (risk.rollingSpend / (risk.rollingSpendCap || 1)) > 0.9 ? 'danger' :
+                          (risk.rollingSpend / (risk.rollingSpendCap || 1)) > 0.7 ? 'warning' : ''
+                        }`}
+                        style={{ width: `${Math.min(100, (risk.rollingSpend / (risk.rollingSpendCap || 1)) * 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Quick Actions */}
@@ -2276,7 +2295,10 @@ function App() {
                 style={{ width: `${Math.min(100, ((risk.current || 0) / (risk.max || 1500)) * 100)}%` }}
               ></div>
             </div>
-            <span className="mobile-exposure-value">${risk.currentDollars || '0.00'}</span>
+            <span className="mobile-exposure-value">
+              ${risk.currentDollars || '0.00'}
+              {risk.rollingSpend > 0 && <span className="risk-token-rolling"> (${risk.rollingSpendDollars} 2hr)</span>}
+            </span>
           </div>
         </div>
 
