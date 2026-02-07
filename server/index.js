@@ -7248,7 +7248,7 @@ async function runAutoBet(userId = null) {
     const MIN_BET_CENTS = 100; // $1 minimum
     const MAX_BET_CENTS = Math.min(hardCapCents, Math.max(MIN_BET_CENTS, kellyBetCents));
 
-    console.log(`   Kelly sizing: edge=${(edgeDecimal*100).toFixed(1)}%, kelly=${kellyOptimal.toFixed(3)}, bet=$${(kellyBetCents/100).toFixed(2)} → capped=$${(MAX_BET_CENTS/100).toFixed(2)}`);
+    console.log(`   Kelly sizing: edge=${((winProb - priceDecimal)*100).toFixed(1)}%, kelly=${kellyOptimal.toFixed(3)}, bet=$${(kellyBetCents/100).toFixed(2)} → capped=$${(MAX_BET_CENTS/100).toFixed(2)}`);
 
     // Calculate contracts but cap total cost
     let count = Math.floor(MAX_BET_CENTS / priceCents);
