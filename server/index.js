@@ -18,7 +18,9 @@ const PORT = process.env.PORT || 3001;
 
 // Global error handlers
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err.message);
+  console.error('Uncaught Exception:', err.message, err.stack);
+  // Process is in undefined state after uncaught exception — must exit
+  gracefulShutdown('uncaughtException');
 });
 process.on('unhandledRejection', (err) => {
   console.error('Unhandled Rejection:', err);
@@ -28,6 +30,23 @@ app.use(cors());
 app.use(express.json());
 
 const KALSHI_API_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
+
+// Global kill switch — create this file to halt ALL betting immediately
+const KILL_SWITCH_FILE = path.join(__dirname, 'KILL_SWITCH');
+let globalKillSwitch = false;
+
+function isKillSwitchActive() {
+  // Check in-memory flag first (fast path), then check file
+  if (globalKillSwitch) return true;
+  try {
+    if (fs.existsSync(KILL_SWITCH_FILE)) {
+      globalKillSwitch = true;
+      console.error('🚨 GLOBAL KILL SWITCH ACTIVE — all betting halted');
+      return true;
+    }
+  } catch (e) { /* ignore fs errors */ }
+  return false;
+}
 
 // ============================================
 // CONFIGURATION - Default template for new users
@@ -1459,15 +1478,25 @@ async function checkPendingSettlements() {
       // For simulated bets or if we can't get Kalshi data, check price
       if (bet.outcome === 'pending' && bet.strikePrice && bet.token) {
         const currentPrice = cryptoPrices[bet.token]?.price;
+        const priceAge = Date.now() - (cryptoPrices[bet.token]?.lastUpdate || 0);
         // Use inferred expiryTime (variable from above) which may have been set earlier in this iteration
         if (currentPrice && expiryTime && new Date(expiryTime) <= new Date()) {
-          // Market should have settled - determine outcome from price
-          const isAbove = currentPrice >= bet.strikePrice;
-          const won = (bet.side.toLowerCase() === 'yes' && isAbove) ||
-                      (bet.side.toLowerCase() === 'no' && !isAbove);
-          const profit = won ? (bet.contracts * 100 - bet.totalCost) : 0;
-          settleBet(bet.id, won ? 'won' : 'lost', currentPrice, profit);
-          console.log(`   ✅ Settled bet ${bet.id} via price: ${won ? 'WON' : 'LOST'} (${bet.side} ${bet.token} @ strike $${bet.strikePrice}, current $${currentPrice})`);
+          // Only settle from price if data is fresh (within 60s of expiry)
+          // Stale prices give wrong settlement results
+          const expiryMs = new Date(expiryTime).getTime();
+          const settlementDelay = Date.now() - expiryMs;
+          if (settlementDelay > 120000) {
+            // More than 2 minutes past expiry — price has likely moved, skip price-based settlement
+            console.log(`   ⏳ Skipping price-based settlement for ${bet.id}: ${(settlementDelay/1000).toFixed(0)}s past expiry (price may be stale)`);
+          } else {
+            // Market should have settled - determine outcome from price
+            const isAbove = currentPrice >= bet.strikePrice;
+            const won = (bet.side.toLowerCase() === 'yes' && isAbove) ||
+                        (bet.side.toLowerCase() === 'no' && !isAbove);
+            const profit = won ? (bet.contracts * 100 - bet.totalCost) : 0;
+            settleBet(bet.id, won ? 'won' : 'lost', currentPrice, profit);
+            console.log(`   ✅ Settled bet ${bet.id} via price: ${won ? 'WON' : 'LOST'} (${bet.side} ${bet.token} @ strike $${bet.strikePrice}, current $${currentPrice}, delay=${(settlementDelay/1000).toFixed(0)}s)`);
+          }
         }
       }
     } catch (err) {
@@ -1540,7 +1569,7 @@ function shouldAllowScaleIn(ticker, currentProbability, currentSide, userConfig,
   const cfg = userConfig || config;
   if (!cfg.scaleIn.enabled) return false;
 
-  const betKey = `${userId || 'default'}:${ticker}`;
+  const betKey = `${userId ?? 'default'}:${ticker}`;
   const existing = recentBets.get(betKey);
   if (!existing) return false; // No existing bet, this isn't a scale-in
 
@@ -3451,9 +3480,7 @@ function validateBetWontExceedLimits(ticker, betCostCents, userState, userConfig
   }
 
   // Check 2: Per-market cap (scale-in accumulation limit)
-  // Must be at least the cycle limit so a single cycle's full bet isn't blocked
-  const maxPerMarketConfig = userConfig?.riskLimits?.maxPerMarket || maxPerCycle;
-  const maxPerMarket = Math.max(maxPerMarketConfig, maxPerCycle);
+  const maxPerMarket = userConfig?.riskLimits?.maxPerMarket || 500;
   const existingMarketExposure = getExposureForTicker(ticker, userState);
   const newMarketExposure = existingMarketExposure + betCostCents;
   if (newMarketExposure > maxPerMarket) {
@@ -3566,8 +3593,41 @@ function computeRollingSpendFromHistory(betHistoryArr, token, windowMs = 2 * 60 
   return total;
 }
 
-// Daily loss tracking — rolling 24-hour P&L
+// Daily loss tracking — rolling 24-hour P&L (persisted to disk)
+const DAILY_LOSS_FILE = path.join(__dirname, 'daily_loss_tracker.json');
 const dailyLossTracker = new Map(); // userId -> { losses: [{amount, timestamp}], startBalance: number }
+
+// Load daily loss tracker from disk on startup
+try {
+  if (fs.existsSync(DAILY_LOSS_FILE)) {
+    const saved = JSON.parse(fs.readFileSync(DAILY_LOSS_FILE, 'utf8'));
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    for (const [key, tracker] of Object.entries(saved)) {
+      // Only restore entries within the 24h window
+      const validLosses = (tracker.losses || []).filter(l => l.timestamp > cutoff);
+      if (validLosses.length > 0) {
+        dailyLossTracker.set(key, { losses: validLosses, startBalance: tracker.startBalance || 0 });
+      }
+    }
+    console.log(`📊 Loaded daily loss tracker: ${dailyLossTracker.size} users with recent losses`);
+  }
+} catch (e) {
+  console.warn('Could not load daily loss tracker:', e.message);
+}
+
+function saveDailyLossTracker() {
+  debouncedWrite('dailyLossTracker', () => {
+    try {
+      const obj = {};
+      for (const [key, tracker] of dailyLossTracker) {
+        obj[key] = tracker;
+      }
+      fs.writeFileSync(DAILY_LOSS_FILE, JSON.stringify(obj, null, 2));
+    } catch (e) {
+      console.error('Failed to save daily loss tracker:', e.message);
+    }
+  });
+}
 
 function trackDailyLoss(userId, lossCents) {
   const key = userId || 'default';
@@ -3579,6 +3639,7 @@ function trackDailyLoss(userId, lossCents) {
   // Clean entries older than 24 hours
   const cutoff = Date.now() - 24 * 60 * 60 * 1000;
   tracker.losses = tracker.losses.filter(l => l.timestamp > cutoff);
+  saveDailyLossTracker();
 }
 
 function getDailyLossCents(userId) {
@@ -3624,29 +3685,30 @@ function getRemainingTokenBudget(ticker, assetType, userState = null, userConfig
 // KALSHI API
 // ============================================
 
-function signRequest(method, path, timestamp) {
-  if (!config.privateKey) throw new Error('Private key not configured');
-
-  try {
-    const pathWithoutQuery = path.split('?')[0];
-    const message = `${timestamp}${method}${pathWithoutQuery}`;
-
-    const sign = crypto.createSign('RSA-SHA256');
-    sign.update(message);
-    sign.end();
-
-    return sign.sign({
-      key: config.privateKey,
-      padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
-      saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST
-    }, 'base64');
-  } catch (err) {
-    throw new Error('Failed to sign request: ' + err.message);
+// Kalshi API rate limiter — sliding window, max 8 requests/second
+const kalshiRateLimiter = {
+  timestamps: [],
+  maxPerSecond: 8,
+  async wait() {
+    const now = Date.now();
+    // Remove timestamps older than 1 second
+    this.timestamps = this.timestamps.filter(t => now - t < 1000);
+    if (this.timestamps.length >= this.maxPerSecond) {
+      // Wait until the oldest request in the window expires
+      const waitMs = 1000 - (now - this.timestamps[0]) + 10;
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+      // Clean up again after waiting
+      const afterWait = Date.now();
+      this.timestamps = this.timestamps.filter(t => afterWait - t < 1000);
+    }
+    this.timestamps.push(Date.now());
   }
-}
+};
 
 // User-aware Kalshi API request - uses provided config or falls back to global
 async function kalshiRequest(method, endpoint, body = null, userConfig = null) {
+  // Rate limit all Kalshi API calls
+  await kalshiRateLimiter.wait();
   const cfg = userConfig || config; // Use user-specific config if provided
   const timestamp = Date.now().toString();
   const path = `/trade-api/v2${endpoint}`;
@@ -3676,6 +3738,16 @@ async function kalshiRequest(method, endpoint, body = null, userConfig = null) {
   try {
     const response = await fetch(`${KALSHI_API_BASE}${endpoint}`, options);
     clearTimeout(timeoutId);
+
+    if (response.status === 429) {
+      // Rate limited — wait and retry once
+      clearTimeout(timeoutId);
+      const retryAfter = parseInt(response.headers.get('retry-after') || '2', 10);
+      console.warn(`⚠️ Kalshi 429 rate limited on ${endpoint}, retrying in ${retryAfter}s`);
+      await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+      await kalshiRateLimiter.wait();
+      return kalshiRequest(method, endpoint, body, userConfig);
+    }
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -3710,8 +3782,7 @@ function signRequestWithConfig(method, path, timestamp, cfg) {
     });
     return signature.toString('base64');
   } catch (err) {
-    console.error('Signature error:', err.message);
-    return '';
+    throw new Error(`Failed to sign request: ${err.message}`);
   }
 }
 
@@ -5408,8 +5479,9 @@ function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConf
   // Fixed bet amount ($1) for sustainable growth
   const recommendedBet = 100; // Always $1
 
-  // Calculate z-score from distance and volatility
-  const zScore = volatility > 0 ? (pctFromStrike / volatility) : 0;
+  // Calculate z-score from distance and volatility (both as decimals)
+  const absDistanceDecimal = pctFromStrike / 100; // pctFromStrike is percentage, convert to decimal
+  const zScore = volatility > 0 ? (absDistanceDecimal / volatility) : 0;
 
   return {
     ...parsed,
@@ -6085,9 +6157,6 @@ app.post('/api/bet', async (req, res) => {
       }
     }
 
-    // Force fresh market data by clearing cache
-    marketCache.lastFetch = 0;
-
     // Search crypto markets only (BTC, ETH, SOL)
     const cryptoMarkets = await fetchCryptoMarkets();
 
@@ -6225,8 +6294,11 @@ app.post('/api/bet', async (req, res) => {
     const fillSlippage = userConfig.selectivityRules?.fillSlippageCents ?? 3;
     const fillPrice = Math.min(priceCents + fillSlippage, 99);
 
+    // Generate idempotency key to prevent duplicate orders on timeout/retry
+    const clientOrderId = `shimi-${ticker}-${side}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
     const orderRequest = {
       ticker,
+      client_order_id: clientOrderId,
       action: 'buy',
       side: side.toLowerCase(),
       type: 'limit',
@@ -6270,6 +6342,16 @@ app.post('/api/bet', async (req, res) => {
           success: false,
           error: `Order not filled. Status: ${status}. No liquidity at current price.`
         });
+      }
+
+      // Cancel remaining resting order on partial fills
+      if (filledCount > 0 && filledCount < count && order.order_id) {
+        try {
+          await kalshiRequest('DELETE', `/portfolio/orders/${order.order_id}`, null, userConfig);
+          console.log(`Cancelled partially-filled order ${order.order_id} (filled ${filledCount}/${count})`);
+        } catch (cancelErr) {
+          console.log(`Could not cancel partial order ${order.order_id}:`, cancelErr.message);
+        }
       }
 
       // Update bet record with actual fill info
@@ -6345,7 +6427,7 @@ app.post('/api/bet', async (req, res) => {
       console.log(`✅ Bet placed. Exposure: $${(riskByType.total / 100).toFixed(2)}`);
     } catch (orderError) {
       console.error('Kalshi order error:', orderError.message);
-      res.status(400).json({ success: false, error: `Kalshi: ${orderError.message}` });
+      res.status(400).json({ success: false, error: 'Order failed. Check your balance and try again.' });
     }
 
   } catch (error) {
@@ -6465,7 +6547,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
         if (winProb < minAutoProb) return false;
 
         // Check if we already bet on this market
-        const betKey = `${req.userId || 'default'}:${m.ticker}`;
+        const betKey = `${req.userId ?? 'default'}:${m.ticker}`;
         if (recentBets.has(betKey)) {
           // Allow scale-in if probability improved significantly AND same side
           if (shouldAllowScaleIn(m.ticker, winProb, m.betSide, userConfig, req.userId)) {
@@ -6553,7 +6635,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     }
 
     // Get existing bet info for scale-in tracking
-    const autoBetKey = `${req.userId || 'default'}:${best.ticker}`;
+    const autoBetKey = `${req.userId ?? 'default'}:${best.ticker}`;
     const existingBet = recentBets.get(autoBetKey);
     const newBetCount = best.isScaleIn ? ((existingBet?.betCount || 1) + 1) : 1;
 
@@ -6756,7 +6838,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       console.error('Kalshi auto-bet order error:', orderError.message);
       // Remove from recent bets on error so we can try again
       recentBets.delete(autoBetKey);
-      res.status(400).json({ success: false, error: `Kalshi: ${orderError.message}` });
+      res.status(400).json({ success: false, error: 'Order failed. Check your balance and try again.' });
     }
 
   } catch (error) {
@@ -6781,9 +6863,14 @@ let lastScanStatus = {
 };
 
 async function runAutoBet(userId = null) {
+  // Global kill switch check — halts all betting immediately
+  if (isKillSwitchActive()) {
+    console.log('🚨 KILL SWITCH: Skipping auto-bet cycle');
+    return;
+  }
   try {
-    // Get user-specific state if userId provided
-    const userState = userId ? getUserState(userId) : null;
+    // Get user-specific state if userId provided (async to ensure DB state is loaded)
+    const userState = userId ? await getUserStateAsync(userId) : null;
     const userConfig = userState?.config || config;
     const userPortfolio = userState?.portfolio || portfolio;
     const userBetHistory = userState?.betHistory || betHistory;
@@ -6858,6 +6945,9 @@ async function runAutoBet(userId = null) {
 
     // Process positions result
     if (posData && userConfig.isAuthenticated) {
+      if (!posData.market_positions) {
+        console.warn('⚠️ Unexpected Kalshi positions response shape:', Object.keys(posData).join(', '));
+      }
       userPortfolio.positions = filterExpiredPositions(
         (posData.market_positions || posData.positions || [])
           .filter(p => Math.abs(p.position || 0) > 0), // Filter ghost positions (0 contracts)
@@ -7035,7 +7125,7 @@ async function runAutoBet(userId = null) {
         }
 
         // Check if we already bet on this market
-        const betKey = `${userId || 'default'}:${m.ticker}`;
+        const betKey = `${userId ?? 'default'}:${m.ticker}`;
         if (recentBets.has(betKey)) {
           // Allow scale-in if win rate improved significantly AND same side
           const currentWinRate = parseFloat(m.winProbability) || 0;
@@ -7243,7 +7333,7 @@ async function runAutoBet(userId = null) {
     }
 
     // Get existing bet info for scale-in tracking
-    const runBetKey = `${userId || 'default'}:${best.ticker}`;
+    const runBetKey = `${userId ?? 'default'}:${best.ticker}`;
     const existingBet = recentBets.get(runBetKey);
     const newBetCount = best.isScaleIn ? ((existingBet?.betCount || 1) + 1) : 1;
 
@@ -7336,8 +7426,11 @@ async function runAutoBet(userId = null) {
     const fillPrice = Math.min(priceCents + fillSlippage, 99);
 
     console.log(`\n💸 PLACING REAL BET...`);
+    // Generate idempotency key to prevent duplicate orders on timeout/retry
+    const clientOrderId = `shimi-${best.ticker}-${best.betSide}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
     const orderRequest = {
       ticker: best.ticker,
+      client_order_id: clientOrderId,
       action: 'buy',
       side: best.betSide.toLowerCase(),
       type: 'limit',
@@ -7381,6 +7474,16 @@ async function runAutoBet(userId = null) {
       recentBets.delete(runBetKey);
       console.log('========================================\n');
       return;
+    }
+
+    // EXEC-3: Cancel remaining resting order on partial fills
+    if (filledCount > 0 && filledCount < count && order.order_id) {
+      try {
+        await kalshiRequest('DELETE', `/portfolio/orders/${order.order_id}`, null, userConfig);
+        console.log(`   Cancelled partially-filled order ${order.order_id} (filled ${filledCount}/${count})`);
+      } catch (cancelErr) {
+        console.log(`   Could not cancel partial order ${order.order_id}:`, cancelErr.message);
+      }
     }
 
     // Update bet record with actual fill info
@@ -7813,9 +7916,14 @@ function shouldSitOut(tables, token = null) {
   const now = Date.now();
   const oneHourAgo = now - 60 * 60 * 1000;
 
-  // Clean up old timestamps (keep for tracking, no rate limit enforced)
+  // Clean up old timestamps and enforce maxBetsPerHour
   empiricalBetTracking.recentBetsThisHour = empiricalBetTracking.recentBetsThisHour
     .filter(ts => ts > oneHourAgo);
+
+  const maxBetsPerHour = rules?.maxBetsPerHour || 8;
+  if (empiricalBetTracking.recentBetsThisHour.length >= maxBetsPerHour) {
+    reasons.push(`Rate limit: ${empiricalBetTracking.recentBetsThisHour.length}/${maxBetsPerHour} bets this hour`);
+  }
 
   // Check if we have sufficient data
   if ((tables?.sampleSize || learnedParams.sampleSize) < 100) {
@@ -8317,8 +8425,8 @@ function buildEmpiricalLookupTables(settlements) {
     };
   });
 
-  // Build win rate by distance buckets - optimized single-pass
-  // Pre-sort by distance then accumulate (was nested filter+loop, now O(n log n + n))
+  // Build win rate by distance buckets - per-bucket (non-cumulative) counting
+  // Each bucket counts only samples in its range (prevBucket, currentBucket]
   const distanceBuckets = [0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0];
   const distanceCaps = {
     0.1: 62, 0.2: 68, 0.3: 73, 0.5: 78, 0.75: 82, 1.0: 86, 1.5: 89, 2.0: 91, 3.0: 93, 5.0: 95
@@ -8327,32 +8435,36 @@ function buildEmpiricalLookupTables(settlements) {
   // Sort distances by pctFromStrike ascending
   distances.sort((a, b) => a.pctFromStrike - b.pctFromStrike);
 
-  // Single pass: accumulate counts and wins as we go
-  let cumCount = 0;
-  let cumFavoredWins = 0;
+  // Single pass with per-bucket (non-cumulative) counts
   let distIdx = 0;
 
   for (let bucketIdx = 0; bucketIdx < distanceBuckets.length; bucketIdx++) {
     const bucket = distanceBuckets[bucketIdx];
+    const prevBucket = bucketIdx > 0 ? distanceBuckets[bucketIdx - 1] : 0;
+    let bucketCount = 0;
+    let bucketFavoredWins = 0;
 
-    // Advance through sorted distances up to this bucket
+    // Advance through sorted distances in range (prevBucket, bucket]
     while (distIdx < distances.length && distances[distIdx].pctFromStrike <= bucket) {
       const d = distances[distIdx];
-      cumCount++;
-      const yesFavored = d.wasAboveStrike;
-      const noFavored = d.wasBelowStrike;
-      const yesWon = d.result === 'yes';
-      const noWon = d.result === 'no';
-      if ((yesFavored && yesWon) || (noFavored && noWon)) {
-        cumFavoredWins++;
+      // Only count if in this bucket's range (above previous bucket threshold)
+      if (d.pctFromStrike > prevBucket) {
+        bucketCount++;
+        const yesFavored = d.wasAboveStrike;
+        const noFavored = d.wasBelowStrike;
+        const yesWon = d.result === 'yes';
+        const noWon = d.result === 'no';
+        if ((yesFavored && yesWon) || (noFavored && noWon)) {
+          bucketFavoredWins++;
+        }
       }
       distIdx++;
     }
 
-    if (cumCount < 5) continue;
+    if (bucketCount < 5) continue;
 
     const capForBucket = distanceCaps[bucket] || 91;
-    const rawWinRate = (cumFavoredWins / cumCount * 100);
+    const rawWinRate = (bucketFavoredWins / bucketCount * 100);
     const favoredWinRate = Math.min(capForBucket, rawWinRate);
 
     if (rawWinRate > capForBucket) {
@@ -8360,7 +8472,7 @@ function buildEmpiricalLookupTables(settlements) {
     }
 
     tables.winRateByDistance[bucket] = {
-      count: cumCount,
+      count: bucketCount,
       favoredWinRate: parseFloat(favoredWinRate.toFixed(2)),
       surpriseRate: parseFloat((100 - favoredWinRate).toFixed(2))
     };
@@ -9911,7 +10023,26 @@ app.post('/api/momentum/settings', (req, res) => {
 // ============================================
 
 // Register new user account
+// Simple in-memory rate limiter for auth endpoints
+const authRateLimiter = {
+  attempts: new Map(), // ip -> [{timestamp}]
+  maxAttempts: 20,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  check(ip) {
+    const now = Date.now();
+    const attempts = this.attempts.get(ip) || [];
+    const recent = attempts.filter(t => now - t < this.windowMs);
+    this.attempts.set(ip, recent);
+    if (recent.length >= this.maxAttempts) return false;
+    recent.push(now);
+    return true;
+  }
+};
+
 app.post('/api/auth/register', async (req, res) => {
+  if (!authRateLimiter.check(req.ip)) {
+    return res.status(429).json({ success: false, error: 'Too many attempts. Please try again later.' });
+  }
   try {
     const { email, password } = req.body;
 
@@ -9933,6 +10064,9 @@ app.post('/api/auth/register', async (req, res) => {
 
 // Login with email/password
 app.post('/api/auth/login', async (req, res) => {
+  if (!authRateLimiter.check(req.ip)) {
+    return res.status(429).json({ success: false, error: 'Too many attempts. Please try again later.' });
+  }
   try {
     const { email, password } = req.body;
 
@@ -10041,6 +10175,15 @@ app.post('/api/auth/disconnect', (req, res) => {
     }
 
     const userConfig = req.userState.config;
+
+    // Stop auto-bet and take-profit intervals before clearing credentials
+    if (userAutoBetIntervals.has(req.userId)) {
+      clearInterval(userAutoBetIntervals.get(req.userId));
+      userAutoBetIntervals.delete(req.userId);
+      console.log(`   Stopped auto-bet interval for ${req.userId}`);
+    }
+    stopTakeProfitScanning(req.userId);
+    userConfig.autoBetEnabled = false;
 
     // Clear Kalshi credentials
     userConfig.apiKeyId = null;
@@ -10767,8 +10910,45 @@ app.delete('/api/history', (req, res) => {
   res.json({ success: true, message: 'Bet history cleared' });
 });
 
+// Global kill switch endpoints — halt/resume all betting
+app.post('/api/kill-switch/activate', (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+  try {
+    fs.writeFileSync(KILL_SWITCH_FILE, `Activated by ${req.userId} at ${new Date().toISOString()}`);
+    globalKillSwitch = true;
+    // Stop all user auto-bet intervals
+    for (const [uid, interval] of userAutoBetIntervals) {
+      clearInterval(interval);
+      userAutoBetIntervals.delete(uid);
+    }
+    console.error(`🚨 KILL SWITCH ACTIVATED by ${req.userId}`);
+    res.json({ success: true, message: 'Kill switch activated — all betting halted' });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.post('/api/kill-switch/deactivate', (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+  try {
+    if (fs.existsSync(KILL_SWITCH_FILE)) fs.unlinkSync(KILL_SWITCH_FILE);
+    globalKillSwitch = false;
+    console.log(`✅ Kill switch deactivated by ${req.userId}`);
+    res.json({ success: true, message: 'Kill switch deactivated — betting can resume' });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+app.get('/api/kill-switch/status', (req, res) => {
+  res.json({ active: isKillSwitchActive() });
+});
+
 // Debug endpoint to see raw Kalshi data (uses global server credentials)
 app.get('/api/debug/kalshi-fills', async (req, res) => {
+  if (!req.userId) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
   try {
     // Try user config first, then fall back to global config
     let useConfig = req.userState?.config;
@@ -11001,22 +11181,43 @@ initDatabase().then(() => {
 // Graceful shutdown — flush debounced writes before exit
 function gracefulShutdown(signal) {
   console.log(`\n🛑 ${signal} received — flushing data before exit...`);
-  // Flush all pending debounced writes immediately
+  // Cancel all pending debounced timers (they won't fire in time)
   for (const [key, timer] of Object.entries(_debouncedTimers)) {
     if (timer) {
       clearTimeout(timer);
       _debouncedTimers[key] = null;
     }
   }
-  // Force synchronous saves
-  try { saveTakeProfitHistory(); } catch (e) {}
-  try { savePerformanceData(); } catch (e) {}
-  try { savePriceSnapshots(); } catch (e) {}
-  // Give writes a moment to complete
-  setTimeout(() => {
-    console.log('👋 Goodbye!');
-    process.exit(0);
-  }, 500);
+  // Direct synchronous writes — bypass debouncing since we're shutting down
+  try {
+    if (takeProfitHistory.length > MAX_TP_HISTORY) {
+      takeProfitHistory = takeProfitHistory.slice(-MAX_TP_HISTORY);
+    }
+    fs.writeFileSync(TAKE_PROFIT_HISTORY_FILE, JSON.stringify(takeProfitHistory, null, 2));
+    console.log('   Saved take-profit history');
+  } catch (e) { console.error('   Failed to save take-profit history:', e.message); }
+  try {
+    performanceData.lastUpdated = new Date().toISOString();
+    fs.writeFileSync(PERFORMANCE_FILE, JSON.stringify(performanceData, null, 2));
+    console.log('   Saved performance data');
+  } catch (e) { console.error('   Failed to save performance data:', e.message); }
+  try {
+    if (priceSnapshots.length > MAX_SNAPSHOTS) {
+      priceSnapshots = priceSnapshots.slice(-MAX_SNAPSHOTS);
+    }
+    fs.writeFileSync(PRICE_SNAPSHOTS_FILE, JSON.stringify(priceSnapshots, null, 2));
+    console.log('   Saved price snapshots');
+  } catch (e) { console.error('   Failed to save price snapshots:', e.message); }
+  try {
+    const lossObj = {};
+    for (const [key, tracker] of dailyLossTracker) {
+      lossObj[key] = tracker;
+    }
+    fs.writeFileSync(DAILY_LOSS_FILE, JSON.stringify(lossObj, null, 2));
+    console.log('   Saved daily loss tracker');
+  } catch (e) { console.error('   Failed to save daily loss tracker:', e.message); }
+  console.log('👋 Goodbye!');
+  process.exit(0);
 }
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));

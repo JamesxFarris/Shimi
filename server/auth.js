@@ -4,11 +4,16 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { pool } from './db.js';
 
+// In production, JWT_SECRET MUST be set — random secrets invalidate all sessions on restart
+if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
+  console.error('FATAL: JWT_SECRET must be set in production environment');
+  process.exit(1);
+}
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
 const JWT_EXPIRY = '7d'; // Tokens expire in 7 days
 
 if (!process.env.JWT_SECRET) {
-  console.warn('⚠️ JWT_SECRET not set in environment, using generated secret (will change on restart)');
+  console.warn('JWT_SECRET not set in environment, using generated secret (will change on restart)');
 }
 
 // Find user by email
