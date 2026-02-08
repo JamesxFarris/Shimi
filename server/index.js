@@ -3438,7 +3438,9 @@ function validateBetWontExceedLimits(ticker, betCostCents, userState, userConfig
   }
 
   // Check 2: Per-market cap (scale-in accumulation limit)
-  const maxPerMarket = userConfig?.riskLimits?.maxPerMarket || 500;
+  // Must be at least the cycle limit so a single cycle's full bet isn't blocked
+  const maxPerMarketConfig = userConfig?.riskLimits?.maxPerMarket || maxPerCycle;
+  const maxPerMarket = Math.max(maxPerMarketConfig, maxPerCycle);
   const existingMarketExposure = getExposureForTicker(ticker, userState);
   const newMarketExposure = existingMarketExposure + betCostCents;
   if (newMarketExposure > maxPerMarket) {
