@@ -157,15 +157,15 @@ const DEFAULT_EMPIRICAL_TABLES = {
   // BALANCED: Not too conservative (blocks bets) or optimistic (99% is unrealistic)
   // Edge = our win rate - market price - fees. Need ~5% edge minimum.
   winRateByDistance: {
-    0.1: { count: 0, favoredWinRate: 62, surpriseRate: 38 },   // Near coin-flip, small edge
-    0.2: { count: 0, favoredWinRate: 68, surpriseRate: 32 },   // Slight advantage
-    0.3: { count: 0, favoredWinRate: 73, surpriseRate: 27 },   // Moderate edge possible
-    0.5: { count: 0, favoredWinRate: 78, surpriseRate: 22 },   // Good edge zone
-    0.75: { count: 0, favoredWinRate: 82, surpriseRate: 18 },  // Strong edge
-    1.0: { count: 0, favoredWinRate: 86, surpriseRate: 14 },   // Very strong
-    1.5: { count: 0, favoredWinRate: 89, surpriseRate: 11 },   // Excellent
-    2.0: { count: 0, favoredWinRate: 91, surpriseRate: 9 },    // Near-certain
-    3.0: { count: 0, favoredWinRate: 93, surpriseRate: 7 },    // Very high confidence
+    0.1: { count: 0, favoredWinRate: 68, surpriseRate: 32 },   // Close but measurable edge
+    0.2: { count: 0, favoredWinRate: 74, surpriseRate: 26 },   // Solid advantage
+    0.3: { count: 0, favoredWinRate: 78, surpriseRate: 22 },   // Good edge zone
+    0.5: { count: 0, favoredWinRate: 82, surpriseRate: 18 },   // Strong edge
+    0.75: { count: 0, favoredWinRate: 86, surpriseRate: 14 },  // Very strong
+    1.0: { count: 0, favoredWinRate: 89, surpriseRate: 11 },   // Excellent
+    1.5: { count: 0, favoredWinRate: 91, surpriseRate: 9 },    // Near-certain
+    2.0: { count: 0, favoredWinRate: 93, surpriseRate: 7 },    // Very high confidence
+    3.0: { count: 0, favoredWinRate: 95, surpriseRate: 5 },    // Maximum confidence
     5.0: { count: 0, favoredWinRate: 95, surpriseRate: 5 }     // Maximum confidence
   },
 
@@ -7615,70 +7615,87 @@ function lookupEmpiricalWinRate(pctFromStrike, token = null) {
   const absDistance = Math.abs(pctFromStrike);
   const winRateData = learnedParams.winRateByDistance || DEFAULT_EMPIRICAL_TABLES.winRateByDistance;
 
-  // Get sample size from nearest bucket
+  // Get sorted bucket keys from learned data
   const buckets = Object.keys(winRateData).map(Number).sort((a, b) => a - b);
-  let sampleSize = 0;
-  let bucket = 0;
 
-  for (const b of buckets) {
-    if (absDistance <= b) {
-      sampleSize = winRateData[b]?.count || 0;
-      bucket = b;
+  // Find the enclosing buckets for interpolation
+  let lowerBucket = null, upperBucket = null;
+  let lowerData = null, upperData = null;
+
+  for (let i = 0; i < buckets.length; i++) {
+    if (absDistance <= buckets[i]) {
+      upperBucket = buckets[i];
+      upperData = winRateData[upperBucket];
+      if (i > 0) {
+        lowerBucket = buckets[i - 1];
+        lowerData = winRateData[lowerBucket];
+      }
       break;
     }
   }
-  if (bucket === 0) {
-    bucket = buckets[buckets.length - 1];
-    sampleSize = winRateData[bucket]?.count || 0;
+
+  // If beyond all buckets, use the largest
+  if (!upperBucket) {
+    upperBucket = buckets[buckets.length - 1];
+    upperData = winRateData[upperBucket];
+    if (buckets.length > 1) {
+      lowerBucket = buckets[buckets.length - 2];
+      lowerData = winRateData[lowerBucket];
+    }
   }
 
-  // REALISTIC win rate based on distance from strike
-  // BALANCED: Allows profitable bets while being realistic
-  // - At 0.1%: near coin-flip (62%)
-  // - At 0.5%: good edge zone (78%)
-  // - At 1.0%: strong edge (86%)
-  // - At 2.0%+: very strong (91%), cap at 95%
+  const sampleSize = upperData?.count || 0;
+  const bucket = upperBucket;
 
+  // USE LEARNED DATA: Interpolate between learned buckets when sufficient data exists
+  // This replaces the hardcoded curve and actually uses the empirical tables we built
   let winRate;
-  if (absDistance <= 0.1) {
-    // Very close - near coin flip
-    winRate = 55 + (absDistance * 70); // 55-62%
-  } else if (absDistance <= 0.2) {
-    // Still close - slight edge
-    winRate = 62 + ((absDistance - 0.1) * 60); // 62-68%
-  } else if (absDistance <= 0.3) {
-    // Starting to matter
-    winRate = 68 + ((absDistance - 0.2) * 50); // 68-73%
-  } else if (absDistance <= 0.5) {
-    // Good edge zone
-    winRate = 73 + ((absDistance - 0.3) * 25); // 73-78%
-  } else if (absDistance <= 0.75) {
-    // Strong edge
-    winRate = 78 + ((absDistance - 0.5) * 16); // 78-82%
-  } else if (absDistance <= 1.0) {
-    // Very strong
-    winRate = 82 + ((absDistance - 0.75) * 16); // 82-86%
-  } else if (absDistance <= 1.5) {
-    // Excellent
-    winRate = 86 + ((absDistance - 1.0) * 6); // 86-89%
-  } else if (absDistance <= 2.0) {
-    // Near certain
-    winRate = 89 + ((absDistance - 1.5) * 4); // 89-91%
+  const MIN_SAMPLES_FOR_LEARNED = 20; // Need enough data to trust the bucket
+
+  if (upperData && upperData.count >= MIN_SAMPLES_FOR_LEARNED && upperData.favoredWinRate) {
+    if (lowerData && lowerData.count >= MIN_SAMPLES_FOR_LEARNED && lowerData.favoredWinRate && lowerBucket !== null) {
+      // Interpolate between the two enclosing buckets
+      const range = upperBucket - lowerBucket;
+      const t = range > 0 ? (absDistance - lowerBucket) / range : 0;
+      winRate = lowerData.favoredWinRate + t * (upperData.favoredWinRate - lowerData.favoredWinRate);
+    } else {
+      // Only upper bucket available (distance below smallest bucket)
+      // Scale down from the bucket's win rate toward 50% as distance approaches 0
+      const t = upperBucket > 0 ? absDistance / upperBucket : 0;
+      winRate = 50 + t * (upperData.favoredWinRate - 50);
+    }
   } else {
-    // Cap at 95% - never assume certainty
-    winRate = Math.min(95, 91 + ((absDistance - 2.0) * 1.3));
+    // FALLBACK: Hardcoded curve when learned data is insufficient
+    if (absDistance <= 0.1) {
+      winRate = 55 + (absDistance * 70); // 55-62%
+    } else if (absDistance <= 0.2) {
+      winRate = 62 + ((absDistance - 0.1) * 60); // 62-68%
+    } else if (absDistance <= 0.3) {
+      winRate = 68 + ((absDistance - 0.2) * 50); // 68-73%
+    } else if (absDistance <= 0.5) {
+      winRate = 73 + ((absDistance - 0.3) * 25); // 73-78%
+    } else if (absDistance <= 0.75) {
+      winRate = 78 + ((absDistance - 0.5) * 16); // 78-82%
+    } else if (absDistance <= 1.0) {
+      winRate = 82 + ((absDistance - 0.75) * 16); // 82-86%
+    } else if (absDistance <= 1.5) {
+      winRate = 86 + ((absDistance - 1.0) * 6); // 86-89%
+    } else if (absDistance <= 2.0) {
+      winRate = 89 + ((absDistance - 1.5) * 4); // 89-91%
+    } else {
+      winRate = Math.min(95, 91 + ((absDistance - 2.0) * 1.3));
+    }
   }
 
-  // Token-specific adjustment based on historical bias
-  // BTC/ETH/SOL all show slight NO bias (~54% NO wins vs 46% YES)
-  // This is factored in elsewhere, not here
+  // Cap at 95% - never assume certainty regardless of source
+  winRate = Math.min(95, winRate);
 
   return {
     winRate,
     sampleSize,
     bucket,
     surpriseRate: 100 - winRate,
-    realistic: true // Flag to indicate we're using the fixed calculation
+    usedLearnedData: !!(upperData && upperData.count >= MIN_SAMPLES_FOR_LEARNED)
   };
 }
 
@@ -7823,7 +7840,11 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
         // Time bonus: near expiry, theoretical model is more reliable
         const timeBonus = timeRemaining < 5 ? Math.max(0, (5 - timeRemaining) / 5) : 0;
 
-        if (volRatio < 0.5) {
+        if (volRatio < 0.15) {
+          // Ultra-low vol (< 15% of avg): z-score model is extremely reliable
+          // Price is barely moving, distance from strike is very predictive
+          theoreticalWeight = 0.55 + timeBonus * 0.20;
+        } else if (volRatio < 0.5) {
           // Very low vol: 40% base + up to 20% near expiry
           theoreticalWeight = 0.40 + timeBonus * 0.20;
         } else if (volRatio < 0.8) {
@@ -7915,7 +7936,9 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   }
 
   // Account for fill slippage: convert cents to % of market price (same units as feePct/spreadPenalty)
-  const slippageCents = userRules.fillSlippageCents ?? 3;
+  // In low-vol regimes, order books are calmer — reduce slippage assumption
+  const baseSlippageCents = userRules.fillSlippageCents ?? 3;
+  const slippageCents = regime.regime === 'low' ? Math.max(1, baseSlippageCents - 1) : baseSlippageCents;
   const slippagePct = (slippageCents / (marketPrice * 100)) * 100;
   const grossEdge = adjustedWinRate - marketImpliedProb;
   const netEdge = grossEdge - feePct - spreadPenalty - slippagePct;
@@ -7960,11 +7983,25 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     const dMin = entryWindows.distanceMin || 0.1;
     const dMax = entryWindows.distanceMax || 5.0;
     const farOutside = absDistance < dMin * 0.5 || absDistance > dMax * 1.5;
-    // During low vol, small distances are expected - halve the penalty
     const basePenalty = farOutside ? -20 : -10;
-    const penalty = regime.regime === 'low' ? Math.round(basePenalty / 2) : basePenalty;
-    adjustedSignalStrength += penalty;
-    windowPenalties.push(`distance ${penalty}pts${regime.regime === 'low' ? ' (low-vol halved)' : ''}`);
+
+    if (regime.regime === 'low') {
+      // In low vol, scale penalty by how extreme the vol compression is
+      // Ultra-low vol (< 10% of avg) = nearly zero penalty (distances SHOULD be tiny)
+      // Moderate low vol (50-70% of avg) = half penalty
+      const tokenAvgVol = (learnedParams.byToken?.[token]?.avgSettlementDistance ||
+                           DEFAULT_EMPIRICAL_TABLES.byToken[token]?.avgSettlementDistance || 0.3);
+      const currentVol = regime.volatility !== undefined ? regime.volatility : tokenAvgVol * 0.5;
+      const volRatio = Math.min(1, currentVol / Math.max(tokenAvgVol, 0.01));
+      // volRatio 0.0 = zero penalty, 0.5 = quarter penalty, 0.7 = half penalty
+      const volScale = Math.min(1, volRatio * 1.5);
+      const penalty = Math.round(basePenalty * volScale);
+      adjustedSignalStrength += penalty;
+      windowPenalties.push(`distance ${penalty}pts (low-vol scaled, volRatio=${volRatio.toFixed(2)})`);
+    } else {
+      adjustedSignalStrength += basePenalty;
+      windowPenalties.push(`distance ${basePenalty}pts`);
+    }
   }
 
   if (!withinTimeWindow) {
@@ -8135,8 +8172,13 @@ function buildEmpiricalLookupTables(settlements) {
   // Build win rate by distance buckets - per-bucket (non-cumulative) counting
   // Each bucket counts only samples in its range (prevBucket, currentBucket]
   const distanceBuckets = [0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0];
+  // Caps raised for small distances: settlement-time data is biased (closer at settlement than
+  // at betting time), but the old caps (62/68/73) were too low — they made the learned tables
+  // no better than the hardcoded fallback curve, negating the whole point of empirical learning.
+  // New caps: allow data to speak more, especially at close distances where sample sizes are large.
+  // The safety net is the 95% hard cap and the fee/slippage deduction in edge calculation.
   const distanceCaps = {
-    0.1: 62, 0.2: 68, 0.3: 73, 0.5: 78, 0.75: 82, 1.0: 86, 1.5: 89, 2.0: 91, 3.0: 93, 5.0: 95
+    0.1: 68, 0.2: 74, 0.3: 78, 0.5: 82, 0.75: 86, 1.0: 89, 1.5: 91, 2.0: 93, 3.0: 95, 5.0: 95
   };
 
   // Sort distances by pctFromStrike ascending
