@@ -572,22 +572,10 @@ function App() {
     maxBetsPerMarket: 3,
     minTimeBetweenBets: 60000
   })
-  const [takeProfitSettings, setTakeProfitSettings] = useState({
-    enabled: true,
-    autoExecute: true,
-    minProfitPercent: 10,
-    logOnly: false
-  })
-  // Limit order settings for automatic stop-loss and take-profit via Kalshi
-  const [limitOrderSettings, setLimitOrderSettings] = useState({
-    stopLoss: { enabled: true, threshold: -40 },
-    takeProfit: { enabled: false, threshold: 25 }
-  })
   const [settingsSavedSection, setSettingsSavedSection] = useState(null)
   const [settingsSaving, setSettingsSaving] = useState(false)
   // Model monitoring state
   const [prospectiveData, setProspectiveData] = useState(null)
-  const [takeProfitHistory, setTakeProfitHistory] = useState({ history: [], stats: {} })
   const [selectivityRules, setSelectivityRules] = useState({ minEdgeAfterFees: 5, minSignalStrength: 70, minEmpiricalWinRate: 62 })
   const [marketFilter, setMarketFilter] = useState('all') // 'all', 'crypto', 'index'
   const [marketStats, setMarketStats] = useState({ totalAnalyzed: 0, recommended: 0, filteredNoEdge: 0, filteredLowProb: 0 })
@@ -747,11 +735,9 @@ function App() {
     fetchPortfolio()
     fetchPerformance()  // Fetch performance stats on load
     fetchAutoBetStatus()  // Get current auto-bet state
-    fetchTakeProfitSettings()  // Get take-profit settings
-    fetchLimitOrderSettings()  // Get limit order settings (stop-loss/take-profit via Kalshi)
     fetchRiskSettings()     // Get saved risk settings
     fetchScaleInSettings()  // Get saved scale-in settings
-    fetchModelMonitoring()  // Get prospective data, take-profit history, selectivity rules
+    fetchModelMonitoring()  // Get prospective data, selectivity rules
     checkAuth()
 
     // Track whether fast polling is active to avoid double-fetching opportunities
@@ -950,84 +936,12 @@ function App() {
   }
 
 
-  // Fetch take-profit settings
-  const fetchTakeProfitSettings = async () => {
-    try {
-      const res = await authFetch(`${API_BASE}/api/take-profit/settings`)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
-      if (data.success && data.settings) {
-        setTakeProfitSettings(data.settings)
-      }
-    } catch (err) {
-      console.error('Error fetching take-profit settings:', err)
-    }
-  }
-
-  // Fetch limit order settings (stop-loss and take-profit via Kalshi)
-  const fetchLimitOrderSettings = async () => {
-    try {
-      const res = await authFetch(`${API_BASE}/api/limit-order-settings`)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
-      if (data.success && data.limitOrderSettings) {
-        setLimitOrderSettings(data.limitOrderSettings)
-      }
-    } catch (err) {
-      console.error('Error fetching limit order settings:', err)
-    }
-  }
-
-  // Update limit order settings
-  const updateLimitOrderSettings = async (newSettings) => {
-    const prev = limitOrderSettings
-    setLimitOrderSettings(newSettings)
-    try {
-      const res = await authFetch(`${API_BASE}/api/limit-order-settings`, {
-        method: 'POST',
-        body: JSON.stringify(newSettings)
-      })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
-      if (data.success && data.limitOrderSettings) {
-        setLimitOrderSettings(data.limitOrderSettings)
-        setSettingsSavedSection('limitOrder')
-        setTimeout(() => setSettingsSavedSection(null), 3000)
-      }
-    } catch (err) {
-      console.error('Error saving limit order settings:', err)
-      setLimitOrderSettings(prev)
-    }
-  }
-
-  // Toggle take-profit
-  const toggleTakeProfit = async () => {
-    const prev = takeProfitSettings
-    const newEnabled = !takeProfitSettings.enabled
-    setTakeProfitSettings(prev => ({ ...prev, enabled: newEnabled }))
-    try {
-      const res = await authFetch(`${API_BASE}/api/take-profit/settings`, {
-        method: 'POST',
-        body: JSON.stringify({ enabled: newEnabled })
-      })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
-      if (data.success && data.settings) {
-        setTakeProfitSettings(data.settings)
-      }
-    } catch (err) {
-      console.error('Error toggling take-profit:', err)
-      setTakeProfitSettings(prev)
-    }
-  }
-
-  // Fetch model monitoring data (prospective data, take-profit history, selectivity rules)
+  // Fetch model monitoring data (prospective data, selectivity rules)
   const fetchModelMonitoring = async () => {
     try {
       // Fetch all monitoring data in parallel
-      const [prospectiveRes, historyRes, selectivityRes] = await Promise.all([
+      const [prospectiveRes, selectivityRes] = await Promise.all([
         authFetch(`${API_BASE}/api/historical/prospective`),
-        authFetch(`${API_BASE}/api/take-profit/history?limit=20`),
         authFetch(`${API_BASE}/api/model/selectivity`)
       ])
 
@@ -1035,13 +949,6 @@ function App() {
         const data = await prospectiveRes.json()
         if (data.success) {
           setProspectiveData(data)
-        }
-      }
-
-      if (historyRes.ok) {
-        const data = await historyRes.json()
-        if (data.success) {
-          setTakeProfitHistory(data)
         }
       }
 
@@ -1916,111 +1823,6 @@ function App() {
                   </button>
                 </div>
 
-                {/* Limit Order Settings - Stop-Loss & Take-Profit via Kalshi */}
-                <div className="settings-card">
-                  <h3 className="settings-card-title">Auto Stop-Loss & Take-Profit</h3>
-                  <p className="settings-description">
-                    Automatic limit orders placed on Kalshi when you buy. Kalshi executes them for you.
-                  </p>
-
-                  {/* Stop-Loss Toggle + Threshold */}
-                  <div className="limit-order-setting">
-                    <div className="feature-toggle">
-                      <div className="feature-info">
-                        <span className="feature-icon">🛡️</span>
-                        <div className="feature-text">
-                          <span className="feature-name">Auto Stop-Loss</span>
-                          <span className="feature-desc">Sell automatically if position drops below threshold</span>
-                        </div>
-                      </div>
-                      <button
-                        className={`toggle-btn ${limitOrderSettings.stopLoss?.enabled ? 'active' : ''}`}
-                        onClick={() => updateLimitOrderSettings({
-                          ...limitOrderSettings,
-                          stopLoss: { ...limitOrderSettings.stopLoss, enabled: !limitOrderSettings.stopLoss?.enabled }
-                        })}
-                      >
-                        {limitOrderSettings.stopLoss?.enabled ? 'ON' : 'OFF'}
-                      </button>
-                    </div>
-                    {limitOrderSettings.stopLoss?.enabled && (
-                      <div className="threshold-input">
-                        <label>Stop-Loss Threshold:</label>
-                        <div className="threshold-controls">
-                          <button
-                            className="threshold-btn"
-                            onClick={() => updateLimitOrderSettings({
-                              ...limitOrderSettings,
-                              stopLoss: { ...limitOrderSettings.stopLoss, threshold: Math.max(-90, (limitOrderSettings.stopLoss?.threshold || -40) - 5) }
-                            })}
-                          >−</button>
-                          <span className="threshold-value">{limitOrderSettings.stopLoss?.threshold || -40}%</span>
-                          <button
-                            className="threshold-btn"
-                            onClick={() => updateLimitOrderSettings({
-                              ...limitOrderSettings,
-                              stopLoss: { ...limitOrderSettings.stopLoss, threshold: Math.min(-5, (limitOrderSettings.stopLoss?.threshold || -40) + 5) }
-                            })}
-                          >+</button>
-                        </div>
-                        <span className="threshold-example">
-                          Buy at 50¢ → Sell at {Math.round(50 * (1 + (limitOrderSettings.stopLoss?.threshold || -40) / 100))}¢
-                        </span>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Take-Profit Toggle + Threshold */}
-                  <div className="limit-order-setting" style={{ marginTop: '16px' }}>
-                    <div className="feature-toggle">
-                      <div className="feature-info">
-                        <span className="feature-icon">💎</span>
-                        <div className="feature-text">
-                          <span className="feature-name">Auto Take-Profit</span>
-                          <span className="feature-desc">Sell automatically if position rises above threshold</span>
-                        </div>
-                      </div>
-                      <button
-                        className={`toggle-btn ${limitOrderSettings.takeProfit?.enabled ? 'active' : ''}`}
-                        onClick={() => updateLimitOrderSettings({
-                          ...limitOrderSettings,
-                          takeProfit: { ...limitOrderSettings.takeProfit, enabled: !limitOrderSettings.takeProfit?.enabled }
-                        })}
-                      >
-                        {limitOrderSettings.takeProfit?.enabled ? 'ON' : 'OFF'}
-                      </button>
-                    </div>
-                    {limitOrderSettings.takeProfit?.enabled && (
-                      <div className="threshold-input">
-                        <label>Take-Profit Threshold:</label>
-                        <div className="threshold-controls">
-                          <button
-                            className="threshold-btn"
-                            onClick={() => updateLimitOrderSettings({
-                              ...limitOrderSettings,
-                              takeProfit: { ...limitOrderSettings.takeProfit, threshold: Math.max(5, (limitOrderSettings.takeProfit?.threshold || 25) - 5) }
-                            })}
-                          >−</button>
-                          <span className="threshold-value">+{limitOrderSettings.takeProfit?.threshold || 25}%</span>
-                          <button
-                            className="threshold-btn"
-                            onClick={() => updateLimitOrderSettings({
-                              ...limitOrderSettings,
-                              takeProfit: { ...limitOrderSettings.takeProfit, threshold: Math.min(100, (limitOrderSettings.takeProfit?.threshold || 25) + 5) }
-                            })}
-                          >+</button>
-                        </div>
-                        <span className="threshold-example">
-                          Buy at 50¢ → Sell at {Math.round(50 * (1 + (limitOrderSettings.takeProfit?.threshold || 25) / 100))}¢
-                        </span>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="limit-order-note" style={{ marginTop: '12px', fontSize: '12px', color: '#888' }}>
-                    Limit orders are placed immediately when you buy. Kalshi executes them automatically.
-                  </div>
-                </div>
 
                 {/* How It Works */}
                 <div className="settings-card wide">
@@ -2118,52 +1920,6 @@ function App() {
                     )}
                   </div>
 
-                  {/* Take-Profit Execution History */}
-                  <div className="model-section">
-                    <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', color: '#ccc' }}>Auto-Sell Execution History</h4>
-                    <div className="execution-stats-grid">
-                      <div>
-                        <div className="stat-number" style={{ color: '#4fc3f7' }}>{takeProfitHistory?.stats?.totalExecutions || 0}</div>
-                        <div className="stat-label-small">Total</div>
-                      </div>
-                      <div>
-                        <div className="stat-number" style={{ color: '#81c784' }}>{takeProfitHistory?.stats?.takeProfitCount || 0}</div>
-                        <div className="stat-label-small">Take Profit</div>
-                      </div>
-                      <div>
-                        <div className="stat-number" style={{ color: '#ef5350' }}>{takeProfitHistory?.stats?.stopLossCount || 0}</div>
-                        <div className="stat-label-small">Stop Loss</div>
-                      </div>
-                      <div>
-                        <div className="stat-number" style={{ color: takeProfitHistory?.stats?.totalRealizedCents >= 0 ? '#81c784' : '#ef5350' }}>
-                          ${((takeProfitHistory?.stats?.totalRealizedCents || 0) / 100).toFixed(2)}
-                        </div>
-                        <div className="stat-label-small">Realized</div>
-                      </div>
-                    </div>
-                    {takeProfitHistory?.history?.length > 0 && (
-                      <div style={{ maxHeight: '150px', overflowY: 'auto', fontSize: '11px' }}>
-                        {takeProfitHistory.history.slice(0, 10).map((h, i) => (
-                          <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px', borderBottom: '1px solid #2a2a3e' }}>
-                            <span style={{ color: h.type === 'stop-loss' ? '#ef5350' : '#81c784' }}>
-                              {h.type === 'stop-loss' ? '🛑' : '💰'} {h.ticker?.split('-')[0]}
-                            </span>
-                            <span style={{ color: h.profitPercent >= 0 ? '#81c784' : '#ef5350' }}>
-                              {h.profitPercent >= 0 ? '+' : ''}{h.profitPercent?.toFixed(1)}%
-                            </span>
-                            <span style={{ color: '#888' }}>
-                              {new Date(h.timestamp).toLocaleTimeString()}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {!takeProfitHistory?.history?.length && (
-                      <div style={{ fontSize: '12px', color: '#888', textAlign: 'center', padding: '20px' }}>
-                        No executions yet. Auto-sell will trigger when conditions are met.
-                      </div>
-                    )}
-                  </div>
 
                   <button onClick={fetchModelMonitoring} style={{ marginTop: '16px', padding: '8px 16px', background: '#2a2a3e', border: 'none', borderRadius: '6px', color: '#ccc', cursor: 'pointer' }}>
                     Refresh Data

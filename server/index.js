@@ -2063,10 +2063,18 @@ Object.keys(TRACKED_TOKENS).forEach(token => {
   cryptoPrices[token] = { price: 0, timestamp: 0, history: createRingBuffer(120), volatility: 0.02 };
 });
 
-// Binance symbol mapping (PRIMARY - fast)
-const BINANCE_SYMBOLS = {
-  BTC: 'BTCUSDT', ETH: 'ETHUSDT', SOL: 'SOLUSDT'
+// Kraken symbol mapping (PRIMARY - fast, US-legal)
+const KRAKEN_SYMBOLS = {
+  BTC: 'BTC/USD',
+  ETH: 'ETH/USD',
+  SOL: 'SOL/USD'
 };
+
+// Reverse map: "BTC/USD" -> "BTC"
+const KRAKEN_SYMBOL_TO_TOKEN = {};
+for (const [token, symbol] of Object.entries(KRAKEN_SYMBOLS)) {
+  KRAKEN_SYMBOL_TO_TOKEN[symbol] = token;
+}
 
 // CoinGecko ID mapping (FALLBACK - slower but reliable)
 const COINGECKO_IDS = {
@@ -2075,7 +2083,7 @@ const COINGECKO_IDS = {
 
 // Track which price source we're using
 let priceSource = 'none';
-let binanceFailCount = 0;
+let krakenFailCount = 0;
 
 // Helper to update a token's price data
 function updateTokenPrice(token, price, now, source) {
@@ -2099,77 +2107,79 @@ function updateTokenPrice(token, price, now, source) {
   cryptoPrices[token].volatility = calculateVolatility(cryptoPrices[token].history, token);
 }
 
-// Binance WebSocket state
-let binanceWsConnected = false;
-let binanceWs = null;
-let binanceWsReconnectDelay = 1000;
-let binanceWsReconnectTimer = null;
+// Kraken WebSocket state
+let krakenWsConnected = false;
+let krakenWs = null;
+let krakenWsReconnectDelay = 1000;
+let krakenWsReconnectTimer = null;
 let lastWsPriceUpdate = 0;
 
-// Reverse map: BTCUSDT -> BTC
-const BINANCE_SYMBOL_TO_TOKEN = {};
-for (const [token, symbol] of Object.entries(BINANCE_SYMBOLS)) {
-  BINANCE_SYMBOL_TO_TOKEN[symbol.toLowerCase()] = token;
-}
-
-function initBinanceWebSocket() {
-  if (binanceWs) {
-    try { binanceWs.close(); } catch (e) {}
+function initKrakenWebSocket() {
+  if (krakenWs) {
+    try { krakenWs.close(); } catch (e) {}
   }
 
-  const streams = Object.values(BINANCE_SYMBOLS).map(s => `${s.toLowerCase()}@miniTicker`).join('/');
-  const url = `wss://stream.binance.com:9443/stream?streams=${streams}`;
+  console.log('🔌 Connecting to Kraken WebSocket...');
+  krakenWs = new WebSocket('wss://ws.kraken.com/v2');
 
-  console.log('🔌 Connecting to Binance WebSocket...');
-  binanceWs = new WebSocket(url);
+  krakenWs.on('open', () => {
+    krakenWsConnected = true;
+    krakenWsReconnectDelay = 1000;
+    console.log('✅ Kraken WebSocket connected - real-time prices active');
 
-  binanceWs.on('open', () => {
-    binanceWsConnected = true;
-    binanceWsReconnectDelay = 1000;
-    console.log('✅ Binance WebSocket connected - real-time prices active');
+    // Subscribe to ticker for BTC/USD, ETH/USD, SOL/USD
+    const subscribeMsg = JSON.stringify({
+      method: 'subscribe',
+      params: {
+        channel: 'ticker',
+        symbol: Object.values(KRAKEN_SYMBOLS)
+      }
+    });
+    krakenWs.send(subscribeMsg);
   });
 
-  binanceWs.on('message', (raw) => {
+  krakenWs.on('message', (raw) => {
     try {
       const msg = JSON.parse(raw);
-      const data = msg.data;
-      if (!data || !data.s) return;
+      // Kraken v2 ticker: {channel: "ticker", type: "snapshot"/"update", data: [{symbol, last, ...}]}
+      if (msg.channel !== 'ticker') return;
 
-      const token = BINANCE_SYMBOL_TO_TOKEN[data.s.toLowerCase()];
-      if (!token) return;
+      for (const item of msg.data) {
+        const token = KRAKEN_SYMBOL_TO_TOKEN[item.symbol];
+        if (!token) continue;
 
-      const price = parseFloat(data.c);
-      if (!price || price <= 0) return;
+        const price = parseFloat(item.last);
+        if (!price || price <= 0) continue;
 
-      const now = Date.now();
-      updateTokenPrice(token, price, now, 'binance-ws');
-      lastWsPriceUpdate = now;
-      binanceFailCount = 0;
+        const now = Date.now();
+        updateTokenPrice(token, price, now, 'kraken-ws');
+        lastWsPriceUpdate = now;
+        krakenFailCount = 0;
+      }
     } catch (e) {
-      // Ignore parse errors on individual messages
+      // Ignore parse errors
     }
   });
 
-  binanceWs.on('close', (code, reason) => {
-    binanceWsConnected = false;
-    console.log(`⚠️ Binance WebSocket closed (code=${code}). Reconnecting in ${binanceWsReconnectDelay/1000}s...`);
-    scheduleWsReconnect();
+  krakenWs.on('close', (code, reason) => {
+    krakenWsConnected = false;
+    console.log(`⚠️ Kraken WebSocket closed (code=${code}). Reconnecting in ${krakenWsReconnectDelay/1000}s...`);
+    scheduleKrakenWsReconnect();
   });
 
-  binanceWs.on('error', (err) => {
-    binanceWsConnected = false;
-    console.error('Binance WebSocket error:', err.message);
-    // 'close' event will fire after this, triggering reconnect
+  krakenWs.on('error', (err) => {
+    krakenWsConnected = false;
+    console.error('Kraken WebSocket error:', err.message);
   });
 }
 
-function scheduleWsReconnect() {
-  if (binanceWsReconnectTimer) clearTimeout(binanceWsReconnectTimer);
-  binanceWsReconnectTimer = setTimeout(() => {
-    binanceWsReconnectTimer = null;
-    initBinanceWebSocket();
-    binanceWsReconnectDelay = Math.min(binanceWsReconnectDelay * 2, 30000);
-  }, binanceWsReconnectDelay);
+function scheduleKrakenWsReconnect() {
+  if (krakenWsReconnectTimer) clearTimeout(krakenWsReconnectTimer);
+  krakenWsReconnectTimer = setTimeout(() => {
+    krakenWsReconnectTimer = null;
+    initKrakenWebSocket();
+    krakenWsReconnectDelay = Math.min(krakenWsReconnectDelay * 2, 30000);
+  }, krakenWsReconnectDelay);
 }
 
 // Coinbase WebSocket state
@@ -2189,8 +2199,8 @@ function initCoinbaseWebSocket() {
     try { coinbaseWs.close(); } catch (e) {}
   }
 
-  console.log('🔌 Connecting to Coinbase WebSocket...');
-  coinbaseWs = new WebSocket('wss://ws-feed.exchange.coinbase.com');
+  console.log('🔌 Connecting to Coinbase Advanced Trade WebSocket...');
+  coinbaseWs = new WebSocket('wss://advanced-trade-ws.coinbase.com');
 
   coinbaseWs.on('open', () => {
     coinbaseWsConnected = true;
@@ -2200,7 +2210,7 @@ function initCoinbaseWebSocket() {
     const subscribeMsg = JSON.stringify({
       type: 'subscribe',
       product_ids: Object.keys(COINBASE_SYMBOLS),
-      channels: ['ticker']
+      channel: 'ticker'
     });
     coinbaseWs.send(subscribeMsg);
   });
@@ -2208,17 +2218,21 @@ function initCoinbaseWebSocket() {
   coinbaseWs.on('message', (raw) => {
     try {
       const msg = JSON.parse(raw);
-      if (msg.type !== 'ticker') return;
+      if (msg.channel !== 'ticker') return;
+      if (!msg.events) return;
 
-      const token = COINBASE_SYMBOLS[msg.product_id];
-      if (!token) return;
-
-      const price = parseFloat(msg.price);
-      if (!price || price <= 0) return;
-
-      const now = Date.now();
-      updateTokenPrice(token, price, now, 'coinbase-ws');
-      lastWsPriceUpdate = now;
+      for (const event of msg.events) {
+        if (!event.tickers) continue;
+        for (const ticker of event.tickers) {
+          const token = COINBASE_SYMBOLS[ticker.product_id];
+          if (!token) continue;
+          const price = parseFloat(ticker.price);
+          if (!price || price <= 0) continue;
+          const now = Date.now();
+          updateTokenPrice(token, price, now, 'coinbase-ws');
+          lastWsPriceUpdate = now;
+        }
+      }
     } catch (e) {
       // Ignore parse errors on individual messages
     }
@@ -2233,7 +2247,6 @@ function initCoinbaseWebSocket() {
   coinbaseWs.on('error', (err) => {
     coinbaseWsConnected = false;
     console.error('Coinbase WebSocket error:', err.message);
-    // 'close' event will fire after this, triggering reconnect
   });
 }
 
@@ -2246,43 +2259,43 @@ function scheduleCoinbaseWsReconnect() {
   }, coinbaseWsReconnectDelay);
 }
 
-// Fetch prices from Binance (PRIMARY - very fast, works for US users)
-async function fetchBinancePrices() {
+// Fetch prices from Kraken REST (PRIMARY - fast, US-legal, no API key needed)
+async function fetchKrakenPrices() {
   try {
-    const res = await fetch(`https://api.binance.us/api/v3/ticker/price`);
+    const pairs = Object.values(KRAKEN_SYMBOLS).map(s => s.replace('/', '')).join(',');
+    const res = await fetch(`https://api.kraken.com/0/public/Ticker?pair=${pairs}`);
+    const data = await res.json();
 
-    if (!res.ok) {
-      throw new Error(`Binance API error: ${res.status}`);
+    if (data.error && data.error.length > 0) {
+      throw new Error(data.error[0]);
     }
 
-    const data = await res.json();
     const now = Date.now();
     let updated = 0;
 
-    // Create lookup map
-    const priceMap = {};
-    for (const item of data) {
-      priceMap[item.symbol] = parseFloat(item.price);
-    }
+    // Kraken uses non-standard pair names in response (XXBTZUSD, XETHZUSD, SOLUSD)
+    const KRAKEN_RESPONSE_MAP = {
+      'XXBTZUSD': 'BTC', 'XBTUSD': 'BTC',
+      'XETHZUSD': 'ETH', 'ETHUSD': 'ETH',
+      'SOLUSD': 'SOL'
+    };
 
-    // Update each tracked token
-    for (const [token, symbol] of Object.entries(BINANCE_SYMBOLS)) {
-      const price = priceMap[symbol];
+    for (const [pair, ticker] of Object.entries(data.result || {})) {
+      const token = KRAKEN_RESPONSE_MAP[pair];
+      if (!token) continue;
+      const price = parseFloat(ticker.c[0]); // c = last trade [price, volume]
       if (price && price > 0) {
-        updateTokenPrice(token, price, now, 'binance');
+        updateTokenPrice(token, price, now, 'kraken');
         updated++;
       }
     }
 
-    if (updated > 0) {
-      binanceFailCount = 0;
-    }
-
+    if (updated > 0) krakenFailCount = 0;
     return updated > 0 ? cryptoPrices : null;
   } catch (error) {
-    binanceFailCount++;
-    if (binanceFailCount <= 3) {
-      console.error('Binance error (will fallback to CoinGecko):', error.message);
+    krakenFailCount++;
+    if (krakenFailCount <= 3) {
+      console.error('Kraken error (will fallback to CoinGecko):', error.message);
     }
     return null;
   }
@@ -2319,12 +2332,12 @@ async function fetchCoinGeckoPrices() {
   }
 }
 
-// Main price fetch function - tries Binance first, falls back to CoinGecko
+// Main price fetch function - tries Kraken first, falls back to CoinGecko
 async function fetchCryptoPrices() {
-  // Try Binance first (faster)
-  const binanceResult = await fetchBinancePrices();
-  if (binanceResult) {
-    return binanceResult;
+  // Try Kraken first (faster)
+  const krakenResult = await fetchKrakenPrices();
+  if (krakenResult) {
+    return krakenResult;
   }
 
   // Fall back to CoinGecko
@@ -3151,7 +3164,7 @@ function normalCDF(x) {
 // Start price tracking: WebSocket primary, REST fallback every 5s
 fetchCryptoPrices(); // Immediate fetch on startup (WebSocket takes a moment to connect)
 let priceInterval = setInterval(() => {
-  if (!binanceWsConnected && !coinbaseWsConnected) {
+  if (!krakenWsConnected && !coinbaseWsConnected) {
     console.log('📡 Both WebSockets disconnected - falling back to REST polling');
     fetchCryptoPrices();
   } else {
@@ -3166,7 +3179,7 @@ let priceInterval = setInterval(() => {
     }
   }
 }, 5000);
-initBinanceWebSocket();
+initKrakenWebSocket();
 initCoinbaseWebSocket();
 
 // ============================================
