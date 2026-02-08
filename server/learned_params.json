@@ -24,28 +24,28 @@
     },
     "0.1": {
       "count": 120,
-      "favoredWinRate": 62,
-      "surpriseRate": 38
-    },
-    "0.2": {
-      "count": 144,
       "favoredWinRate": 68,
       "surpriseRate": 32
     },
+    "0.2": {
+      "count": 144,
+      "favoredWinRate": 74,
+      "surpriseRate": 26
+    },
     "0.3": {
       "count": 156,
-      "favoredWinRate": 73,
-      "surpriseRate": 27
-    },
-    "0.5": {
-      "count": 167,
       "favoredWinRate": 78,
       "surpriseRate": 22
     },
-    "0.75": {
-      "count": 170,
+    "0.5": {
+      "count": 167,
       "favoredWinRate": 82,
       "surpriseRate": 18
+    },
+    "0.75": {
+      "count": 170,
+      "favoredWinRate": 86,
+      "surpriseRate": 14
     },
     "1.5": {
       "count": 171,
@@ -93,8 +93,8 @@
         "distanceMax": 5,
         "timeMin": 2,
         "timeMax": 13,
-        "priceMin": 55,
-        "priceMax": 92
+        "priceMin": 40,
+        "priceMax": 95
       },
       "coinFlipThreshold": 0.05,
       "coinFlipPct": 12.5
@@ -112,8 +112,8 @@
         "distanceMax": 5,
         "timeMin": 2,
         "timeMax": 13,
-        "priceMin": 55,
-        "priceMax": 92
+        "priceMin": 40,
+        "priceMax": 95
       },
       "coinFlipThreshold": 0.15,
       "coinFlipPct": 23
@@ -131,8 +131,8 @@
         "distanceMax": 5,
         "timeMin": 2,
         "timeMax": 13,
-        "priceMin": 55,
-        "priceMax": 92
+        "priceMin": 40,
+        "priceMax": 95
       },
       "coinFlipThreshold": 0.4,
       "coinFlipPct": 64.1
