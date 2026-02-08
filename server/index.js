@@ -10843,16 +10843,26 @@ app.use((err, req, res, next) => {
   res.status(500).json({ success: false, error: 'Internal server error' });
 });
 
-// Initialize database before starting server
-initDatabase().then(() => {
-  const server = app.listen(PORT, '0.0.0.0', async () => {
-    console.log(` Shimi Crypto Bot running on port ${PORT}`);
+// Start HTTP server first (so Render detects the port), then initialize database
+const server = app.listen(PORT, '0.0.0.0', async () => {
+  console.log(` Shimi Crypto Bot running on port ${PORT}`);
+
+  // Initialize database after port is open
+  try {
+    await initDatabase();
     console.log(` Tracking ${Object.keys(TRACKED_TOKENS).length} tokens: ${Object.keys(TRACKED_TOKENS).join(', ')}`);
     console.log(` Min edge: ${config.minEdge}% | Max bet: ${config.maxBetPercent}%`);
     console.log(` Performance tracking: ${performanceData.bets.length} historical bets loaded`);
+  } catch (err) {
+    console.error(' Database initialization failed:', err.message);
+  }
 
-    // Auto-load Kalshi credentials from environment
+  // Auto-load Kalshi credentials from environment
+  try {
     await loadCredentialsFromEnv();
+  } catch (err) {
+    console.error(' Failed to load credentials:', err.message);
+  }
 
   // Initialize WebSocket for real-time market data (Phase 1)
   console.log(` Initializing Kalshi WebSocket connection...`);
@@ -10956,13 +10966,9 @@ initDatabase().then(() => {
     }
   }, 60 * 60 * 1000); // Check every hour
 
-    server.on('error', (err) => {
-      console.error('Server error:', err.message);
-    });
+  server.on('error', (err) => {
+    console.error('Server error:', err.message);
   });
-}).catch(err => {
-  console.error(' Failed to initialize database:', err);
-  process.exit(1);
 });
 
 // Graceful shutdown flush debounced writes before exit
