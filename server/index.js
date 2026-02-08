@@ -1,4 +1,4 @@
-import express from 'express';
+﻿import express from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
 import crypto from 'crypto';
@@ -19,7 +19,7 @@ const PORT = process.env.PORT || 3001;
 // Global error handlers
 process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception:', err.message, err.stack);
-  // Process is in undefined state after uncaught exception — must exit
+  // Process is in undefined state after uncaught exception â€” must exit
   gracefulShutdown('uncaughtException');
 });
 process.on('unhandledRejection', (err) => {
@@ -31,7 +31,7 @@ app.use(express.json());
 
 const KALSHI_API_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
 
-// Global kill switch — create this file to halt ALL betting immediately
+// Global kill switch â€” create this file to halt ALL betting immediately
 const KILL_SWITCH_FILE = path.join(__dirname, 'KILL_SWITCH');
 let globalKillSwitch = false;
 
@@ -41,7 +41,7 @@ function isKillSwitchActive() {
   try {
     if (fs.existsSync(KILL_SWITCH_FILE)) {
       globalKillSwitch = true;
-      console.error('🚨 GLOBAL KILL SWITCH ACTIVE — all betting halted');
+      console.error('ðŸš¨ GLOBAL KILL SWITCH ACTIVE â€” all betting halted');
       return true;
     }
   } catch (e) { /* ignore fs errors */ }
@@ -71,7 +71,7 @@ const DEFAULT_CONFIG = {
   // Scale-in settings: add to position when probability improves
   scaleIn: {
     enabled: true,
-    minProbabilityIncrease: 15,  // Only scale in if prob increased by 15%+ (60% → 75%)
+    minProbabilityIncrease: 15,  // Only scale in if prob increased by 15%+ (60% â†’ 75%)
     maxBetsPerMarket: 3,         // Maximum times to bet on same market
     minTimeBetweenBets: 60000    // At least 1 minute between bets on same market
   },
@@ -126,7 +126,7 @@ const DEFAULT_CONFIG = {
     stopLossEnabled: false,      // Cut losses at threshold (disabled by default)
     stopLossThreshold: -40,      // Exit if position is down 40%
     easyProfitEnabled: true,     // Take "free money" on high-confidence positions
-    easyProfitMinPrice: 75,      // Minimum buy price for easy profit (75¢ = 75% implied prob)
+    easyProfitMinPrice: 75,      // Minimum buy price for easy profit (75Â¢ = 75% implied prob)
     easyProfitThreshold: 12,     // Near expiry (<5min): take 12%+ profit (accounts for fees)
     coinFlipPreventionEnabled: true  // Exit coin-flip positions near expiry (can disable to ride it out)
     // Note: Early exits (>5min left) require 18%+ profit to justify fees
@@ -211,7 +211,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
         distanceMax: 5.0,   // Don't reject large moves
         timeMin: 2,         // Allow late entries
         timeMax: 13,        // 15-min markets: allow entries from minute 2-13
-        priceMin: 40,       // Below 40¢ fees are 5%+ and edge model has no signal
+        priceMin: 40,       // Below 40Â¢ fees are 5%+ and edge model has no signal
         priceMax: 95        // Capture near-certainty late-game bets
       }
     },
@@ -298,7 +298,7 @@ try {
   if (fs.existsSync(LEARNED_PARAMS_FILE)) {
     const data = JSON.parse(fs.readFileSync(LEARNED_PARAMS_FILE, 'utf8'));
     learnedParams = { ...DEFAULT_LEARNED_PARAMS, ...data };
-    console.log(`📚 Loaded learned params: sample size ${learnedParams.sampleSize}, last updated ${learnedParams.lastUpdated}`);
+    console.log(`ðŸ“š Loaded learned params: sample size ${learnedParams.sampleSize}, last updated ${learnedParams.lastUpdated}`);
   }
 } catch (err) {
   console.error('Error loading learned params:', err.message);
@@ -308,7 +308,7 @@ try {
 function saveLearnedParams() {
   try {
     fs.writeFileSync(LEARNED_PARAMS_FILE, JSON.stringify(learnedParams, null, 2));
-    console.log(`💾 Saved learned params to ${LEARNED_PARAMS_FILE}`);
+    console.log(`ðŸ’¾ Saved learned params to ${LEARNED_PARAMS_FILE}`);
   } catch (err) {
     console.error('Error saving learned params:', err.message);
   }
@@ -366,9 +366,9 @@ try {
     const data = JSON.parse(fs.readFileSync(ML_MODEL_FILE, 'utf8'));
     if (data.version >= 2) {
       mlModel = data;
-      console.log(`🧠 Loaded ML model: ${mlModel.trainedOn} samples, accuracy ${(mlModel.performance?.accuracy * 100).toFixed(1)}%`);
+      console.log(`ðŸ§  Loaded ML model: ${mlModel.trainedOn} samples, accuracy ${(mlModel.performance?.accuracy * 100).toFixed(1)}%`);
     } else {
-      console.log(`🧠 Skipping old ML model v${data.version}, will retrain`);
+      console.log(`ðŸ§  Skipping old ML model v${data.version}, will retrain`);
     }
   }
 } catch (err) {
@@ -481,11 +481,11 @@ function computeFeatureStats(dataPoints) {
  */
 function trainMLModel(dataPoints) {
   if (dataPoints.length < 200) {
-    console.log(`🧠 ML: Insufficient data (${dataPoints.length} < 200 required)`);
+    console.log(`ðŸ§  ML: Insufficient data (${dataPoints.length} < 200 required)`);
     return { success: false, reason: 'Insufficient data' };
   }
 
-  console.log(`🧠 ML: Training on ${dataPoints.length} samples...`);
+  console.log(`ðŸ§  ML: Training on ${dataPoints.length} samples...`);
 
   // Shuffle data
   const shuffled = [...dataPoints].sort(() => Math.random() - 0.5);
@@ -578,7 +578,7 @@ function trainMLModel(dataPoints) {
 
       // Early stopping
       if (epochsSinceImprovement >= 30) {
-        console.log(`🧠 ML: Early stopping at epoch ${epoch + 1} (val accuracy: ${(bestValAccuracy * 100).toFixed(1)}%)`);
+        console.log(`ðŸ§  ML: Early stopping at epoch ${epoch + 1} (val accuracy: ${(bestValAccuracy * 100).toFixed(1)}%)`);
         break;
       }
     }
@@ -647,7 +647,7 @@ function trainMLModel(dataPoints) {
 
   saveMLModel();
 
-  console.log(`🧠 ML: Training complete!`);
+  console.log(`ðŸ§  ML: Training complete!`);
   console.log(`   Train accuracy: ${(trainAccuracy * 100).toFixed(1)}% | Val accuracy: ${(valAccuracy * 100).toFixed(1)}%`);
   console.log(`   Log loss: ${logLoss.toFixed(4)}`);
   console.log(`   Confusion matrix: TP=${confusionMatrix.tp} FP=${confusionMatrix.fp} TN=${confusionMatrix.tn} FN=${confusionMatrix.fn}`);
@@ -680,7 +680,7 @@ function buildMLTrainingData(settlements) {
   for (const s of settlements) {
     if (!s.token || !s.strikePrice || !s.result) continue;
 
-    // Skip samples without betting-time data — using settlement price causes data leakage
+    // Skip samples without betting-time data â€” using settlement price causes data leakage
     if (s.bettingTimePct === undefined) continue;
 
     // Calculate distance
@@ -756,7 +756,7 @@ let takeProfitHistory = [];
 try {
   if (fs.existsSync(TAKE_PROFIT_HISTORY_FILE)) {
     takeProfitHistory = JSON.parse(fs.readFileSync(TAKE_PROFIT_HISTORY_FILE, 'utf8'));
-    console.log(`📈 Loaded ${takeProfitHistory.length} take-profit history entries`);
+    console.log(`ðŸ“ˆ Loaded ${takeProfitHistory.length} take-profit history entries`);
   }
 } catch (err) {
   console.error('Error loading take-profit history:', err.message);
@@ -819,7 +819,7 @@ let priceSnapshots = [];
 try {
   if (fs.existsSync(PRICE_SNAPSHOTS_FILE)) {
     priceSnapshots = JSON.parse(fs.readFileSync(PRICE_SNAPSHOTS_FILE, 'utf8'));
-    console.log(`📸 Loaded ${priceSnapshots.length} price snapshots`);
+    console.log(`ðŸ“¸ Loaded ${priceSnapshots.length} price snapshots`);
   }
 } catch (err) {
   console.error('Error loading price snapshots:', err.message);
@@ -835,7 +835,7 @@ function savePriceSnapshots() {
         priceSnapshots = priceSnapshots.slice(-MAX_SNAPSHOTS);
       }
       fs.writeFileSync(PRICE_SNAPSHOTS_FILE, JSON.stringify(priceSnapshots, null, 2));
-      console.log(`💾 Saved ${priceSnapshots.length} price snapshots`);
+      console.log(`ðŸ’¾ Saved ${priceSnapshots.length} price snapshots`);
     } catch (err) {
       console.error('Error saving price snapshots:', err.message);
     }
@@ -886,7 +886,7 @@ function matchSettlementWithSnapshots(ticker, result) {
     }
   }
   if (matched > 0) {
-    console.log(`📸 Matched ${matched} snapshots with settlement result: ${ticker} = ${result}`);
+    console.log(`ðŸ“¸ Matched ${matched} snapshots with settlement result: ${ticker} = ${result}`);
     savePriceSnapshots();
   }
 }
@@ -1025,13 +1025,13 @@ async function getUserStateAsync(userId) {
           betHistory: row.bet_history || [],
           portfolio: row.portfolio || { balance: 0, positions: [] }
         });
-        console.log(`📂 Loaded state for user ${userId} from database`);
+        console.log(`ðŸ“‚ Loaded state for user ${userId} from database`);
       } else {
         // New user - create default state
         const newState = createDefaultUserState();
         newState.userId = userId;
         userStates.set(userId, newState);
-        console.log(`🆕 Created new state for user ${userId}`);
+        console.log(`ðŸ†• Created new state for user ${userId}`);
       }
     } catch (err) {
       console.error(`Error loading user state for ${userId}:`, err);
@@ -1125,7 +1125,7 @@ function loadProfiles() {
       const data = JSON.parse(fs.readFileSync(PROFILES_FILE, 'utf8'));
       profiles = data.profiles || {};
       activeProfileId = data.activeProfileId || null;
-      console.log(`👥 Loaded ${Object.keys(profiles).length} profiles`);
+      console.log(`ðŸ‘¥ Loaded ${Object.keys(profiles).length} profiles`);
       return true;
     }
   } catch (err) {
@@ -1151,14 +1151,14 @@ function saveProfiles() {
 function restoreActiveProfile() {
   if (activeProfileId && profiles[activeProfileId]) {
     const profile = profiles[activeProfileId];
-    console.log(`🔄 Restoring active profile: ${profile.name}`);
+    console.log(`ðŸ”„ Restoring active profile: ${profile.name}`);
 
     // Restore Kalshi credentials
     if (profile.kalshiApiKeyId && profile.kalshiPrivateKey) {
       config.apiKeyId = profile.kalshiApiKeyId;
       config.privateKey = profile.kalshiPrivateKey;
       config.isAuthenticated = true;
-      console.log(`🔑 Restored Kalshi credentials for ${profile.name}`);
+      console.log(`ðŸ”‘ Restored Kalshi credentials for ${profile.name}`);
     }
 
     // Restore settings
@@ -1177,7 +1177,7 @@ function restoreActiveProfile() {
     // Restore bet history
     if (profile.betHistory && profile.betHistory.length > 0) {
       betHistory = profile.betHistory;
-      console.log(`📊 Restored ${betHistory.length} bets from profile`);
+      console.log(`ðŸ“Š Restored ${betHistory.length} bets from profile`);
     }
 
     return true;
@@ -1236,7 +1236,7 @@ function loadPerformanceData() {
     if (fs.existsSync(PERFORMANCE_FILE)) {
       const data = fs.readFileSync(PERFORMANCE_FILE, 'utf8');
       performanceData = JSON.parse(data);
-      console.log(`📊 Loaded ${performanceData.bets.length} historical bets`);
+      console.log(`ðŸ“Š Loaded ${performanceData.bets.length} historical bets`);
     }
   } catch (err) {
     console.log('Could not load performance data:', err.message);
@@ -1289,7 +1289,7 @@ function trackBet(betInfo) {
   performanceData.summary.totalWagered += bet.totalCost;
 
   savePerformanceData();
-  console.log(`📊 Tracked bet: ${bet.side} on ${bet.token} @ ${bet.price}¢ (${bet.predictedProb.toFixed(1)}% predicted)`);
+  console.log(`ðŸ“Š Tracked bet: ${bet.side} on ${bet.token} @ ${bet.price}Â¢ (${bet.predictedProb.toFixed(1)}% predicted)`);
 
   return bet;
 }
@@ -1367,7 +1367,7 @@ function settleBet(betId, outcome, settlementPrice, actualProfit) {
     matchSettlementWithSnapshots(bet.ticker, result);
   }
 
-  console.log(`📊 Settled bet: ${bet.side} on ${bet.token} → ${outcome.toUpperCase()} (${actualProfit > 0 ? '+' : ''}${actualProfit}¢)`);
+  console.log(`ðŸ“Š Settled bet: ${bet.side} on ${bet.token} â†’ ${outcome.toUpperCase()} (${actualProfit > 0 ? '+' : ''}${actualProfit}Â¢)`);
   return bet;
 }
 
@@ -1424,7 +1424,7 @@ async function checkPendingSettlements() {
   const pending = performanceData.bets.filter(b => b.outcome === 'pending');
   if (pending.length === 0) return;
 
-  console.log(`📊 Checking ${pending.length} pending bets for settlement...`);
+  console.log(`ðŸ“Š Checking ${pending.length} pending bets for settlement...`);
 
   for (const bet of pending) {
     try {
@@ -1468,7 +1468,7 @@ async function checkPendingSettlements() {
             const won = (bet.side.toLowerCase() === result);
             const profit = won ? (bet.contracts * 100 - bet.totalCost) : 0;
             settleBet(bet.id, won ? 'won' : 'lost', market.market.settlement_value, profit);
-            console.log(`   ✅ Settled bet ${bet.id}: ${won ? 'WON' : 'LOST'} (${bet.side} on ${bet.ticker})`);
+            console.log(`   âœ… Settled bet ${bet.id}: ${won ? 'WON' : 'LOST'} (${bet.side} on ${bet.ticker})`);
           }
         } catch (e) {
           // Market might not exist or API error - try price-based settlement below
@@ -1486,8 +1486,8 @@ async function checkPendingSettlements() {
           const expiryMs = new Date(expiryTime).getTime();
           const settlementDelay = Date.now() - expiryMs;
           if (settlementDelay > 120000) {
-            // More than 2 minutes past expiry — price has likely moved, skip price-based settlement
-            console.log(`   ⏳ Skipping price-based settlement for ${bet.id}: ${(settlementDelay/1000).toFixed(0)}s past expiry (price may be stale)`);
+            // More than 2 minutes past expiry â€” price has likely moved, skip price-based settlement
+            console.log(`   â³ Skipping price-based settlement for ${bet.id}: ${(settlementDelay/1000).toFixed(0)}s past expiry (price may be stale)`);
           } else {
             // Market should have settled - determine outcome from price
             const isAbove = currentPrice >= bet.strikePrice;
@@ -1495,7 +1495,7 @@ async function checkPendingSettlements() {
                         (bet.side.toLowerCase() === 'no' && !isAbove);
             const profit = won ? (bet.contracts * 100 - bet.totalCost) : 0;
             settleBet(bet.id, won ? 'won' : 'lost', currentPrice, profit);
-            console.log(`   ✅ Settled bet ${bet.id} via price: ${won ? 'WON' : 'LOST'} (${bet.side} ${bet.token} @ strike $${bet.strikePrice}, current $${currentPrice}, delay=${(settlementDelay/1000).toFixed(0)}s)`);
+            console.log(`   âœ… Settled bet ${bet.id} via price: ${won ? 'WON' : 'LOST'} (${bet.side} ${bet.token} @ strike $${bet.strikePrice}, current $${currentPrice}, delay=${(settlementDelay/1000).toFixed(0)}s)`);
           }
         }
       }
@@ -1538,7 +1538,7 @@ async function loadCredentialsFromEnv() {
   }
 
   if (apiKeyId && privateKey) {
-    console.log('🔑 Found Kalshi credentials in environment variables');
+    console.log('ðŸ”‘ Found Kalshi credentials in environment variables');
     config.apiKeyId = apiKeyId.trim();
     config.privateKey = privateKey.trim();
     config.isAuthenticated = true;
@@ -1548,15 +1548,15 @@ async function loadCredentialsFromEnv() {
       const balanceData = await kalshiRequest('GET', '/portfolio/balance');
       portfolio.balance = balanceData.balance || 0;
       config.bankroll = portfolio.balance;
-      console.log(`✅ Kalshi authenticated! Balance: $${(portfolio.balance / 100).toFixed(2)}`);
+      console.log(`âœ… Kalshi authenticated! Balance: $${(portfolio.balance / 100).toFixed(2)}`);
     } catch (error) {
-      console.error('❌ Kalshi credentials invalid:', error.message);
+      console.error('âŒ Kalshi credentials invalid:', error.message);
       config.apiKeyId = null;
       config.privateKey = null;
       config.isAuthenticated = false;
     }
   } else {
-    console.log('ℹ️ No Kalshi credentials in environment. Set KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY (or KALSHI_PRIVATE_KEY_BASE64) in Render dashboard.');
+    console.log('â„¹ï¸ No Kalshi credentials in environment. Set KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY (or KALSHI_PRIVATE_KEY_BASE64) in Render dashboard.');
   }
 }
 
@@ -1576,7 +1576,7 @@ function shouldAllowScaleIn(ticker, currentProbability, currentSide, userConfig,
   // CRITICAL: Reject if bet side flipped (YES->NO or NO->YES)
   // When crypto oscillates around strike, model alternates sides - betting both loses to fees
   if (currentSide && existing.side && existing.side.toUpperCase() !== currentSide.toUpperCase()) {
-    console.log(`🚫 SIDE FLIP BLOCKED: ${ticker} was ${existing.side} → now ${currentSide} — refusing to bet both sides`);
+    console.log(`ðŸš« SIDE FLIP BLOCKED: ${ticker} was ${existing.side} â†’ now ${currentSide} â€” refusing to bet both sides`);
     return false;
   }
 
@@ -1599,15 +1599,15 @@ function shouldAllowScaleIn(ticker, currentProbability, currentSide, userConfig,
     return false;
   }
 
-  console.log(`📈 SCALE-IN OPPORTUNITY: ${ticker}`);
-  console.log(`   Previous prob: ${existing.probability}% → Current: ${currentProbability}% (+${probIncrease.toFixed(1)}%)`);
+  console.log(`ðŸ“ˆ SCALE-IN OPPORTUNITY: ${ticker}`);
+  console.log(`   Previous prob: ${existing.probability}% â†’ Current: ${currentProbability}% (+${probIncrease.toFixed(1)}%)`);
   console.log(`   Bet #${(existing.betCount || 1) + 1} of max ${cfg.scaleIn.maxBetsPerMarket}`);
 
   return true;
 }
 
 // Edge requirements - lower for "obvious" high-probability bets
-// Strategy: Safe growth from $10 → $100 by taking high-probability bets
+// Strategy: Safe growth from $10 â†’ $100 by taking high-probability bets
 const AUTO_BET_MIN_EDGE = 3;      // 3% edge for auto (lower for safe bets)
 const MANUAL_BET_MIN_EDGE = 2;    // 2% edge for manual
 const OBVIOUS_BET_MIN_EDGE = 1;   // 1% edge OK if probability is >90% (free money)
@@ -1777,7 +1777,7 @@ async function fetchAllNews() {
     seenArticles = new Set(articlesToKeep);
   }
 
-  console.log(`📰 News update: ${newArticles.length} new articles | Cache: ${newsCache.length}`);
+  console.log(`ðŸ“° News update: ${newArticles.length} new articles | Cache: ${newsCache.length}`);
   return newArticles;
 }
 
@@ -1918,7 +1918,7 @@ async function getRedditSentiment() {
     redditSentiment.data = results;
     redditSentiment.lastFetch = now;
 
-    console.log(`📊 Reddit sentiment updated: ${results.length} trending tickers`);
+    console.log(`ðŸ“Š Reddit sentiment updated: ${results.length} trending tickers`);
     return results;
 
   } catch (error) {
@@ -2148,13 +2148,13 @@ function initKrakenWebSocket() {
     try { krakenWs.close(); } catch (e) {}
   }
 
-  console.log('🔌 Connecting to Kraken WebSocket...');
+  console.log('ðŸ”Œ Connecting to Kraken WebSocket...');
   krakenWs = new WebSocket('wss://ws.kraken.com/v2');
 
   krakenWs.on('open', () => {
     krakenWsConnected = true;
     krakenWsReconnectDelay = 1000;
-    console.log('✅ Kraken WebSocket connected - real-time prices active');
+    console.log('âœ… Kraken WebSocket connected - real-time prices active');
 
     // Subscribe to ticker for BTC/USD, ETH/USD, SOL/USD
     const subscribeMsg = JSON.stringify({
@@ -2192,7 +2192,7 @@ function initKrakenWebSocket() {
 
   krakenWs.on('close', (code, reason) => {
     krakenWsConnected = false;
-    console.log(`⚠️ Kraken WebSocket closed (code=${code}). Reconnecting in ${krakenWsReconnectDelay/1000}s...`);
+    console.log(`âš ï¸ Kraken WebSocket closed (code=${code}). Reconnecting in ${krakenWsReconnectDelay/1000}s...`);
     scheduleKrakenWsReconnect();
   });
 
@@ -2228,13 +2228,13 @@ function initCoinbaseWebSocket() {
     try { coinbaseWs.close(); } catch (e) {}
   }
 
-  console.log('🔌 Connecting to Coinbase Advanced Trade WebSocket...');
+  console.log('ðŸ”Œ Connecting to Coinbase Advanced Trade WebSocket...');
   coinbaseWs = new WebSocket('wss://advanced-trade-ws.coinbase.com');
 
   coinbaseWs.on('open', () => {
     coinbaseWsConnected = true;
     coinbaseWsReconnectDelay = 1000;
-    console.log('✅ Coinbase WebSocket connected - real-time prices active');
+    console.log('âœ… Coinbase WebSocket connected - real-time prices active');
 
     const subscribeMsg = JSON.stringify({
       type: 'subscribe',
@@ -2269,7 +2269,7 @@ function initCoinbaseWebSocket() {
 
   coinbaseWs.on('close', (code, reason) => {
     coinbaseWsConnected = false;
-    console.log(`⚠️ Coinbase WebSocket closed (code=${code}). Reconnecting in ${coinbaseWsReconnectDelay/1000}s...`);
+    console.log(`âš ï¸ Coinbase WebSocket closed (code=${code}). Reconnecting in ${coinbaseWsReconnectDelay/1000}s...`);
     scheduleCoinbaseWsReconnect();
   });
 
@@ -2905,7 +2905,7 @@ function calculateEnsembleProbability(token, currentPrice, targetPrice, expiryMi
 
   // Defensive check: if any NaN crept through, use simple fallback
   if (isNaN(ensembleProbAbove)) {
-    console.log(`   ⚠️ NaN detected in probability calculation, using simple fallback`);
+    console.log(`   âš ï¸ NaN detected in probability calculation, using simple fallback`);
     // Simple fallback: if above target, more likely to stay above
     ensembleProbAbove = isAboveTarget ? 0.55 : 0.45;
   }
@@ -3151,7 +3151,7 @@ function simpleEdgeCheck(currentPrice, strikePrice, marketPrice, side, volatilit
   if (Math.abs(zScore) >= 1.5) {
     if (zScore > 0) {
       // Price is well ABOVE strike - YES (above) is very likely
-      // If YES is cheap (< 85¢), there's edge
+      // If YES is cheap (< 85Â¢), there's edge
       result.isObviousBet = true;
       result.obviousSide = 'YES';
       // Estimate: if 1.5+ std devs above, ~93% chance it stays above
@@ -3159,7 +3159,7 @@ function simpleEdgeCheck(currentPrice, strikePrice, marketPrice, side, volatilit
       result.obviousEdge = (estimatedProb - marketPrice) * 100;
     } else {
       // Price is well BELOW strike - NO (below) is very likely
-      // If NO is cheap (< 85¢), there's edge
+      // If NO is cheap (< 85Â¢), there's edge
       result.isObviousBet = true;
       result.obviousSide = 'NO';
       const estimatedProb = normalCDF(-zScore);  // Prob of staying below
@@ -3194,7 +3194,7 @@ function normalCDF(x) {
 fetchCryptoPrices(); // Immediate fetch on startup (WebSocket takes a moment to connect)
 let priceInterval = setInterval(() => {
   if (!krakenWsConnected && !coinbaseWsConnected) {
-    console.log('📡 Both WebSockets disconnected - falling back to REST polling');
+    console.log('ðŸ“¡ Both WebSockets disconnected - falling back to REST polling');
     fetchCryptoPrices();
   } else {
     // Even when WS is connected, check for per-token staleness
@@ -3203,7 +3203,7 @@ let priceInterval = setInterval(() => {
       .filter(([, data]) => data?.price && (now - data.timestamp) > 10000)
       .map(([token]) => token);
     if (staleTokens.length > 0) {
-      console.log(`📡 WS connected but stale prices for: ${staleTokens.join(', ')} - triggering REST fetch`);
+      console.log(`ðŸ“¡ WS connected but stale prices for: ${staleTokens.join(', ')} - triggering REST fetch`);
       fetchCryptoPrices();
     }
   }
@@ -3243,13 +3243,13 @@ function syncKalshiPositionsToBetHistory(userState, positions, userId = null) {
         bet.status = 'settled';
         bet.outcome = 'unknown'; // We don't know the outcome, just that it's gone
         cleanedCount++;
-        console.log(`🧹 Cleaned up stale synced bet: ${bet.ticker}`);
+        console.log(`ðŸ§¹ Cleaned up stale synced bet: ${bet.ticker}`);
       }
     }
   }
 
   if (cleanedCount > 0) {
-    console.log(`🧹 Cleaned up ${cleanedCount} stale synced bets`);
+    console.log(`ðŸ§¹ Cleaned up ${cleanedCount} stale synced bets`);
   }
 
   // Now sync new positions
@@ -3307,11 +3307,11 @@ function syncKalshiPositionsToBetHistory(userState, positions, userId = null) {
     userBetHistory.push(syntheticBet);
     existingTickers.add(pos.ticker);
     syncedCount++;
-    console.log(`🔄 Synced position: ${pos.ticker} | ${contracts} contracts @ ${pos.average_price || '?'}¢ | exposure: $${(totalCost / 100).toFixed(2)}`);
+    console.log(`ðŸ”„ Synced position: ${pos.ticker} | ${contracts} contracts @ ${pos.average_price || '?'}Â¢ | exposure: $${(totalCost / 100).toFixed(2)}`);
   }
 
   if (syncedCount > 0) {
-    console.log(`✅ Synced ${syncedCount} existing Kalshi positions to bet history`);
+    console.log(`âœ… Synced ${syncedCount} existing Kalshi positions to bet history`);
   }
 
   // Save user state if any changes were made
@@ -3335,7 +3335,7 @@ function getRiskByType(userState = null) {
   // 1) Count from betHistory - most reliable since we set totalCost ourselves
   for (const bet of userBetHistory) {
     if (!bet.ticker) continue;
-    if (isTickerExpired(bet.ticker)) continue; // Market settled → not active
+    if (isTickerExpired(bet.ticker)) continue; // Market settled â†’ not active
     if (bet.status === 'settled' || bet.status === 'closed') continue;
 
     countedTickers.add(bet.ticker);
@@ -3403,7 +3403,7 @@ function isTickerExpired(ticker) {
 function filterExpiredPositions(positions, log = false) {
   return positions.filter(p => {
     if (isTickerExpired(p.ticker)) {
-      if (log) console.log(`   🗑️ Filtered expired position: ${p.ticker}`);
+      if (log) console.log(`   ðŸ—‘ï¸ Filtered expired position: ${p.ticker}`);
       return false;
     }
     return true;
@@ -3528,7 +3528,7 @@ function getExposureForTicker(ticker, userState = null) {
   return exposure;
 }
 
-// Rolling spend tracker — prevents exposure reset after 15-min market expiry
+// Rolling spend tracker â€” prevents exposure reset after 15-min market expiry
 // CRITICAL: Also derives from betHistory so it survives server restarts.
 // The in-memory tracker is a fast cache; betHistory is the source of truth.
 const rollingSpendTracker = new Map(); // userId -> [{amount, token, timestamp}]
@@ -3555,7 +3555,7 @@ function getRollingSpend(userId, windowMs = 2 * 60 * 60 * 1000) {
   const userBetHistory = userState?.betHistory || betHistory;
   const historySpend = computeRollingSpendFromHistory(userBetHistory, null, windowMs);
 
-  // Use whichever is higher — memory tracker might have bets not yet in history,
+  // Use whichever is higher â€” memory tracker might have bets not yet in history,
   // history has bets from before this server session
   return Math.max(memorySpend, historySpend);
 }
@@ -3577,7 +3577,7 @@ function getRollingSpendByToken(userId, token, windowMs = 2 * 60 * 60 * 1000) {
   return Math.max(memorySpend, historySpend);
 }
 
-// Derive rolling spend from betHistory — this is restart-proof
+// Derive rolling spend from betHistory â€” this is restart-proof
 function computeRollingSpendFromHistory(betHistoryArr, token, windowMs = 2 * 60 * 60 * 1000) {
   const cutoff = Date.now() - windowMs;
   let total = 0;
@@ -3593,7 +3593,7 @@ function computeRollingSpendFromHistory(betHistoryArr, token, windowMs = 2 * 60 
   return total;
 }
 
-// Daily loss tracking — rolling 24-hour P&L (persisted to disk)
+// Daily loss tracking â€” rolling 24-hour P&L (persisted to disk)
 const DAILY_LOSS_FILE = path.join(__dirname, 'daily_loss_tracker.json');
 const dailyLossTracker = new Map(); // userId -> { losses: [{amount, timestamp}], startBalance: number }
 
@@ -3609,7 +3609,7 @@ try {
         dailyLossTracker.set(key, { losses: validLosses, startBalance: tracker.startBalance || 0 });
       }
     }
-    console.log(`📊 Loaded daily loss tracker: ${dailyLossTracker.size} users with recent losses`);
+    console.log(`ðŸ“Š Loaded daily loss tracker: ${dailyLossTracker.size} users with recent losses`);
   }
 } catch (e) {
   console.warn('Could not load daily loss tracker:', e.message);
@@ -3685,7 +3685,7 @@ function getRemainingTokenBudget(ticker, assetType, userState = null, userConfig
 // KALSHI API
 // ============================================
 
-// Kalshi API rate limiter — sliding window, max 8 requests/second
+// Kalshi API rate limiter â€” sliding window, max 8 requests/second
 const kalshiRateLimiter = {
   timestamps: [],
   maxPerSecond: 8,
@@ -3740,10 +3740,10 @@ async function kalshiRequest(method, endpoint, body = null, userConfig = null) {
     clearTimeout(timeoutId);
 
     if (response.status === 429) {
-      // Rate limited — wait and retry once
+      // Rate limited â€” wait and retry once
       clearTimeout(timeoutId);
       const retryAfter = parseInt(response.headers.get('retry-after') || '2', 10);
-      console.warn(`⚠️ Kalshi 429 rate limited on ${endpoint}, retrying in ${retryAfter}s`);
+      console.warn(`âš ï¸ Kalshi 429 rate limited on ${endpoint}, retrying in ${retryAfter}s`);
       await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
       await kalshiRateLimiter.wait();
       return kalshiRequest(method, endpoint, body, userConfig);
@@ -4155,13 +4155,13 @@ function calculateTakeProfitUrgency(position, market, momentum, profitPercent) {
       const minutesLeft = timeRemaining / 60000;
       if (minutesLeft < 2) {
         urgencyScore += 30;
-        reasons.push(`⏰ CRITICAL: Only ${minutesLeft.toFixed(1)}min left`);
+        reasons.push(`â° CRITICAL: Only ${minutesLeft.toFixed(1)}min left`);
       } else if (minutesLeft < 5) {
         urgencyScore += 20;
-        reasons.push(`⏰ Urgent: ${minutesLeft.toFixed(1)}min left`);
+        reasons.push(`â° Urgent: ${minutesLeft.toFixed(1)}min left`);
       } else if (minutesLeft < 8) {
         urgencyScore += 10;
-        reasons.push(`⏰ ${minutesLeft.toFixed(1)}min remaining`);
+        reasons.push(`â° ${minutesLeft.toFixed(1)}min remaining`);
       }
     }
   }
@@ -4183,7 +4183,7 @@ function calculateTakeProfitUrgency(position, market, momentum, profitPercent) {
     if (isAgainst) {
       const momentumPenalty = Math.round(momentum.strength * 25);
       urgencyScore += momentumPenalty;
-      reasons.push(`📉 Momentum against us: ${momentum.direction} (${(momentum.strength*100).toFixed(0)}% strength)`);
+      reasons.push(`ðŸ“‰ Momentum against us: ${momentum.direction} (${(momentum.strength*100).toFixed(0)}% strength)`);
     }
   }
 
@@ -4191,13 +4191,13 @@ function calculateTakeProfitUrgency(position, market, momentum, profitPercent) {
   // Higher profits are worth protecting more aggressively
   if (profitPercent >= 50) {
     urgencyScore += 25;
-    reasons.push(`💰 Large profit at risk: ${profitPercent.toFixed(1)}%`);
+    reasons.push(`ðŸ’° Large profit at risk: ${profitPercent.toFixed(1)}%`);
   } else if (profitPercent >= 30) {
     urgencyScore += 15;
-    reasons.push(`💰 Good profit at risk: ${profitPercent.toFixed(1)}%`);
+    reasons.push(`ðŸ’° Good profit at risk: ${profitPercent.toFixed(1)}%`);
   } else if (profitPercent >= 15) {
     urgencyScore += 8;
-    reasons.push(`💰 Moderate profit: ${profitPercent.toFixed(1)}%`);
+    reasons.push(`ðŸ’° Moderate profit: ${profitPercent.toFixed(1)}%`);
   }
 
   // 4. PRICE PROXIMITY TO STRIKE (0-20 points)
@@ -4211,10 +4211,10 @@ function calculateTakeProfitUrgency(position, market, momentum, profitPercent) {
         const pctFromStrike = Math.abs((currentPrice - parsed.strikePrice) / parsed.strikePrice * 100);
         if (pctFromStrike < 0.1) {
           urgencyScore += 20;
-          reasons.push(`⚠️ Price very close to strike (${pctFromStrike.toFixed(2)}%)`);
+          reasons.push(`âš ï¸ Price very close to strike (${pctFromStrike.toFixed(2)}%)`);
         } else if (pctFromStrike < 0.3) {
           urgencyScore += 12;
-          reasons.push(`⚠️ Price near strike (${pctFromStrike.toFixed(2)}%)`);
+          reasons.push(`âš ï¸ Price near strike (${pctFromStrike.toFixed(2)}%)`);
         } else if (pctFromStrike < 0.5) {
           urgencyScore += 5;
           reasons.push(`Price ${pctFromStrike.toFixed(2)}% from strike`);
@@ -4288,22 +4288,22 @@ function calculateSmartStopLoss(position, market, profitPercent, userConfig) {
   if (pctFromStrike < coinFlipThreshold && timeRemaining < 3) {
     // Exit anything unprofitable - it's a coin flip
     stopLossThreshold = Math.max(stopLossThreshold, -5);
-    console.log(`[SmartStopLoss] ${position.ticker}: Coin-flip territory (${pctFromStrike.toFixed(3)}% from strike, ${timeRemaining.toFixed(1)}min left) → threshold: ${stopLossThreshold}%`);
+    console.log(`[SmartStopLoss] ${position.ticker}: Coin-flip territory (${pctFromStrike.toFixed(3)}% from strike, ${timeRemaining.toFixed(1)}min left) â†’ threshold: ${stopLossThreshold}%`);
   }
   // Low recovery chance with limited time
   else if (recoveryChance < 55 && timeRemaining < 5) {
     stopLossThreshold = Math.max(stopLossThreshold, -15);
-    console.log(`[SmartStopLoss] ${position.ticker}: Low recovery (${recoveryChance.toFixed(0)}%) + limited time (${timeRemaining.toFixed(1)}min) → threshold: ${stopLossThreshold}%`);
+    console.log(`[SmartStopLoss] ${position.ticker}: Low recovery (${recoveryChance.toFixed(0)}%) + limited time (${timeRemaining.toFixed(1)}min) â†’ threshold: ${stopLossThreshold}%`);
   }
   // Very low recovery chance regardless of time
   else if (recoveryChance < 45) {
     stopLossThreshold = Math.max(stopLossThreshold, -10);
-    console.log(`[SmartStopLoss] ${position.ticker}: Very low recovery (${recoveryChance.toFixed(0)}%) → threshold: ${stopLossThreshold}%`);
+    console.log(`[SmartStopLoss] ${position.ticker}: Very low recovery (${recoveryChance.toFixed(0)}%) â†’ threshold: ${stopLossThreshold}%`);
   }
   // Near expiry with any loss
   else if (timeRemaining < 2 && profitPercent < -10) {
     stopLossThreshold = Math.max(stopLossThreshold, -8);
-    console.log(`[SmartStopLoss] ${position.ticker}: Near expiry (${timeRemaining.toFixed(1)}min) at ${profitPercent.toFixed(1)}% → threshold: ${stopLossThreshold}%`);
+    console.log(`[SmartStopLoss] ${position.ticker}: Near expiry (${timeRemaining.toFixed(1)}min) at ${profitPercent.toFixed(1)}% â†’ threshold: ${stopLossThreshold}%`);
   }
 
   return stopLossThreshold;
@@ -4328,7 +4328,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
   let avgCost = position.average_price || 0; // In cents
   if (avgCost === 0 && position.market_exposure && contracts > 0) {
     avgCost = Math.round(position.market_exposure / contracts);
-    console.log(`[TakeProfit] ${ticker}: Using market_exposure fallback for avgCost: ${avgCost}¢`);
+    console.log(`[TakeProfit] ${ticker}: Using market_exposure fallback for avgCost: ${avgCost}Â¢`);
   }
 
   if (contracts === 0 || avgCost === 0) {
@@ -4350,20 +4350,20 @@ async function evaluateTakeProfit(position, userConfig = null) {
     const oppositeBid = side === 'yes' ? orderbook.bestNoBid : orderbook.bestYesBid;
     if (oppositeAsk && oppositeAsk > 0) {
       currentBid = 100 - oppositeAsk;
-      console.log(`[StopLoss] ${ticker}: No ${side} bid — inferred ${currentBid}¢ from opposite ask (${oppositeAsk}¢)`);
+      console.log(`[StopLoss] ${ticker}: No ${side} bid â€” inferred ${currentBid}Â¢ from opposite ask (${oppositeAsk}Â¢)`);
     } else if (oppositeBid && oppositeBid > 0) {
       currentBid = 100 - oppositeBid;
-      console.log(`[StopLoss] ${ticker}: No ${side} bid — inferred ${currentBid}¢ from opposite bid (${oppositeBid}¢)`);
+      console.log(`[StopLoss] ${ticker}: No ${side} bid â€” inferred ${currentBid}Â¢ from opposite bid (${oppositeBid}Â¢)`);
     } else {
-      console.log(`[StopLoss] ${ticker}: No bids on either side — skipping (no liquidity)`);
-      return { shouldExit: false, reason: 'No liquidity — no bids on either side of orderbook' };
+      console.log(`[StopLoss] ${ticker}: No bids on either side â€” skipping (no liquidity)`);
+      return { shouldExit: false, reason: 'No liquidity â€” no bids on either side of orderbook' };
     }
-    // Clamp inferred price to at least 1¢
+    // Clamp inferred price to at least 1Â¢
     if (currentBid < 1) currentBid = 1;
   }
 
   // Calculate current profit WITH KALSHI FEES
-  // Kalshi charges taker fee on sells: ceil(0.07 × contracts × price × (1 - price)), capped at 2¢/contract
+  // Kalshi charges taker fee on sells: ceil(0.07 Ã— contracts Ã— price Ã— (1 - price)), capped at 2Â¢/contract
   const sellPrice = currentBid / 100; // Convert to dollars for fee calc
   const sellFeePerContract = Math.min(0.02, Math.ceil(0.07 * sellPrice * (1 - sellPrice) * 100) / 100);
   const totalSellFee = Math.round(sellFeePerContract * contracts * 100); // In cents
@@ -4378,7 +4378,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
   const profitPercent = ((netProceedsAfterSell - totalCostWithFees) / totalCostWithFees) * 100;
 
   // Log position status for debugging
-  console.log(`[StopLoss] ${ticker}: avgCost=${avgCost}¢, bid=${currentBid}¢, profit=${profitPercent.toFixed(1)}%`);
+  console.log(`[StopLoss] ${ticker}: avgCost=${avgCost}Â¢, bid=${currentBid}Â¢, profit=${profitPercent.toFixed(1)}%`);
 
   // Get market for stop-loss calculations (needed before stop-loss check)
   const marketsForStopLoss = marketCache.data || [];
@@ -4399,10 +4399,10 @@ async function evaluateTakeProfit(position, userConfig = null) {
 
     if (profitPercent <= stopLossThreshold) {
       // Loss exceeds threshold - cut it now
-      console.log(`🛑 [StopLoss] TRIGGERED for ${ticker}: ${profitPercent.toFixed(1)}% <= ${stopLossThreshold}%`);
+      console.log(`ðŸ›‘ [StopLoss] TRIGGERED for ${ticker}: ${profitPercent.toFixed(1)}% <= ${stopLossThreshold}%`);
       return {
         shouldExit: true,
-        reason: `🛑 STOP-LOSS: Position at ${profitPercent.toFixed(1)}% (threshold: ${stopLossThreshold}%)`,
+        reason: `ðŸ›‘ STOP-LOSS: Position at ${profitPercent.toFixed(1)}% (threshold: ${stopLossThreshold}%)`,
         urgencyScore: 100,
         urgencyReasons: [`Stop-loss triggered at ${profitPercent.toFixed(1)}% (threshold: ${stopLossThreshold}%)`],
         analysis: { profitPercent, netProfit, currentBid, avgCost, totalSellFee, spreadCost, stopLossTriggered: true, stopLossThreshold }
@@ -4417,7 +4417,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
       if (timeRemaining && timeRemaining < 3 * 60 * 1000) {
         return {
           shouldExit: true,
-          reason: `🛑 TIME STOP-LOSS: ${profitPercent.toFixed(1)}% loss with <3min left - cutting losses (time-critical threshold: ${timeCriticalThreshold}%)`,
+          reason: `ðŸ›‘ TIME STOP-LOSS: ${profitPercent.toFixed(1)}% loss with <3min left - cutting losses (time-critical threshold: ${timeCriticalThreshold}%)`,
           urgencyScore: 90,
           urgencyReasons: [`Time-critical stop-loss: ${profitPercent.toFixed(1)}% loss, ${(timeRemaining/60000).toFixed(1)}min left`],
           analysis: { profitPercent, netProfit, currentBid, avgCost, totalSellFee, spreadCost, timeRemaining, stopLossTriggered: true }
@@ -4468,7 +4468,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
             console.log(`[TakeProfit] ${ticker}: COIN-FLIP PREVENTION - price ${pctFromStrike.toFixed(3)}% from strike with ${(timeRemaining/60000).toFixed(1)}min left (threshold: ${coinFlipThreshold}%)`);
             return {
               shouldExit: true,
-              reason: `🎲 COIN-FLIP EXIT: Price only ${pctFromStrike.toFixed(2)}% from strike with <3min left - avoiding gamble (learned threshold: ${coinFlipThreshold}%)`,
+              reason: `ðŸŽ² COIN-FLIP EXIT: Price only ${pctFromStrike.toFixed(2)}% from strike with <3min left - avoiding gamble (learned threshold: ${coinFlipThreshold}%)`,
               urgencyScore: 95,
               urgencyReasons: [`Coin-flip prevention: ${pctFromStrike.toFixed(2)}% from strike, ${(timeRemaining/60000).toFixed(1)}min left`],
               analysis: { profitPercent, netProfit, currentBid, avgCost, pctFromStrike, timeRemaining, coinFlipExit: true, learnedThreshold: coinFlipThreshold }
@@ -4485,7 +4485,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
             console.log(`[TakeProfit] ${ticker}: COIN-FLIP PREVENTION - price ${pctFromStrike.toFixed(3)}% from strike with ${(timeRemaining/60000).toFixed(1)}min left (near-strike threshold: ${nearStrikeThreshold}%)`);
             return {
               shouldExit: true,
-              reason: `🎲 COIN-FLIP EXIT: Price ${pctFromStrike.toFixed(2)}% from strike with <2min left - too risky (near-strike threshold: ${nearStrikeThreshold}%)`,
+              reason: `ðŸŽ² COIN-FLIP EXIT: Price ${pctFromStrike.toFixed(2)}% from strike with <2min left - too risky (near-strike threshold: ${nearStrikeThreshold}%)`,
               urgencyScore: 95,
               urgencyReasons: [`Coin-flip prevention: ${pctFromStrike.toFixed(2)}% from strike, ${(timeRemaining/60000).toFixed(1)}min left`],
               analysis: { profitPercent, netProfit, currentBid, avgCost, pctFromStrike, timeRemaining, coinFlipExit: true, learnedThreshold: nearStrikeThreshold }
@@ -4538,11 +4538,15 @@ async function evaluateTakeProfit(position, userConfig = null) {
 
   if (market) {
     parsed = parseMarket(market);
-    analysis = analyzeCryptoMarket(parsed, orderbook, momentum, cfg);
-    if (analysis) {
-      probWin = side === 'yes'
-        ? analysis.probYesWins / 100
-        : analysis.probNoWins / 100;
+    const token = parsed.cryptoType;
+    const priceData = cryptoPrices[token];
+    if (priceData?.price) {
+      analysis = evaluateOpportunityEmpirical(parsed, priceData.price, learnedParams, orderbook, cfg, momentum);
+      if (analysis) {
+        probWin = side === 'yes'
+          ? analysis.probYesWins / 100
+          : analysis.probNoWins / 100;
+      }
     }
   }
 
@@ -4580,11 +4584,11 @@ async function evaluateTakeProfit(position, userConfig = null) {
   const activeMonitoring = cfg.activeMonitoring || {};
 
   // 1. EASY PROFIT - Take "free money" on high-confidence positions
-  // If we bought at 75-85¢ (high implied probability), take smaller profits
+  // If we bought at 75-85Â¢ (high implied probability), take smaller profits
   // BUT: Don't sell too early - wait for time pressure OR higher profit to justify fees
-  // Kalshi fees (~2-3¢ round trip) eat into small profits significantly
+  // Kalshi fees (~2-3Â¢ round trip) eat into small profits significantly
   const easyProfitEnabled = activeMonitoring.easyProfitEnabled !== false; // Default true
-  const easyProfitMinPrice = activeMonitoring.easyProfitMinPrice || 75;   // 75¢ = 75% implied prob
+  const easyProfitMinPrice = activeMonitoring.easyProfitMinPrice || 75;   // 75Â¢ = 75% implied prob
   const easyProfitThreshold = activeMonitoring.easyProfitThreshold || 12; // Take 12%+ profit (accounts for fees)
   const easyProfitEarlyThreshold = 18; // If taking early (>5min left), need higher profit to justify fees
 
@@ -4599,11 +4603,11 @@ async function evaluateTakeProfit(position, userConfig = null) {
     // B) Early (>5 min): Need higher profit (18%+) to justify fees and opportunity cost
     if (timeRemainingMin !== null && timeRemainingMin < 5 && profitPercent >= easyProfitThreshold) {
       shouldExit = true;
-      exitReason = `EASY PROFIT: High-confidence (${avgCost}¢) at +${profitPercent.toFixed(1)}% with ${timeRemainingMin.toFixed(1)}min left - securing gains`;
+      exitReason = `EASY PROFIT: High-confidence (${avgCost}Â¢) at +${profitPercent.toFixed(1)}% with ${timeRemainingMin.toFixed(1)}min left - securing gains`;
     } else if (profitPercent >= easyProfitEarlyThreshold) {
       // Higher profit justifies early exit even with fees
       shouldExit = true;
-      exitReason = `EASY PROFIT: High-confidence (${avgCost}¢) at +${profitPercent.toFixed(1)}% - profit high enough to justify fees`;
+      exitReason = `EASY PROFIT: High-confidence (${avgCost}Â¢) at +${profitPercent.toFixed(1)}% - profit high enough to justify fees`;
     }
   }
 
@@ -4621,7 +4625,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
   // 4. CLASSIC EV COMPARISON (when profit meets base threshold)
   else if (!shouldExit && profitPercent >= baseMinProfit && evExit > adjustedEvHold) {
     shouldExit = true;
-    exitReason = `EV exit (${evExit.toFixed(0)}¢) > EV hold (${adjustedEvHold.toFixed(0)}¢)`;
+    exitReason = `EV exit (${evExit.toFixed(0)}Â¢) > EV hold (${adjustedEvHold.toFixed(0)}Â¢)`;
   }
 
   // 5. MOMENTUM REVERSAL OVERRIDE
@@ -4647,7 +4651,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
         console.log(`[TakeProfit] ${ticker}: High prob (${(probWin*100).toFixed(0)}%) with <3min left - letting it ride`);
       } else if (probWin >= 0.60 && evHold > evExit * 1.5) {
         // Medium-high prob with much better EV hold - also let ride
-        console.log(`[TakeProfit] ${ticker}: ${(probWin*100).toFixed(0)}% prob, EV hold (${evHold.toFixed(0)}¢) >> EV exit (${evExit.toFixed(0)}¢) - holding`);
+        console.log(`[TakeProfit] ${ticker}: ${(probWin*100).toFixed(0)}% prob, EV hold (${evHold.toFixed(0)}Â¢) >> EV exit (${evExit.toFixed(0)}Â¢) - holding`);
       } else {
         // Lower probability or EV doesn't favor holding - take the profit
         shouldExit = true;
@@ -4668,8 +4672,8 @@ async function evaluateTakeProfit(position, userConfig = null) {
 
   // Build final reason string
   const finalReason = shouldExit
-    ? `✅ EXIT: ${exitReason}`
-    : `⏳ HOLD: Profit ${profitPercent.toFixed(1)}%, urgency ${urgencyScore}, waiting for better exit`;
+    ? `âœ… EXIT: ${exitReason}`
+    : `â³ HOLD: Profit ${profitPercent.toFixed(1)}%, urgency ${urgencyScore}, waiting for better exit`;
 
   return {
     shouldExit,
@@ -4722,19 +4726,19 @@ async function executeTakeProfitExit(position, analysis, userConfig = null, user
 
   // Safety check - don't execute if logOnly mode (but ALWAYS execute stop-loss)
   if (!isStopLoss && (settings.logOnly || !settings.autoExecute)) {
-    console.log(`\n💰 [TakeProfit] RECOMMENDATION (not executing - logOnly mode):`);
-    console.log(`   📊 ${position.ticker}`);
-    console.log(`   💵 Profit: ${analysis.profitPercent.toFixed(1)}% | Net: $${(analysis.netProfit/100).toFixed(2)}`);
-    console.log(`   📈 Urgency: ${analysis.urgencyScore}/100`);
-    console.log(`   📉 EV exit: ${analysis.evExit?.toFixed(0) || '?'}¢ vs EV hold: ${analysis.evHold?.toFixed(0) || '?'}¢`);
+    console.log(`\nðŸ’° [TakeProfit] RECOMMENDATION (not executing - logOnly mode):`);
+    console.log(`   ðŸ“Š ${position.ticker}`);
+    console.log(`   ðŸ’µ Profit: ${analysis.profitPercent.toFixed(1)}% | Net: $${(analysis.netProfit/100).toFixed(2)}`);
+    console.log(`   ðŸ“ˆ Urgency: ${analysis.urgencyScore}/100`);
+    console.log(`   ðŸ“‰ EV exit: ${analysis.evExit?.toFixed(0) || '?'}Â¢ vs EV hold: ${analysis.evHold?.toFixed(0) || '?'}Â¢`);
     if (analysis.momentum) {
-      console.log(`   🔄 Momentum: ${analysis.momentum.direction} (${(analysis.momentum.strength*100).toFixed(0)}%)`);
+      console.log(`   ðŸ”„ Momentum: ${analysis.momentum.direction} (${(analysis.momentum.strength*100).toFixed(0)}%)`);
     }
     return { executed: false, reason: 'Log only mode - would have exited' };
   }
 
   if (isStopLoss) {
-    console.log(`\n🛑 [STOP-LOSS] EXECUTING (bypassing logOnly - protecting position):`);
+    console.log(`\nðŸ›‘ [STOP-LOSS] EXECUTING (bypassing logOnly - protecting position):`);
   }
 
   try {
@@ -4745,14 +4749,14 @@ async function executeTakeProfitExit(position, analysis, userConfig = null, user
     // Place sell order at current bid (or slightly below for faster fill)
     const sellPrice = Math.max(1, analysis.currentBid - 1); // 1 cent below bid for faster fill
 
-    // SAFETY: Refuse to sell at catastrophically low prices (e.g., empty orderbook → 1¢)
+    // SAFETY: Refuse to sell at catastrophically low prices (e.g., empty orderbook â†’ 1Â¢)
     // Exception: allow if < 1 minute to expiry (position genuinely expiring worthless)
     const minSellPrice = Math.max(1, Math.round(analysis.avgCost * 0.3));
     const nearExpiry = analysis.timeRemaining != null && analysis.timeRemaining < 60 * 1000;
     if (sellPrice < minSellPrice && !nearExpiry) {
-      console.log(`\n⚠️ [SELL GUARD] Refusing to sell ${ticker} at ${sellPrice}¢ — below 30% of entry (${analysis.avgCost}¢). Min sell: ${minSellPrice}¢`);
+      console.log(`\nâš ï¸ [SELL GUARD] Refusing to sell ${ticker} at ${sellPrice}Â¢ â€” below 30% of entry (${analysis.avgCost}Â¢). Min sell: ${minSellPrice}Â¢`);
       console.log(`   This likely means the orderbook is empty/thin. Position may still be worth more.`);
-      return { executed: false, reason: `Sell price ${sellPrice}¢ too far below entry ${analysis.avgCost}¢ (floor: ${minSellPrice}¢)` };
+      return { executed: false, reason: `Sell price ${sellPrice}Â¢ too far below entry ${analysis.avgCost}Â¢ (floor: ${minSellPrice}Â¢)` };
     }
 
     const orderRequest = {
@@ -4770,10 +4774,10 @@ async function executeTakeProfitExit(position, analysis, userConfig = null, user
       orderRequest.no_price = sellPrice;
     }
 
-    console.log(`\n💰 [TakeProfit] EXECUTING EXIT:`);
-    console.log(`   📊 ${ticker} | ${contracts} contracts @ ${sellPrice}¢`);
-    console.log(`   💵 Locking in ${analysis.profitPercent.toFixed(1)}% profit ($${(analysis.netProfit/100).toFixed(2)})`);
-    console.log(`   📈 Urgency score: ${analysis.urgencyScore}/100`);
+    console.log(`\nðŸ’° [TakeProfit] EXECUTING EXIT:`);
+    console.log(`   ðŸ“Š ${ticker} | ${contracts} contracts @ ${sellPrice}Â¢`);
+    console.log(`   ðŸ’µ Locking in ${analysis.profitPercent.toFixed(1)}% profit ($${(analysis.netProfit/100).toFixed(2)})`);
+    console.log(`   ðŸ“ˆ Urgency score: ${analysis.urgencyScore}/100`);
     console.log(`   Order: ${JSON.stringify(orderRequest)}`);
 
     const response = await kalshiRequest('POST', '/portfolio/orders', orderRequest, cfg);
@@ -4782,11 +4786,11 @@ async function executeTakeProfitExit(position, analysis, userConfig = null, user
       const filledCount = response.order.filled_count || 0;
       const fillPrice = response.order.average_fill_price || sellPrice;
 
-      console.log(`   ✅ Order ${response.order.order_id}: ${filledCount}/${contracts} filled @ ${fillPrice}¢`);
+      console.log(`   âœ… Order ${response.order.order_id}: ${filledCount}/${contracts} filled @ ${fillPrice}Â¢`);
 
       if (filledCount > 0) {
         const actualProfit = (fillPrice - analysis.avgCost) * filledCount;
-        console.log(`   💵 Realized profit: $${(actualProfit/100).toFixed(2)}`);
+        console.log(`   ðŸ’µ Realized profit: $${(actualProfit/100).toFixed(2)}`);
       }
 
       const result = {
@@ -4804,13 +4808,13 @@ async function executeTakeProfitExit(position, analysis, userConfig = null, user
       return result;
     }
 
-    console.log(`   ⚠️ No order in response`);
+    console.log(`   âš ï¸ No order in response`);
     const noOrderResult = { executed: false, reason: 'No order in response' };
     recordTakeProfitExecution(ticker, isStopLoss ? 'stop-loss' : 'take-profit', analysis, noOrderResult, userId);
     return noOrderResult;
 
   } catch (error) {
-    console.error(`   ❌ Exit failed: ${error.message}`);
+    console.error(`   âŒ Exit failed: ${error.message}`);
     const errorResult = { executed: false, reason: error.message };
     recordTakeProfitExecution(ticker, isStopLoss ? 'stop-loss' : 'take-profit', analysis, errorResult, userId);
     return errorResult;
@@ -4882,11 +4886,11 @@ async function scanTakeProfitOpportunities(userConfig = null, userPortfolio = nu
     const exitCount = positionStatuses.filter(p => p.shouldExit).length;
     const holdCount = positionStatuses.filter(p => !p.shouldExit).length;
 
-    console.log(`\n📊 [TakeProfit] Position Summary:`);
+    console.log(`\nðŸ“Š [TakeProfit] Position Summary:`);
     console.log(`   ${positions.length} positions | ${exitCount} to exit | ${holdCount} to hold`);
 
     for (const status of positionStatuses) {
-      const icon = status.shouldExit ? '🔔' : '⏳';
+      const icon = status.shouldExit ? 'ðŸ””' : 'â³';
       console.log(`   ${icon} ${status.ticker}: ${status.profit}% profit, urgency ${status.urgency}`);
     }
   }
@@ -5005,7 +5009,7 @@ async function fetchCryptoMarkets() {
       return isValid;
     });
 
-    console.log(`📊 Fetched ${allMarkets.length} markets, ${cryptoMarkets.length} valid 15-minute BTC/ETH/SOL`);
+    console.log(`ðŸ“Š Fetched ${allMarkets.length} markets, ${cryptoMarkets.length} valid 15-minute BTC/ETH/SOL`);
 
     marketCache.data = cryptoMarkets;
     marketCache.lastFetch = now;
@@ -5091,449 +5095,8 @@ function parseMarket(market) {
   };
 }
 
-// Analyze market and find the SAFEST side to bet (highest win probability)
-// Now incorporates orderbook data, spread penalty, and momentum confirmation
-function analyzeCryptoMarket(parsed, orderbook = null, momentum = null, userConfig = null) {
-  if (!parsed.cryptoType || !parsed.strikePrice || !parsed.marketType || parsed.marketType === 'between') {
-    return null;
-  }
-
-  const priceData = cryptoPrices[parsed.cryptoType];
-  if (!priceData || !priceData.price) {
-    return null;
-  }
-
-  // Skip if price data is stale (no update in 60+ seconds)
-  const priceAge = Date.now() - priceData.timestamp;
-  if (priceAge > 60000) {
-    console.log(`⚠️ Stale price for ${parsed.cryptoType}: ${(priceAge/1000).toFixed(0)}s old - skipping`);
-    return null;
-  }
-
-  const cfg = userConfig || config;
-  const liquiditySettings = cfg.liquiditySettings || {};
-  const momentumSettings = cfg.momentumSettings || {};
-
-  const currentPrice = priceData.price;
-  const volatility = priceData.volatility;
-  const timeMinutes = parsed.timeRemainingMinutes || 15;
-
-  // Calculate how far price is from strike
-  const pctFromStrike = ((currentPrice - parsed.strikePrice) / parsed.strikePrice) * 100;
-  const absDistance = Math.abs(pctFromStrike);
-
-  // USE MARKET PRICE + NO BIAS (Empirical Approach)
-  // The market price IS the probability. Our edge comes from known token biases.
-  // Statistical models (volatility, momentum) have proven unreliable.
-
-  // Get market implied probabilities from ask prices
-  const marketProbYes = parsed.yesAsk || 0.5;
-  const marketProbNo = parsed.noAsk || 0.5;
-
-  // Get token-specific data from empirical collection
-  const tokenData = learnedParams?.byToken?.[parsed.cryptoType] || {};
-  const entryWindows = tokenData.optimalEntryWindows || {};
-
-  // ============================================
-  // EMPIRICAL SAFETY FILTERS
-  // ============================================
-  // Use collected data to avoid bad situations
-
-  // 1. COIN-FLIP FILTER: If price is too close to strike, it's a gamble
-  const coinFlipThreshold = tokenData.coinFlipThreshold || 0.1;  // Default 0.1%
-  if (absDistance < coinFlipThreshold && timeMinutes < 3) {
-    console.log(`   🎲 COIN-FLIP: ${parsed.cryptoType} only ${absDistance.toFixed(3)}% from strike with ${timeMinutes.toFixed(1)}min left - SKIP`);
-    return null;
-  }
-
-  // 2. DISTANCE WINDOW: Use learned optimal entry distances
-  const distanceMin = entryWindows.distanceMin || 0.3;
-  const distanceMax = entryWindows.distanceMax || 5.0;
-  const withinDistanceWindow = absDistance >= distanceMin && absDistance <= distanceMax;
-
-  if (!withinDistanceWindow) {
-    console.log(`   📏 DISTANCE: ${absDistance.toFixed(2)}% outside optimal [${distanceMin}-${distanceMax}%] - reducing confidence`);
-  }
-
-  // 3. TIME WINDOW: Use learned optimal entry times
-  const timeMin = entryWindows.timeMin || 1;
-  const timeMax = entryWindows.timeMax || 12;
-  const withinTimeWindow = timeMinutes >= timeMin && timeMinutes <= timeMax;
-
-  if (!withinTimeWindow) {
-    console.log(`   ⏰ TIME: ${timeMinutes.toFixed(1)}min outside optimal [${timeMin}-${timeMax}min] - reducing confidence`);
-  }
-
-  // 4. VOLATILITY REGIME: Check if we should sit out
-  const regime = typeof detectVolatilityRegime === 'function' ? detectVolatilityRegime(parsed.cryptoType) : { regime: 'medium', sitOut: false };
-  if (regime.sitOut) {
-    console.log(`   🌊 VOLATILITY: ${regime.reason} - SKIP`);
-    return null;
-  }
-
-  // ============================================
-  // SMART EDGE: Position-Aware Probability
-  // ============================================
-  // Instead of blanket NO bias, determine which side is favored by price position
-  // and apply distance-based win rate from empirical data.
-
-  // Step 1: Determine which side is favored by current price
-  const isAboveStrike = currentPrice > parsed.strikePrice;
-
-  // For "above" markets: YES wins if price >= strike at settlement
-  // For "below" markets: YES wins if price < strike at settlement
-  let favoredSide;
-  if (parsed.marketType === 'above') {
-    favoredSide = isAboveStrike ? 'YES' : 'NO';
-  } else {
-    // "below" market: YES wins if price < strike
-    favoredSide = isAboveStrike ? 'NO' : 'YES';
-  }
-
-  // Step 2: Look up distance-based win rate from empirical tables
-  const winRateTable = learnedParams?.winRateByDistance || DEFAULT_EMPIRICAL_TABLES.winRateByDistance;
-  const distanceBuckets = [0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0];
-
-  // Find the closest bucket for our distance
-  let closestBucket = distanceBuckets[0];
-  for (const bucket of distanceBuckets) {
-    if (absDistance >= bucket) {
-      closestBucket = bucket;
-    } else {
-      break;
-    }
-  }
-
-  const bucketData = winRateTable[closestBucket] || { favoredWinRate: 50 };
-  const empiricalFavoredWinRate = bucketData.favoredWinRate / 100; // Convert to decimal
-
-  console.log(`   📊 SMART EDGE: Price ${isAboveStrike ? 'ABOVE' : 'BELOW'} strike by ${absDistance.toFixed(2)}%`);
-  console.log(`   📊 Favored side: ${favoredSide}, Distance bucket: ${closestBucket}%, Empirical win rate: ${(empiricalFavoredWinRate * 100).toFixed(0)}%`);
-
-  // Step 3: Apply to correct side
-  // Use the higher of market price or empirical win rate for favored side
-  let probYesWins, probNoWins;
-
-  if (favoredSide === 'YES') {
-    // YES is favored by price position
-    probYesWins = Math.max(marketProbYes, empiricalFavoredWinRate);
-    probNoWins = 1 - probYesWins;
-  } else {
-    // NO is favored by price position
-    probNoWins = Math.max(marketProbNo, empiricalFavoredWinRate);
-    probYesWins = 1 - probNoWins;
-  }
-
-  // Note: NO bias removed - win probability is calculated from distance
-  // Caps are distance-dependent (75% at 0.2% to 98% at 2%+) for realistic edge calculation
-
-  // Reduce confidence if outside optimal windows
-  if (!withinDistanceWindow || !withinTimeWindow) {
-    // Shrink edge toward zero when outside optimal windows
-    const confidenceMultiplier = 0.5;
-    const yesEdgeFromBias = probYesWins - marketProbYes;
-    const noEdgeFromBias = probNoWins - marketProbNo;
-    probYesWins = marketProbYes + (yesEdgeFromBias * confidenceMultiplier);
-    probNoWins = marketProbNo + (noEdgeFromBias * confidenceMultiplier);
-  }
-
-  // Apply volatility regime multiplier (reduces edge in high volatility)
-  if (regime.multiplier && regime.multiplier < 1) {
-    const yesEdgeFromBias = probYesWins - marketProbYes;
-    const noEdgeFromBias = probNoWins - marketProbNo;
-    probYesWins = marketProbYes + (yesEdgeFromBias * regime.multiplier);
-    probNoWins = marketProbNo + (noEdgeFromBias * regime.multiplier);
-  }
-
-  // Clamp to valid range
-  probYesWins = Math.max(0.01, Math.min(0.99, probYesWins));
-  probNoWins = Math.max(0.01, Math.min(0.99, probNoWins));
-
-  let adjustedProbYesWins = probYesWins;
-  let adjustedProbNoWins = probNoWins;
-
-  // ============================================
-  // SPREAD PENALTY (Phase 3 - Smart Edge)
-  // ============================================
-  // Subtract spread from edge to account for true cost of entry
-  let yesSpreadPenalty = 0;
-  let noSpreadPenalty = 0;
-
-  if (orderbook && liquiditySettings.spreadPenaltyEnabled !== false) {
-    // Calculate half-spread penalty (we pay half when entering, half when exiting)
-    const yesSpread = orderbook.yesSpread || 0; // In cents
-    const noSpread = orderbook.noSpread || 0;
-
-    yesSpreadPenalty = yesSpread / 200; // Half spread as percentage of $1
-    noSpreadPenalty = noSpread / 200;
-
-    if (yesSpreadPenalty > 0.01) {
-      console.log(`   📊 YES spread penalty: -${(yesSpreadPenalty * 100).toFixed(1)}% (spread: ${yesSpread}¢)`);
-    }
-    if (noSpreadPenalty > 0.01) {
-      console.log(`   📊 NO spread penalty: -${(noSpreadPenalty * 100).toFixed(1)}% (spread: ${noSpread}¢)`);
-    }
-  }
-
-  // Calculate edge with spread penalty
-  // New formula: yesEdge = (adjustedProbYesWins - effectiveCost - halfSpread) * 100
-  const effectiveYesCost = marketProbYes + yesSpreadPenalty;
-  const effectiveNoCost = marketProbNo + noSpreadPenalty;
-
-  let yesEdge = (adjustedProbYesWins - effectiveYesCost) * 100;
-  let noEdge = (adjustedProbNoWins - effectiveNoCost) * 100;
-
-  // Build analysis description (simplified - using position-aware edge calculation)
-  const edgeDesc = `${favoredSide} favored @ ${absDistance.toFixed(1)}% from strike`;
-
-  // ============================================
-  // BET SELECTION (Safe Mode Only)
-  // ============================================
-  // FIXED: Always use 40¢+ prices - empirical data shows best results here
-  // Swing trading removed due to higher variance and exit logic issues
-
-  let bestBet = null;
-
-  // Fixed minimum price: 40¢ (market agrees at least 40%)
-  const MIN_PRICE = 0.40;
-
-  // ============================================
-  // LIQUIDITY FILTERS (Phase 3)
-  // ============================================
-  const MIN_LIQUIDITY = liquiditySettings.minContracts || 10;
-  const MAX_SPREAD_CENTS = liquiditySettings.maxSpreadCents || 8;
-
-  // Check liquidity and spread requirements
-  // Only apply filter if we have REAL orderbook data (not default/failed fetch)
-  let yesLiquidityOk = true;
-  let noLiquidityOk = true;
-
-  const hasRealOrderbook = orderbook && orderbook.source !== 'default' && liquiditySettings.enabled !== false;
-
-  if (hasRealOrderbook) {
-    const yesLiquidity = orderbook.yesLiquidityAtBest || 0;
-    const noLiquidity = orderbook.noLiquidityAtBest || 0;
-    const yesSpread = orderbook.yesSpread || 0;
-    const noSpread = orderbook.noSpread || 0;
-
-    yesLiquidityOk = yesLiquidity >= MIN_LIQUIDITY && yesSpread <= MAX_SPREAD_CENTS;
-    noLiquidityOk = noLiquidity >= MIN_LIQUIDITY && noSpread <= MAX_SPREAD_CENTS;
-
-    if (!yesLiquidityOk) {
-      console.log(`   🚫 YES liquidity filter: ${yesLiquidity} contracts (need ${MIN_LIQUIDITY}), spread ${yesSpread}¢ (max ${MAX_SPREAD_CENTS}¢)`);
-    }
-    if (!noLiquidityOk) {
-      console.log(`   🚫 NO liquidity filter: ${noLiquidity} contracts (need ${MIN_LIQUIDITY}), spread ${noSpread}¢ (max ${MAX_SPREAD_CENTS}¢)`);
-    }
-  }
-
-  // Evaluate YES side - require minimum price + liquidity
-  // Validate prices are in safe range (40¢+)
-  const yesValid = parsed.yesAsk >= MIN_PRICE && parsed.yesAsk < 0.98 && yesEdge > 0.5 && yesLiquidityOk;
-  const noValid = parsed.noAsk >= MIN_PRICE && parsed.noAsk < 0.98 && noEdge > 0.5 && noLiquidityOk;
-
-  // Pick the side with HIGHER WIN PROBABILITY (safest bet)
-  if (yesValid && noValid) {
-    // Both sides have positive edge - pick the one with higher probability
-    // Use ADJUSTED probability for consistency with edge calculation
-    if (adjustedProbYesWins >= adjustedProbNoWins) {
-      bestBet = { side: 'YES', edge: yesEdge, prob: adjustedProbYesWins, price: parsed.yesAsk, spreadPenalty: yesSpreadPenalty };
-    } else {
-      bestBet = { side: 'NO', edge: noEdge, prob: adjustedProbNoWins, price: parsed.noAsk, spreadPenalty: noSpreadPenalty };
-    }
-  } else if (yesValid) {
-    bestBet = { side: 'YES', edge: yesEdge, prob: adjustedProbYesWins, price: parsed.yesAsk, spreadPenalty: yesSpreadPenalty };
-  } else if (noValid) {
-    bestBet = { side: 'NO', edge: noEdge, prob: adjustedProbNoWins, price: parsed.noAsk, spreadPenalty: noSpreadPenalty };
-  }
-
-  // No valid bet found - return partial data so user can see the analysis
-  if (!bestBet) {
-    const maxPrice = Math.max(parsed.yesAsk || 0, parsed.noAsk || 0);
-    const bestProb = Math.max(adjustedProbYesWins, adjustedProbNoWins);
-    const bestSide = adjustedProbYesWins >= adjustedProbNoWins ? 'YES' : 'NO';
-    const bestEdge = bestSide === 'YES' ? yesEdge : noEdge;
-
-    // Determine why no bet was recommended
-    let filterReason = 'No edge';
-    if (bestEdge < 0.5) {
-      filterReason = `No edge (${bestEdge.toFixed(1)}%)`;
-    } else if (bestProb < 0.50) {
-      filterReason = `Low confidence (${(bestProb*100).toFixed(0)}%)`;
-    } else if (!yesLiquidityOk && !noLiquidityOk) {
-      filterReason = 'Low liquidity';
-    } else if (parsed.yesAsk < MIN_PRICE && parsed.noAsk < MIN_PRICE) {
-      filterReason = `Price too low (<${Math.round(MIN_PRICE*100)}¢)`;
-    }
-
-    if (maxPrice > 0.75) {
-      console.log(`   ⚠️ Skipped ${parsed.cryptoType} market: YES@${Math.round((parsed.yesAsk||0)*100)}¢ NO@${Math.round((parsed.noAsk||0)*100)}¢ | Our prob: ${(bestProb*100).toFixed(0)}% | ${filterReason}`);
-    }
-
-    // Return partial analysis so card can display probability
-    // Calculate zScore from distance and volatility (volatility is already a decimal like 0.02)
-    const zScoreCalc = volatility > 0 ? absDistance / (volatility * 100) : 0;
-
-    return {
-      ...parsed,
-      currentPrice,
-      volatility: (volatility * 100).toFixed(2) + '%',
-      pctFromStrike: pctFromStrike.toFixed(2),
-      zScore: zScoreCalc.toFixed(2),
-      probYesWins: probYesWins * 100,
-      probNoWins: probNoWins * 100,
-      ourProbability: bestProb * 100,
-      winProbability: (bestProb * 100).toFixed(1),
-      marketImpliedProb: maxPrice * 100,
-      yesEdge,
-      noEdge,
-      edge: bestEdge,
-      betSide: bestSide,
-      betPrice: bestSide === 'YES' ? parsed.yesAsk : parsed.noAsk,
-      betPriceCents: Math.round((bestSide === 'YES' ? parsed.yesAsk : parsed.noAsk) * 100),
-      isRecommended: false,
-      isLocked: true,
-      filterReason,
-      timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining),
-      momentum: 'neutral',
-      momentumStrength: 'none',
-      confidence: ((empiricalFavoredWinRate || 0.5) * 100).toFixed(0) + '%',
-      dataPoints: bucketData?.count || 0
-    };
-  }
-
-  // ============================================
-  // MOMENTUM CONFIRMATION (Phase 4)
-  // ============================================
-  // Apply momentum bonus/penalty to edge
-  let momentumAdjustment = 0;
-  let momentumInfo = null;
-
-  if (momentum && momentumSettings.enabled !== false) {
-    // Check if momentum aligns with our bet
-    const momentumAnalysis = {
-      ...momentum,
-      alignment: 'neutral'
-    };
-
-    // For YES bets on "above" markets, upward momentum is good
-    // For NO bets on "above" markets, downward momentum is good
-    if (parsed.marketType === 'above') {
-      if (bestBet.side === 'YES' && momentum.direction === 'up') {
-        momentumAnalysis.alignment = 'aligned';
-      } else if (bestBet.side === 'NO' && momentum.direction === 'down') {
-        momentumAnalysis.alignment = 'aligned';
-      } else if (bestBet.side === 'YES' && momentum.direction === 'down') {
-        momentumAnalysis.alignment = 'opposed';
-      } else if (bestBet.side === 'NO' && momentum.direction === 'up') {
-        momentumAnalysis.alignment = 'opposed';
-      }
-    } else {
-      // For "below" markets, reverse the logic
-      if (bestBet.side === 'YES' && momentum.direction === 'down') {
-        momentumAnalysis.alignment = 'aligned';
-      } else if (bestBet.side === 'NO' && momentum.direction === 'up') {
-        momentumAnalysis.alignment = 'aligned';
-      } else if (bestBet.side === 'YES' && momentum.direction === 'up') {
-        momentumAnalysis.alignment = 'opposed';
-      } else if (bestBet.side === 'NO' && momentum.direction === 'down') {
-        momentumAnalysis.alignment = 'opposed';
-      }
-    }
-
-    momentumInfo = momentumAnalysis;
-
-    // Apply adjustment based on alignment and strength
-    if (momentumAnalysis.alignment === 'aligned' && momentum.strength > 0.3) {
-      momentumAdjustment = (momentumSettings.alignmentBonus || 2) * momentum.strength;
-      console.log(`   ✅ Momentum ALIGNED: +${momentumAdjustment.toFixed(1)}% bonus (${momentum.direction}, strength ${(momentum.strength*100).toFixed(0)}%)`);
-    } else if (momentumAnalysis.alignment === 'opposed' && momentum.strength > 0.3) {
-      momentumAdjustment = (momentumSettings.oppositionPenalty || -3) * momentum.strength;
-      console.log(`   ⚠️ Momentum OPPOSED: ${momentumAdjustment.toFixed(1)}% penalty (${momentum.direction}, strength ${(momentum.strength*100).toFixed(0)}%)`);
-    }
-
-    bestBet.edge += momentumAdjustment;
-  }
-
-  // Determine if this is a "safe" bet (high confidence)
-  const isHighProb = bestBet.prob >= 0.60;
-  const isSafeBet = bestBet.prob >= 0.70;
-
-  // Build reason string
-  const probPct = (bestBet.prob * 100).toFixed(0);
-  const betReason = `${edgeDesc} | ${probPct}% win prob`;
-
-  // Calculate profit for $1 worth of contracts
-  // E.g., if price is 50¢, we buy 2 contracts. If we win, each pays $1, so profit = 2×$1 - $1 = $1 (100¢)
-  const priceCents = Math.round(bestBet.price * 100);
-  const contractsFor1Dollar = Math.floor(100 / priceCents);
-  const totalCostCents = contractsFor1Dollar * priceCents;
-  const feeCents = calculateKalshiFee(contractsFor1Dollar, bestBet.price);
-  const payoutIfWinCents = contractsFor1Dollar * 100; // Each contract pays $1
-  const profitIfWinCents = payoutIfWinCents - totalCostCents - feeCents;
-
-  // Expected profit accounting for probability (include fee in both win and loss)
-  const expectedProfit = (bestBet.prob * profitIfWinCents - (1 - bestBet.prob) * (totalCostCents + feeCents));
-  const profitPotential = (profitIfWinCents / totalCostCents) * 100;
-
-  // Fixed bet amount ($1) for sustainable growth
-  const recommendedBet = 100; // Always $1
-
-  // Calculate z-score from distance and volatility (both as decimals)
-  const absDistanceDecimal = pctFromStrike / 100; // pctFromStrike is percentage, convert to decimal
-  const zScore = volatility > 0 ? (absDistanceDecimal / volatility) : 0;
-
-  return {
-    ...parsed,
-    currentPrice,
-    volatility: (volatility * 100).toFixed(2) + '%',
-    pctFromStrike: pctFromStrike.toFixed(2),
-    zScore: zScore.toFixed(2),
-    probYesWins: probYesWins * 100,
-    probNoWins: probNoWins * 100,
-    ourProbability: bestBet.prob * 100,
-    winProbability: (bestBet.prob * 100).toFixed(1),
-    marketImpliedProb: bestBet.price * 100,
-    yesEdge,
-    noEdge,
-    edge: bestBet.edge,
-    betSide: bestBet.side,
-    betPrice: bestBet.price,
-    betPriceCents: priceCents,
-    contractsFor1Dollar,
-    feeCents,
-    betReason,
-    profitIfWin: profitIfWinCents, // Total profit in cents for $1 bet (after fees)
-    expectedProfit: expectedProfit.toFixed(1),
-    profitPotential,
-    recommendedBet,
-    isObviousBet: isSafeBet,
-    isHighProb,
-    maxProbAllowed: 'distance-dependent', // Win rate cap varies by distance (75%-98%)
-    // Smart edge analysis info (replaced statistical model)
-    momentum: momentumInfo?.direction || 'neutral',
-    momentumStrength: momentumInfo?.strength || 0,
-    confidence: (empiricalFavoredWinRate * 100).toFixed(0) + '%',
-    dataPoints: bucketData.count || 0,
-    analysisMethod: 'smart_edge_empirical',
-    timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining),
-    // Phase 3 & 4: Orderbook and momentum data
-    spreadPenalty: bestBet.spreadPenalty || 0,
-    momentumAdjustment: momentumAdjustment || 0,
-    momentumInfo: momentumInfo,
-    orderbookData: orderbook ? {
-      yesSpread: orderbook.yesSpread,
-      noSpread: orderbook.noSpread,
-      yesLiquidity: orderbook.yesLiquidityAtBest,
-      noLiquidity: orderbook.noLiquidityAtBest
-    } : null,
-    // Safe mode always uses 40¢ minimum
-    minPriceUsed: MIN_PRICE
-  };
-}
-
 // Calculate Kalshi taker fee
-// Formula: ceil(0.07 × contracts × price × (1 - price))
+// Formula: ceil(0.07 Ã— contracts Ã— price Ã— (1 - price))
 // Capped at $0.02 (2 cents) per contract
 function calculateKalshiFee(contracts, priceInDollars) {
   // Price should be between 0 and 1 (e.g., 0.65 for 65 cents)
@@ -5584,12 +5147,18 @@ app.get('/api/crypto/opportunities', async (req, res) => {
     const markets = await fetchCryptoMarkets();
 
     const opportunities = markets
-      .map(m => analyzeCryptoMarket(parseMarket(m)))
+      .map(m => {
+        const parsed = parseMarket(m);
+        const token = parsed.cryptoType;
+        const priceData = cryptoPrices[token];
+        if (!priceData?.price) return null;
+        const result = evaluateOpportunityEmpirical(parsed, priceData.price, learnedParams, null, null);
+        if (!result) return null;
+        return { ...parsed, ...result, marketCategory: 'crypto' };
+      })
       .filter(m => {
         if (m === null) return false;
-        if (m.edge < 0.5) return false; // Need 0.5% edge minimum
-        // Only show opportunities where win probability is at least 50%
-        // This prevents showing bets on sides that are more likely to lose
+        if (m.edge < 0.5) return false;
         const winProb = parseFloat(m.winProbability) || 0;
         if (winProb < 50) return false;
         return true;
@@ -5626,25 +5195,20 @@ app.get('/api/opportunities/all', async (req, res) => {
 
     // Fetch 15-minute crypto markets only (BTC, ETH, SOL)
     const cryptoMarkets = await fetchCryptoMarkets();
+    const userConfig = req.userState?.config || config;
 
     // Analyze crypto opportunities
     const allAnalyzed = cryptoMarkets
       .map(m => {
-        const analyzed = analyzeCryptoMarket(parseMarket(m));
-        if (analyzed) analyzed.marketCategory = 'crypto';
-        return analyzed;
+        const parsed = parseMarket(m);
+        const token = parsed.cryptoType;
+        const priceData = cryptoPrices[token];
+        if (!priceData?.price) return null;
+        const result = evaluateOpportunityEmpirical(parsed, priceData.price, learnedParams, null, userConfig);
+        if (!result) return null;
+        return { ...parsed, ...result, marketCategory: 'crypto' };
       })
-      .filter(m => m !== null)
-      .map(m => {
-        // Mark why market was filtered
-        const winProb = parseFloat(m.winProbability) || 0;
-        m.isRecommended = m.edge >= 0.5 && winProb >= 50;
-        if (!m.isRecommended) {
-          if (m.edge < 0.5) m.filterReason = `No edge (${m.edge.toFixed(1)}%)`;
-          else if (winProb < 50) m.filterReason = `Low prob (${winProb.toFixed(0)}%)`;
-        }
-        return m;
-      });
+      .filter(m => m !== null);
 
     // ALWAYS SHOW 3 CARDS - one for each token (BTC, ETH, SOL)
     // Create placeholder cards for tokens without active markets
@@ -5690,7 +5254,6 @@ app.get('/api/opportunities/all', async (req, res) => {
       : tokenSlots; // Always show all 3 slots
 
     // Refresh positions before calculating risk (user-specific)
-    const userConfig = req.userState?.config || config;
     const userPortfolio = req.userState?.portfolio || portfolio;
     if (userConfig.isAuthenticated) {
       try {
@@ -5812,7 +5375,7 @@ app.get('/api/risk', async (req, res) => {
 
     const currentRisk = kalshiRisk + localRisk;
 
-    console.log(`📊 Risk: Kalshi=$${(kalshiRisk/100).toFixed(2)} (${kalshiTickers.size} positions), Local=$${(localRisk/100).toFixed(2)} (${unsettledBets.length} bets), Total=$${(currentRisk/100).toFixed(2)}`);
+    console.log(`ðŸ“Š Risk: Kalshi=$${(kalshiRisk/100).toFixed(2)} (${kalshiTickers.size} positions), Local=$${(localRisk/100).toFixed(2)} (${unsettledBets.length} bets), Total=$${(currentRisk/100).toFixed(2)}`);
 
     res.json({
       success: true,
@@ -5861,7 +5424,7 @@ app.post('/api/settings/risk', (req, res) => {
     userConfig.riskLimits.maxPerTokenPerCycle = Math.max(200, Math.min(50000, parseInt(maxPerToken) || 500));
   }
 
-  console.log(`⚙️ Risk settings updated for user ${req.userId}:`, JSON.stringify(userConfig.riskLimits));
+  console.log(`âš™ï¸ Risk settings updated for user ${req.userId}:`, JSON.stringify(userConfig.riskLimits));
 
   // Save to per-user state file
   saveUserState(req.userId);
@@ -5908,7 +5471,7 @@ app.post('/api/settings/scale-in', (req, res) => {
     userConfig.scaleIn.minTimeBetweenBets = Math.max(30000, Math.min(600000, parseInt(minTimeBetweenBets) || 60000));
   }
 
-  console.log(`⚙️ Scale-in settings updated for user ${req.userId}:`, JSON.stringify(userConfig.scaleIn));
+  console.log(`âš™ï¸ Scale-in settings updated for user ${req.userId}:`, JSON.stringify(userConfig.scaleIn));
   saveUserState(req.userId);
 
   res.json({
@@ -5973,7 +5536,7 @@ app.post('/api/limit-order-settings', (req, res) => {
     }
   }
 
-  console.log(`⚙️ Limit order settings updated for user ${req.userId}:`, JSON.stringify(userConfig.limitOrderSettings));
+  console.log(`âš™ï¸ Limit order settings updated for user ${req.userId}:`, JSON.stringify(userConfig.limitOrderSettings));
   saveUserState(req.userId);
 
   res.json({
@@ -6218,7 +5781,7 @@ app.post('/api/bet', async (req, res) => {
     if (count < 1) {
       return res.status(400).json({
         success: false,
-        error: `Contract price too high (${priceCents}¢). Max price: 99¢`
+        error: `Contract price too high (${priceCents}Â¢). Max price: 99Â¢`
       });
     }
 
@@ -6230,7 +5793,7 @@ app.post('/api/bet', async (req, res) => {
       return res.status(400).json({ success: false, error: `Bet blocked: ${validation.reason}` });
     }
 
-    console.log(`Bet: ${ticker} | ${side} | price=${priceCents}¢ | count=${count} | total=${totalCost}¢`);
+    console.log(`Bet: ${ticker} | ${side} | price=${priceCents}Â¢ | count=${count} | total=${totalCost}Â¢`);
 
     const betRecord = {
       id: Date.now().toString(),
@@ -6312,7 +5875,7 @@ app.post('/api/bet', async (req, res) => {
       orderRequest.no_price = fillPrice;
     }
 
-    console.log(`Placing order (ask: ${priceCents}¢, bid: ${fillPrice}¢):`, JSON.stringify(orderRequest));
+    console.log(`Placing order (ask: ${priceCents}Â¢, bid: ${fillPrice}Â¢):`, JSON.stringify(orderRequest));
 
     try {
       // Use userConfig for authentication
@@ -6424,7 +5987,7 @@ app.post('/api/bet', async (req, res) => {
         }
       });
 
-      console.log(`✅ Bet placed. Exposure: $${(riskByType.total / 100).toFixed(2)}`);
+      console.log(`âœ… Bet placed. Exposure: $${(riskByType.total / 100).toFixed(2)}`);
     } catch (orderError) {
       console.error('Kalshi order error:', orderError.message);
       res.status(400).json({ success: false, error: 'Order failed. Check your balance and try again.' });
@@ -6535,9 +6098,13 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     // Analyze crypto opportunities
     const opportunities = cryptoMarkets
       .map(m => {
-        const analyzed = analyzeCryptoMarket(parseMarket(m));
-        if (analyzed) analyzed.marketCategory = 'crypto';
-        return analyzed;
+        const parsed = parseMarket(m);
+        const token = parsed.cryptoType;
+        const priceData = cryptoPrices[token];
+        if (!priceData?.price) return null;
+        const result = evaluateOpportunityEmpirical(parsed, priceData.price, learnedParams, null, userConfig);
+        if (!result) return null;
+        return { ...parsed, ...result, marketCategory: 'crypto' };
       })
       .filter(m => {
         if (m === null) return false;
@@ -6581,7 +6148,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     // Check per-token limit first
     if (remainingTokenBudget < 10) {
       const token = getTokenFromTicker(best.ticker) || best.assetType || best.cryptoType || 'token';
-      console.log(`⚠️ Token cycle limit reached for ${token} - $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)} max per cycle`);
+      console.log(`âš ï¸ Token cycle limit reached for ${token} - $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)} max per cycle`);
       return res.json({
         success: true,
         message: `Token cycle limit reached for ${token}. Max $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)} per cycle.`,
@@ -6597,7 +6164,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
         const existingSide = existingPos.position > 0 ? 'YES' : 'NO';
         const newSide = best.betSide?.toUpperCase();
         if (existingSide !== newSide) {
-          console.log(`🚫 OPPOSITE POSITION BLOCKED: Already holding ${existingSide} on ${best.ticker}, refusing ${newSide} bet`);
+          console.log(`ðŸš« OPPOSITE POSITION BLOCKED: Already holding ${existingSide} on ${best.ticker}, refusing ${newSide} bet`);
           return res.json({
             success: true,
             message: `Blocked: Already holding ${existingSide} on ${best.ticker}, refusing opposite ${newSide} bet`,
@@ -6625,7 +6192,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     // HARD LIMIT CHECK: Validate bet won't exceed ANY limit
     const validation = validateBetWontExceedLimits(best.ticker, totalCost, req.userState, req.userState?.config, req.userId);
     if (!validation.valid) {
-      console.log(`🚫 Bet blocked: ${validation.reason}`);
+      console.log(`ðŸš« Bet blocked: ${validation.reason}`);
       return res.json({
         success: true,
         message: `Bet blocked: ${validation.reason}`,
@@ -6668,7 +6235,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       betCount: newBetCount
     });
     if (best.isScaleIn) {
-      console.log(`📈 Scale-in bet #${newBetCount} on ${best.ticker} at ${best.winProbability}%`);
+      console.log(`ðŸ“ˆ Scale-in bet #${newBetCount} on ${best.ticker} at ${best.winProbability}%`);
     }
 
     if (!userConfig.isAuthenticated) {
@@ -6734,7 +6301,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       orderRequest.no_price = fillPrice;
     }
 
-    console.log(`Auto-bet placing order (ask: ${priceCents}¢, bid: ${fillPrice}¢):`, JSON.stringify(orderRequest));
+    console.log(`Auto-bet placing order (ask: ${priceCents}Â¢, bid: ${fillPrice}Â¢):`, JSON.stringify(orderRequest));
 
     try {
       const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest, userConfig);
@@ -6863,9 +6430,9 @@ let lastScanStatus = {
 };
 
 async function runAutoBet(userId = null) {
-  // Global kill switch check — halts all betting immediately
+  // Global kill switch check â€” halts all betting immediately
   if (isKillSwitchActive()) {
-    console.log('🚨 KILL SWITCH: Skipping auto-bet cycle');
+    console.log('ðŸš¨ KILL SWITCH: Skipping auto-bet cycle');
     return;
   }
   try {
@@ -6875,7 +6442,7 @@ async function runAutoBet(userId = null) {
     const userPortfolio = userState?.portfolio || portfolio;
     const userBetHistory = userState?.betHistory || betHistory;
 
-    console.log('\n🤖 ========== AUTO-BET SCAN ==========');
+    console.log('\nðŸ¤– ========== AUTO-BET SCAN ==========');
     if (userId) console.log(`   User: ${userId}`);
 
     // Refresh balance from Kalshi BEFORE bankroll floor check (prevents stale cache blocking bets)
@@ -6884,16 +6451,16 @@ async function runAutoBet(userId = null) {
         const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
         userPortfolio.balance = balanceData.balance || 0;
         userConfig.bankroll = userPortfolio.balance;
-        console.log(`   💰 Fresh balance: $${(userPortfolio.balance / 100).toFixed(2)}`);
+        console.log(`   ðŸ’° Fresh balance: $${(userPortfolio.balance / 100).toFixed(2)}`);
       } catch (e) {
-        console.log('⚠️ Could not refresh balance:', e.message);
+        console.log('âš ï¸ Could not refresh balance:', e.message);
       }
     }
 
-    // SAFETY CHECK 1: Bankroll floor — don't bet if balance too low
+    // SAFETY CHECK 1: Bankroll floor â€” don't bet if balance too low
     if (isBankrollTooLow(userConfig)) {
       const minBankroll = userConfig.minBankrollCents || 200;
-      console.log(`🛑 BANKROLL FLOOR: Balance $${((userConfig.bankroll || 0)/100).toFixed(2)} < minimum $${(minBankroll/100).toFixed(2)} — auto-bet paused`);
+      console.log(`ðŸ›‘ BANKROLL FLOOR: Balance $${((userConfig.bankroll || 0)/100).toFixed(2)} < minimum $${(minBankroll/100).toFixed(2)} â€” auto-bet paused`);
       lastScanStatus = {
         ...lastScanStatus,
         timestamp: new Date().toISOString(),
@@ -6905,10 +6472,10 @@ async function runAutoBet(userId = null) {
       return;
     }
 
-    // SAFETY CHECK 2: Daily loss limit — stop if lost too much in rolling 24 hours
+    // SAFETY CHECK 2: Daily loss limit â€” stop if lost too much in rolling 24 hours
     const dailyLossCheck = shouldStopForDailyLoss(userId, userConfig);
     if (dailyLossCheck.stop) {
-      console.log(`🛑 DAILY LOSS LIMIT: ${dailyLossCheck.reason}`);
+      console.log(`ðŸ›‘ DAILY LOSS LIMIT: ${dailyLossCheck.reason}`);
       lastScanStatus = {
         ...lastScanStatus,
         timestamp: new Date().toISOString(),
@@ -6935,7 +6502,7 @@ async function runAutoBet(userId = null) {
     // Parallel fetch: positions + markets simultaneously (saves ~500-1000ms per cycle)
     const positionsPromise = userConfig.isAuthenticated
       ? kalshiRequest('GET', '/portfolio/positions?status=open', null, userConfig).catch(e => {
-          console.log('⚠️ Could not refresh positions:', e.message);
+          console.log('âš ï¸ Could not refresh positions:', e.message);
           return null;
         })
       : Promise.resolve(null);
@@ -6946,7 +6513,7 @@ async function runAutoBet(userId = null) {
     // Process positions result
     if (posData && userConfig.isAuthenticated) {
       if (!posData.market_positions) {
-        console.warn('⚠️ Unexpected Kalshi positions response shape:', Object.keys(posData).join(', '));
+        console.warn('âš ï¸ Unexpected Kalshi positions response shape:', Object.keys(posData).join(', '));
       }
       userPortfolio.positions = filterExpiredPositions(
         (posData.market_positions || posData.positions || [])
@@ -6954,37 +6521,37 @@ async function runAutoBet(userId = null) {
         true // log filtered positions
       );
       syncKalshiPositionsToBetHistory(userState, userPortfolio.positions, userId);
-      console.log(`📊 Refreshed positions: ${userPortfolio.positions.length} open positions from Kalshi`);
+      console.log(`ðŸ“Š Refreshed positions: ${userPortfolio.positions.length} open positions from Kalshi`);
       if (userPortfolio.positions.length > 0) {
         userPortfolio.positions.forEach(p => {
           const token = getTokenFromTicker(p.ticker);
           console.log(`   Position: ${p.ticker} (${token}) | contracts=${p.position} | avg_price=${p.average_price} | market_exposure=${p.market_exposure}`);
         });
         const tokenExposure = getExposureByToken(userState);
-        console.log(`📊 Calculated token exposure:`);
+        console.log(`ðŸ“Š Calculated token exposure:`);
         for (const [token, exposure] of Object.entries(tokenExposure)) {
-          console.log(`   💵 ${token}: $${(exposure/100).toFixed(2)} exposure (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)})`);
+          console.log(`   ðŸ’µ ${token}: $${(exposure/100).toFixed(2)} exposure (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)})`);
         }
       }
       const preTokenExposure = getExposureByToken(userState);
       const maxPerCycle = getMaxPerTokenPerCycle(userConfig);
-      console.log(`📊 Pre-bet token budgets: ${JSON.stringify(
+      console.log(`ðŸ“Š Pre-bet token budgets: ${JSON.stringify(
         Object.fromEntries(Object.entries(preTokenExposure).map(([k,v]) => [k, '$'+(v/100).toFixed(2)]))
       )} | Cycle limit: $${(maxPerCycle/100).toFixed(2)}/token`);
 
       // TAKE-PROFIT SCAN (Phase 5) - after positions loaded
       if (userConfig.takeProfitSettings?.enabled && userPortfolio.positions?.length > 0) {
-        console.log(`\n📈 Scanning ${userPortfolio.positions.length} positions for take-profit...`);
+        console.log(`\nðŸ“ˆ Scanning ${userPortfolio.positions.length} positions for take-profit...`);
         try {
           const takeProfitOpps = await scanTakeProfitOpportunities(userConfig, userPortfolio, userId);
           if (takeProfitOpps.length > 0) {
             console.log(`   Found ${takeProfitOpps.length} take-profit opportunities`);
             takeProfitOpps.forEach(opp => {
-              console.log(`   💰 ${opp.position.ticker}: ${opp.evaluation.analysis.profitPercent.toFixed(1)}% profit`);
+              console.log(`   ðŸ’° ${opp.position.ticker}: ${opp.evaluation.analysis.profitPercent.toFixed(1)}% profit`);
             });
           }
         } catch (e) {
-          console.log('⚠️ Take-profit scan error:', e.message);
+          console.log('âš ï¸ Take-profit scan error:', e.message);
         }
       }
     }
@@ -6997,7 +6564,7 @@ async function runAutoBet(userId = null) {
       }
     }
 
-    console.log(`📊 Fetched: ${cryptoMarkets.length} crypto markets (BTC, ETH, SOL)`);
+    console.log(`ðŸ“Š Fetched: ${cryptoMarkets.length} crypto markets (BTC, ETH, SOL)`);
     console.log(`   Recent bets tracking: ${recentBets.size} markets`);
 
     // Subscribe to WebSocket updates for these markets
@@ -7013,7 +6580,7 @@ async function runAutoBet(userId = null) {
     // Check global sit-out conditions first
     const globalSitOut = shouldSitOut(learnedParams);
     if (globalSitOut.sitOut) {
-      console.log(`⏸️ SITTING OUT: ${globalSitOut.reasons.join(', ')}`);
+      console.log(`â¸ï¸ SITTING OUT: ${globalSitOut.reasons.join(', ')}`);
       lastScanStatus.status = 'sitting_out';
       lastScanStatus.statusMessage = globalSitOut.reasons[0];
       lastScanStatus.blockedReasons = globalSitOut.reasons;
@@ -7031,7 +6598,7 @@ async function runAutoBet(userId = null) {
       if (!priceData?.price) return null;
       const priceAge = Date.now() - priceData.timestamp;
       if (priceAge > 60000) {
-        console.log(`⚠️ Stale price for ${parsed.cryptoType} in autoBet: ${(priceAge/1000).toFixed(0)}s old - skipping`);
+        console.log(`âš ï¸ Stale price for ${parsed.cryptoType} in autoBet: ${(priceAge/1000).toFixed(0)}s old - skipping`);
         return null;
       }
 
@@ -7040,7 +6607,7 @@ async function runAutoBet(userId = null) {
       // Was 30 but REST fallback only delivers ~2 ticks/min when WS is flaky
       const historyLength = priceData.history?.length || 0;
       if (historyLength < 10) {
-        console.log(`⏳ Waiting for price history on ${parsed.cryptoType}: ${historyLength}/10 ticks - skipping`);
+        console.log(`â³ Waiting for price history on ${parsed.cryptoType}: ${historyLength}/10 ticks - skipping`);
         return null;
       }
 
@@ -7159,13 +6726,13 @@ async function runAutoBet(userId = null) {
       });
 
     const highSignalCount = opportunities.filter(o => (o.signalStrength || 0) >= 80).length;
-    console.log(`   Final: ${opportunities.length} opportunities (${highSignalCount} with signal ≥80)`);
+    console.log(`   Final: ${opportunities.length} opportunities (${highSignalCount} with signal â‰¥80)`);
 
     // Show top opportunities with empirical details
     if (opportunities.length > 0) {
-      console.log(`   🎯 Top empirical opportunities:`);
+      console.log(`   ðŸŽ¯ Top empirical opportunities:`);
       opportunities.slice(0, 3).forEach(m => {
-        console.log(`      - ${m.title}: signal=${m.signalStrength} | win=${m.winProbability}% @ ${m.marketPriceCents}¢ | edge=${m.edge?.toFixed(1)}% | regime=${m.regime}`);
+        console.log(`      - ${m.title}: signal=${m.signalStrength} | win=${m.winProbability}% @ ${m.marketPriceCents}Â¢ | edge=${m.edge?.toFixed(1)}% | regime=${m.regime}`);
       });
     }
 
@@ -7176,7 +6743,7 @@ async function runAutoBet(userId = null) {
       return sig >= minSignal - 15 && sig < minSignal && m.edge > 0;
     });
     if (almostQualified.length > 0) {
-      console.log(`   📈 ${almostQualified.length} markets approaching signal threshold:`);
+      console.log(`   ðŸ“ˆ ${almostQualified.length} markets approaching signal threshold:`);
       almostQualified.slice(0, 3).forEach(m => {
         const rejectionReason = m.reasons?.[0] || 'Unknown';
         console.log(`      - ${m.title}: signal=${m.signalStrength} | ${rejectionReason}`);
@@ -7184,7 +6751,7 @@ async function runAutoBet(userId = null) {
     }
 
     if (opportunities.length === 0) {
-      console.log('⏳ No empirically valid opportunities - waiting for next scan...');
+      console.log('â³ No empirically valid opportunities - waiting for next scan...');
       console.log('========================================\n');
 
       // Update status with reason
@@ -7208,10 +6775,10 @@ async function runAutoBet(userId = null) {
     const category = best.marketCategory || 'crypto';
 
     // Display EMPIRICAL analysis for best opportunity
-    console.log(`\n💰 BEST EMPIRICAL OPPORTUNITY [${category.toUpperCase()}]:`);
+    console.log(`\nðŸ’° BEST EMPIRICAL OPPORTUNITY [${category.toUpperCase()}]:`);
     console.log(`   ${best.title}`);
-    console.log(`   📊 Signal Strength: ${best.signalStrength}/100`);
-    console.log(`   Side: ${best.betSide} @ ${best.marketPriceCents}¢ | Win rate: ${best.winProbability}% (empirical)`);
+    console.log(`   ðŸ“Š Signal Strength: ${best.signalStrength}/100`);
+    console.log(`   Side: ${best.betSide} @ ${best.marketPriceCents}Â¢ | Win rate: ${best.winProbability}% (empirical)`);
     console.log(`   Current: $${best.currentPrice?.toFixed(2) || 'N/A'} | Strike: $${best.strikePrice?.toFixed(2) || 'N/A'}`);
     console.log(`   Distance: ${best.absDistance?.toFixed(2)}% from strike | Regime: ${best.regime}`);
     console.log(`   Edge: +${best.edge?.toFixed(1)}% (after fees) | Sample size: ${best.sampleSize}`);
@@ -7234,12 +6801,12 @@ async function runAutoBet(userId = null) {
     const momentumSettings = userConfig.momentumSettings || {};
     if (momentumSettings.enabled !== false) {
       if (momentumAligned && momentum.strength === 'strong') {
-        console.log(`   ✅ Momentum ALIGNED with bet (+${momentumSettings.alignmentBonus || 2}% edge bonus)`);
+        console.log(`   âœ… Momentum ALIGNED with bet (+${momentumSettings.alignmentBonus || 2}% edge bonus)`);
       } else if (momentumOpposed && momentum.strength === 'strong') {
-        console.log(`   ⚠️ Momentum OPPOSED to bet - consider skipping`);
+        console.log(`   âš ï¸ Momentum OPPOSED to bet - consider skipping`);
         // If momentum strongly opposes and we don't have great edge, skip
         if (best.edge < 8 && momentum.strength === 'strong') {
-          console.log(`   ❌ Skipping bet: momentum strongly opposed with only ${best.edge.toFixed(1)}% edge`);
+          console.log(`   âŒ Skipping bet: momentum strongly opposed with only ${best.edge.toFixed(1)}% edge`);
           lastScanStatus.status = 'momentum_opposed';
           lastScanStatus.statusMessage = `Momentum ${momentum.direction} opposes ${best.betSide} bet`;
           lastScanStatus.blockedReasons.push(`Momentum opposed: ${momentum.direction} vs ${best.betSide}`);
@@ -7251,14 +6818,14 @@ async function runAutoBet(userId = null) {
 
     // Show other good opportunities
     if (opportunities.length > 1) {
-      console.log(`   + ${opportunities.length - 1} more opportunities with signal ≥${minSignal}`);
+      console.log(`   + ${opportunities.length - 1} more opportunities with signal â‰¥${minSignal}`);
     }
 
     // Check per-token limit
     const remainingTokenBudget = getRemainingTokenBudget(best.ticker, best.assetType || best.cryptoType, userState, userConfig, userId);
     const tokenName = getTokenFromTicker(best.ticker) || best.assetType || best.cryptoType || 'token';
     if (remainingTokenBudget < 10) {
-      console.log(`⚠️ Token cycle limit reached for ${tokenName} ($${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)} max/cycle) - skipping...`);
+      console.log(`âš ï¸ Token cycle limit reached for ${tokenName} ($${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)} max/cycle) - skipping...`);
       console.log('========================================\n');
 
       lastScanStatus.status = 'token_limit';
@@ -7275,7 +6842,7 @@ async function runAutoBet(userId = null) {
         const existingSide = existingPos.position > 0 ? 'YES' : 'NO';
         const newSide = best.betSide?.toUpperCase();
         if (existingSide !== newSide) {
-          console.log(`🚫 OPPOSITE POSITION BLOCKED: Already holding ${existingSide} on ${best.ticker}, refusing ${newSide} bet`);
+          console.log(`ðŸš« OPPOSITE POSITION BLOCKED: Already holding ${existingSide} on ${best.ticker}, refusing ${newSide} bet`);
           lastScanStatus.status = 'opposite_position';
           lastScanStatus.statusMessage = `Already holding ${existingSide} on ${best.ticker}`;
           lastScanStatus.blockedReasons.push(`Opposite position: holding ${existingSide}, tried ${newSide}`);
@@ -7286,8 +6853,8 @@ async function runAutoBet(userId = null) {
     }
 
     // Display confidence based on signal strength
-    const confidenceLevel = best.signalStrength >= 85 ? '✅ HIGH CONFIDENCE (empirical)' :
-                           best.signalStrength >= 75 ? '📊 GOOD SIGNAL' : '⚠️ MODERATE SIGNAL';
+    const confidenceLevel = best.signalStrength >= 85 ? 'âœ… HIGH CONFIDENCE (empirical)' :
+                           best.signalStrength >= 75 ? 'ðŸ“Š GOOD SIGNAL' : 'âš ï¸ MODERATE SIGNAL';
     console.log(`   ${confidenceLevel}`);
     console.log(`   Token budget for ${tokenName}: $${(remainingTokenBudget/100).toFixed(2)} remaining`);
 
@@ -7298,9 +6865,9 @@ async function runAutoBet(userId = null) {
 
     // Guard against extreme prices
     if (priceCents <= 1 || priceCents >= 99) {
-      console.log(`⚠️ Skipping extreme price ${priceCents}¢`);
+      console.log(`âš ï¸ Skipping extreme price ${priceCents}Â¢`);
       lastScanStatus.status = 'price_extreme';
-      lastScanStatus.statusMessage = `Price ${priceCents}¢ too extreme`;
+      lastScanStatus.statusMessage = `Price ${priceCents}Â¢ too extreme`;
       console.log('========================================\n');
       return;
     }
@@ -7313,10 +6880,10 @@ async function runAutoBet(userId = null) {
     // Calculate contracts but cap total cost
     let count = Math.floor(MAX_BET_CENTS / priceCents);
     if (count < 1) {
-      console.log('⚠️ Bet size too small for risk budget');
+      console.log('âš ï¸ Bet size too small for risk budget');
       lastScanStatus.status = 'bet_too_small';
-      lastScanStatus.statusMessage = `Bet size too small (price ${priceCents}¢ > budget $${(MAX_BET_CENTS/100).toFixed(2)})`;
-      lastScanStatus.blockedReasons.push(`Budget too low for ${priceCents}¢ contract`);
+      lastScanStatus.statusMessage = `Bet size too small (price ${priceCents}Â¢ > budget $${(MAX_BET_CENTS/100).toFixed(2)})`;
+      lastScanStatus.blockedReasons.push(`Budget too low for ${priceCents}Â¢ contract`);
       return;
     }
 
@@ -7326,7 +6893,7 @@ async function runAutoBet(userId = null) {
     // HARD LIMIT CHECK: Validate bet won't exceed ANY limit
     const validation = validateBetWontExceedLimits(best.ticker, totalCost, userState, userConfig, userId);
     if (!validation.valid) {
-      console.log(`🚫 Bet blocked: ${validation.reason}`);
+      console.log(`ðŸš« Bet blocked: ${validation.reason}`);
       lastScanStatus.status = 'limit_exceeded';
       lastScanStatus.statusMessage = validation.reason;
       return;
@@ -7370,7 +6937,7 @@ async function runAutoBet(userId = null) {
     recordEmpiricalBet(best.token || best.cryptoType);
 
     if (best.isScaleIn) {
-      console.log(`📈 SCALE-IN: Adding bet #${newBetCount} on ${best.ticker} (signal increased to ${best.signalStrength})`);
+      console.log(`ðŸ“ˆ SCALE-IN: Adding bet #${newBetCount} on ${best.ticker} (signal increased to ${best.signalStrength})`);
     }
 
     // Define assetName early - used in both simulated and real bet logging
@@ -7398,15 +6965,15 @@ async function runAutoBet(userId = null) {
       // Save user state
       if (userId) saveUserState(userId);
 
-      console.log(`\n🎰 SIMULATED BET PLACED:`);
+      console.log(`\nðŸŽ° SIMULATED BET PLACED:`);
       console.log(`   ${betRecord.side.toUpperCase()} on ${assetName}`);
-      console.log(`   ${count} contracts @ ${priceCents}¢ = $${(betRecord.totalCost/100).toFixed(2)}`);
+      console.log(`   ${count} contracts @ ${priceCents}Â¢ = $${(betRecord.totalCost/100).toFixed(2)}`);
       console.log(`   Edge: +${best.edge.toFixed(1)}% | Win prob: ${best.winProbability}%`);
       console.log(`   New balance: $${(userConfig.bankroll/100).toFixed(2)}`);
       console.log('========================================\n');
 
       lastScanStatus.status = 'bet_placed';
-      lastScanStatus.statusMessage = `Simulated ${best.betSide} on ${assetName} (${count}x @ ${priceCents}¢)`;
+      lastScanStatus.statusMessage = `Simulated ${best.betSide} on ${assetName} (${count}x @ ${priceCents}Â¢)`;
       lastScanStatus.lastBet = {
         ticker: best.ticker,
         side: best.betSide,
@@ -7425,7 +6992,7 @@ async function runAutoBet(userId = null) {
     const fillSlippage = userConfig.selectivityRules?.fillSlippageCents ?? 3;
     const fillPrice = Math.min(priceCents + fillSlippage, 99);
 
-    console.log(`\n💸 PLACING REAL BET...`);
+    console.log(`\nðŸ’¸ PLACING REAL BET...`);
     // Generate idempotency key to prevent duplicate orders on timeout/retry
     const clientOrderId = `shimi-${best.ticker}-${best.betSide}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
     const orderRequest = {
@@ -7443,14 +7010,14 @@ async function runAutoBet(userId = null) {
     } else {
       orderRequest.no_price = fillPrice;
     }
-    console.log(`   Order (ask: ${priceCents}¢, bid: ${fillPrice}¢): ${JSON.stringify(orderRequest)}`);
+    console.log(`   Order (ask: ${priceCents}Â¢, bid: ${fillPrice}Â¢): ${JSON.stringify(orderRequest)}`);
 
     const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest, userConfig);
     console.log(`   Response: ${JSON.stringify(orderResponse)}`);
 
     const order = orderResponse.order;
     if (!order) {
-      console.error('❌ No order in response');
+      console.error('âŒ No order in response');
       recentBets.delete(runBetKey);
       console.log('========================================\n');
       return;
@@ -7470,7 +7037,7 @@ async function runAutoBet(userId = null) {
           console.log(`   Could not cancel order ${order.order_id}:`, cancelErr.message);
         }
       }
-      console.error(`❌ Order not filled. Status: ${status}. No liquidity.`);
+      console.error(`âŒ Order not filled. Status: ${status}. No liquidity.`);
       recentBets.delete(runBetKey);
       console.log('========================================\n');
       return;
@@ -7522,15 +7089,15 @@ async function runAutoBet(userId = null) {
     // Save user state after successful bet
     if (userId) saveUserState(userId);
 
-    console.log(`\n✅ REAL BET FILLED:`);
+    console.log(`\nâœ… REAL BET FILLED:`);
     console.log(`   ${betRecord.side.toUpperCase()} on ${best.cryptoType || best.assetType}`);
-    console.log(`   ${filledCount} contracts @ ${betRecord.avgPrice}¢`);
+    console.log(`   ${filledCount} contracts @ ${betRecord.avgPrice}Â¢`);
     console.log(`   Edge: +${best.edge.toFixed(1)}% | New balance: $${(userConfig.bankroll/100).toFixed(2)}`);
     console.log('========================================\n');
 
     // assetName already defined above
     lastScanStatus.status = 'bet_placed';
-    lastScanStatus.statusMessage = `LIVE ${best.betSide} on ${assetName} (${filledCount}x @ ${betRecord.avgPrice}¢)`;
+    lastScanStatus.statusMessage = `LIVE ${best.betSide} on ${assetName} (${filledCount}x @ ${betRecord.avgPrice}Â¢)`;
     lastScanStatus.lastBet = {
       ticker: best.ticker,
       side: best.betSide,
@@ -7545,7 +7112,7 @@ async function runAutoBet(userId = null) {
     };
 
   } catch (error) {
-    console.error('❌ Auto-bet error:', error.message);
+    console.error('âŒ Auto-bet error:', error.message);
     console.error('   Stack:', error.stack);
     console.log('========================================\n');
 
@@ -7626,7 +7193,7 @@ app.get('/api/auto-bet/status', (req, res) => {
   // CRITICAL FIX: If user has auto-bet enabled but no interval running, restart it
   // This handles server restarts and page refreshes
   if (req.userId && userConfig.autoBetEnabled && !userAutoBetIntervals.has(req.userId)) {
-    console.log(`🔄 Restoring auto-bet interval for user ${req.userId}`);
+    console.log(`ðŸ”„ Restoring auto-bet interval for user ${req.userId}`);
     runAutoBet(req.userId);
     userAutoBetIntervals.set(req.userId, setInterval(() => runAutoBet(req.userId), 10000));
 
@@ -8034,7 +7601,7 @@ function lookupEmpiricalWinRate(pctFromStrike, token = null) {
  * @param {object} userConfig - User config with selectivity rules (optional)
  * @returns {object} { shouldBet, signalStrength, side, edge, winRate, reasons }
  */
-function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, orderbook = null, userConfig = null) {
+function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, orderbook = null, userConfig = null, momentumData = null) {
   const empiricalTables = tables || learnedParams;
   // Merge user's selectivity rules with defaults (user settings take precedence)
   const userRules = userConfig?.selectivityRules || {};
@@ -8104,21 +7671,21 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const marketPriceCents = Math.round(marketPrice * 100);
 
   // DEBUG: Log price values to trace mismatch
-  console.log(`    📊 ${token} prices: yesAsk=${(parsed.yesAsk*100).toFixed(0)}¢ noAsk=${(parsed.noAsk*100).toFixed(0)}¢ | betSide=${betSide} | marketPrice=${marketPriceCents}¢`);
+  console.log(`    ðŸ“Š ${token} prices: yesAsk=${(parsed.yesAsk*100).toFixed(0)}Â¢ noAsk=${(parsed.noAsk*100).toFixed(0)}Â¢ | betSide=${betSide} | marketPrice=${marketPriceCents}Â¢`);
 
-  // Check price window - allow up to 97¢ for high-confidence near-expiry bets
+  // Check price window - allow up to 97Â¢ for high-confidence near-expiry bets
   const withinPriceWindow = marketPriceCents >= (entryWindows.priceMin || 40) &&
                             marketPriceCents <= (entryWindows.priceMax || 95);
 
   // STALE MOMENTUM: Flag for soft penalty instead of hard block
-  // Markets >90¢ with >5min left are likely priced in, but edge calc handles this naturally
+  // Markets >90Â¢ with >5min left are likely priced in, but edge calc handles this naturally
   const isStaleMomentum = marketPriceCents > 90 && timeRemaining > 5;
 
   // EDGE CALCULATION: Use distance-based empirical win rate vs market implied probability
   // Our win rate comes from how often the favored side wins at this distance from strike
   // Market price reflects what others are willing to pay - our edge is when we have better data
 
-  const marketImpliedProb = marketPrice * 100; // Market price as probability (e.g., 80¢ = 80%)
+  const marketImpliedProb = marketPrice * 100; // Market price as probability (e.g., 80Â¢ = 80%)
 
   // Use our empirical win rate based on distance from strike
   // This is the key insight: at 0.5% from strike, favored side wins ~88%, not what market implies
@@ -8131,7 +7698,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   let theoreticalWeight = 0;
   const priceHistory = cryptoPrices[token]?.history || [];
   if (priceHistory.length >= 10) {
-    // Compute log-return std dev (NO floor — we want raw volatility for accurate z-score)
+    // Compute log-return std dev (NO floor â€” we want raw volatility for accurate z-score)
     const histArr = [...priceHistory]; // spread ring buffer to array
     const logReturns = [];
     for (let i = 1; i < histArr.length; i++) {
@@ -8145,7 +7712,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       const stdDev = Math.sqrt(variance);
 
       if (stdDev === 0) {
-        // No price movement — theoretical model has no information, skip it
+        // No price movement â€” theoretical model has no information, skip it
         // (theoreticalWeight stays 0, no blending applied)
       } else {
         // Scale to remaining time
@@ -8183,7 +7750,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
         // Only blend when theoretical > empirical (boost confidence in calm conditions)
         if (theoreticalWeight > 0 && theoreticalWinRate > adjustedWinRate) {
           const blendedWinRate = adjustedWinRate * (1 - theoreticalWeight) + theoreticalWinRate * theoreticalWeight;
-          console.log(`    🔬 Vol-time model: theoretical=${theoreticalWinRate.toFixed(1)}% (weight=${(theoreticalWeight*100).toFixed(0)}%) | empirical=${adjustedWinRate.toFixed(1)}% → blended=${blendedWinRate.toFixed(1)}% [volRatio=${volRatio.toFixed(2)}, z=${zScore.toFixed(2)}]`);
+          console.log(`    ðŸ”¬ Vol-time model: theoretical=${theoreticalWinRate.toFixed(1)}% (weight=${(theoreticalWeight*100).toFixed(0)}%) | empirical=${adjustedWinRate.toFixed(1)}% â†’ blended=${blendedWinRate.toFixed(1)}% [volRatio=${volRatio.toFixed(2)}, z=${zScore.toFixed(2)}]`);
           adjustedWinRate = blendedWinRate;
         }
       }
@@ -8230,18 +7797,18 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       mlWeight = Math.min(0.30, Math.max(0, (mlModel.performance.accuracy - 0.55) * 2));
       const mlWinRate = mlPrediction * 100; // ML predicts favored side win probability
       const blendedWinRate = adjustedWinRate * (1 - mlWeight) + mlWinRate * mlWeight;
-      console.log(`    🧠 ML blend: ml=${mlWinRate.toFixed(1)}% (weight=${(mlWeight*100).toFixed(0)}%) → blended=${blendedWinRate.toFixed(1)}% (was ${adjustedWinRate.toFixed(1)}%)`);
+      console.log(`    ðŸ§  ML blend: ml=${mlWinRate.toFixed(1)}% (weight=${(mlWeight*100).toFixed(0)}%) â†’ blended=${blendedWinRate.toFixed(1)}% (was ${adjustedWinRate.toFixed(1)}%)`);
       adjustedWinRate = blendedWinRate;
     }
   }
 
-  console.log(`    📊 Edge calc: empirical=${empirical.winRate.toFixed(1)}% vs market=${marketImpliedProb.toFixed(0)}% @ distance=${absDistance.toFixed(2)}%`);
+  console.log(`    ðŸ“Š Edge calc: empirical=${empirical.winRate.toFixed(1)}% vs market=${marketImpliedProb.toFixed(0)}% @ distance=${absDistance.toFixed(2)}%`);
 
-  // DYNAMIC FEE CALCULATION - Kalshi formula: ceil(0.07 × contracts × price × (1-price))
-  // Fee is capped at 2¢ per contract. For edge calculation, use per-contract fee as percentage.
-  // At 50¢: fee = 0.07 * 0.50 * 0.50 = 1.75% of contract value
-  // At 65¢: fee = 0.07 * 0.65 * 0.35 = 1.59% of contract value
-  // At 75¢: fee = 0.07 * 0.75 * 0.25 = 1.31% of contract value
+  // DYNAMIC FEE CALCULATION - Kalshi formula: ceil(0.07 Ã— contracts Ã— price Ã— (1-price))
+  // Fee is capped at 2Â¢ per contract. For edge calculation, use per-contract fee as percentage.
+  // At 50Â¢: fee = 0.07 * 0.50 * 0.50 = 1.75% of contract value
+  // At 65Â¢: fee = 0.07 * 0.65 * 0.35 = 1.59% of contract value
+  // At 75Â¢: fee = 0.07 * 0.75 * 0.25 = 1.31% of contract value
   const feePerContract = Math.min(2, Math.ceil(7 * marketPrice * (1 - marketPrice))) / 100; // in cents, then to dollars
   const feePct = (feePerContract / marketPrice) * 100; // fee as % of bet cost
 
@@ -8252,7 +7819,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     const spread = betSide === 'YES' ? orderbook.yesSpread : orderbook.noSpread;
     if (spread && spread > 0 && spread < 50) {
       // Spread is in cents - convert to % of price for edge calculation
-      // Half spread paid on entry. Example: 4¢ spread at 50¢ = (4/2)/50 * 100 = 4%
+      // Half spread paid on entry. Example: 4Â¢ spread at 50Â¢ = (4/2)/50 * 100 = 4%
       spreadPenalty = (spread / 2) / marketPrice;
     }
   }
@@ -8292,7 +7859,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   }
 
   if (!withinPriceWindow) {
-    reasons.push(`Price ${marketPriceCents}¢ outside optimal window [${entryWindows.priceMin}-${entryWindows.priceMax}¢]`);
+    reasons.push(`Price ${marketPriceCents}Â¢ outside optimal window [${entryWindows.priceMin}-${entryWindows.priceMax}Â¢]`);
   }
 
   // Apply soft penalties for distance/time instead of hard rejections
@@ -8315,7 +7882,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       adjustedSignalStrength += bonus;
       windowPenalties.push(`late-game confirmed +${bonus}pts`);
     } else {
-      // Too early or no edge — standard penalty
+      // Too early or no edge â€” standard penalty
       const tMin = entryWindows.timeMin || 2;
       const tMax = entryWindows.timeMax || 13;
       const farOutside = timeRemaining < tMin * 0.5 || timeRemaining > tMax * 1.15;
@@ -8332,7 +7899,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   }
 
   if (windowPenalties.length > 0) {
-    console.log(`    📉 Window penalties: ${windowPenalties.join(', ')} → signal ${signalStrength}→${adjustedSignalStrength}`);
+    console.log(`    ðŸ“‰ Window penalties: ${windowPenalties.join(', ')} â†’ signal ${signalStrength}â†’${adjustedSignalStrength}`);
   }
 
   if (adjustedSignalStrength < (rules.minSignalStrength || 55)) {
@@ -8341,6 +7908,21 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   // Final decision
   const shouldBet = reasons.length === 0 && adjustedSignalStrength >= (rules.minSignalStrength || 55);
+
+  // Fee in cents for display
+  const feeCents = calculateKalshiFee(1, marketPrice);
+
+  // Profit calculations (for $1 worth of contracts)
+  const contractsFor1Dollar = marketPriceCents > 0 ? Math.floor(100 / marketPriceCents) : 0;
+  const totalCostCents = contractsFor1Dollar * marketPriceCents;
+  const payoutIfWinCents = contractsFor1Dollar * 100;
+  const profitIfWinCents = payoutIfWinCents - totalCostCents - feeCents;
+  const expectedProfitVal = (adjustedWinRate / 100) * profitIfWinCents - ((1 - adjustedWinRate / 100) * (totalCostCents + feeCents));
+  const profitPotentialVal = totalCostCents > 0 ? (profitIfWinCents / totalCostCents) * 100 : 0;
+
+  // probYesWins / probNoWins: needed by take-profit EV calc
+  const probYesWins = betSide === 'YES' ? adjustedWinRate : (100 - adjustedWinRate);
+  const probNoWins = 100 - probYesWins;
 
   return {
     shouldBet,
@@ -8367,9 +7949,39 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     timeRemaining,
     token,
     reasons,
-    // For display
+    // UI display aliases
+    betSide,
+    betPrice: marketPrice,
+    betPriceCents: marketPriceCents,
     winProbability: adjustedWinRate.toFixed(1),
-    isRecommended: shouldBet
+    isRecommended: shouldBet,
+    filterReason: reasons.length > 0 ? reasons[0] : (shouldBet ? null : `Edge ${netEdge.toFixed(1)}%`),
+    isObviousBet: adjustedWinRate >= 70,
+    isHighProb: adjustedWinRate >= 60,
+    isLocked: !shouldBet,
+    probYesWins,
+    probNoWins,
+    timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining),
+    confidence: adjustedWinRate.toFixed(0) + '%',
+    dataPoints: empirical.sampleSize,
+    analysisMethod: 'empirical_unified',
+    assetType: token,
+    currentPrice,
+    profitIfWin: profitIfWinCents,
+    expectedProfit: expectedProfitVal.toFixed(1),
+    profitPotential: profitPotentialVal,
+    contractsFor1Dollar,
+    feeCents,
+    recommendedBet: 100,
+    momentum: momentumData?.direction || 'neutral',
+    momentumStrength: momentumData?.strength || 0,
+    spreadPenalty,
+    orderbookData: orderbook ? {
+      yesSpread: orderbook.yesSpread,
+      noSpread: orderbook.noSpread,
+      yesLiquidity: orderbook.yesLiquidityAtBest,
+      noLiquidity: orderbook.noLiquidityAtBest
+    } : null
   };
 }
 
@@ -8380,11 +7992,11 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
  */
 function buildEmpiricalLookupTables(settlements) {
   if (!settlements || settlements.length < 100) {
-    console.log(`⚠️ Insufficient data for empirical tables: ${settlements?.length || 0} settlements`);
+    console.log(`âš ï¸ Insufficient data for empirical tables: ${settlements?.length || 0} settlements`);
     return null;
   }
 
-  console.log(`📊 Building empirical tables from ${settlements.length} settlements...`);
+  console.log(`ðŸ“Š Building empirical tables from ${settlements.length} settlements...`);
 
   const tables = JSON.parse(JSON.stringify(DEFAULT_EMPIRICAL_TABLES));
   tables.sampleSize = settlements.length;
@@ -8395,7 +8007,7 @@ function buildEmpiricalLookupTables(settlements) {
   // This addresses the model design flaw - we want to measure "at betting time, what was the distance?"
   const enrichedCount = settlements.filter(s => s.bettingTimePct !== undefined).length;
   if (enrichedCount > 0) {
-    console.log(`   📊 Using betting-time data for ${enrichedCount}/${settlements.length} settlements`);
+    console.log(`   ðŸ“Š Using betting-time data for ${enrichedCount}/${settlements.length} settlements`);
   }
 
   const distances = settlements.map(s => {
@@ -8582,7 +8194,7 @@ function buildEmpiricalLookupTables(settlements) {
   // Calculate confidence based on sample size
   tables.confidence = Math.min(0.99, settlements.length / 5000);
 
-  console.log(`✅ Built empirical tables:`);
+  console.log(`âœ… Built empirical tables:`);
   console.log(`   Sample size: ${settlements.length}`);
   console.log(`   Win rate buckets: ${Object.keys(tables.winRateByDistance).filter(k => tables.winRateByDistance[k].count > 0).length}`);
   console.log(`   Min auto win rate: ${minWinRateForAuto}%`);
@@ -8637,7 +8249,7 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 1000, userConfi
   const allSettlements = [];
 
   for (const t of tokens) {
-    console.log(`📊 Fetching ${t} historical data...`);
+    console.log(`ðŸ“Š Fetching ${t} historical data...`);
     const series = `KX${t}15M`;
     let cursor = null;
     let page = 0;
@@ -8696,7 +8308,7 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 1000, userConfi
         console.error(`   Error fetching page ${page} for ${t}:`, err.message);
         // If rate limited, back off and retry
         if (err.message.includes('429')) {
-          console.log(`   ⏳ Rate limited, waiting 5s...`);
+          console.log(`   â³ Rate limited, waiting 5s...`);
           await sleep(5000);
           continue; // Retry same page
         }
@@ -8704,10 +8316,10 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 1000, userConfi
       }
     }
 
-    console.log(`   ✅ ${t}: ${tokenSettlements} settlements collected`);
+    console.log(`   âœ… ${t}: ${tokenSettlements} settlements collected`);
   }
 
-  console.log(`📊 Total settlements collected: ${allSettlements.length}`);
+  console.log(`ðŸ“Š Total settlements collected: ${allSettlements.length}`);
   return allSettlements;
 }
 
@@ -8718,7 +8330,7 @@ async function fetchBulkHistoricalDataLegacy(token = 'all', maxPages = 1000, use
   const allSettlements = [];
 
   for (const t of tokens) {
-    console.log(`📊 [Legacy] Fetching ${t} historical data via events...`);
+    console.log(`ðŸ“Š [Legacy] Fetching ${t} historical data via events...`);
     const series = `KX${t}15M`;
     const allEvents = [];
     let cursor = null;
@@ -8749,7 +8361,7 @@ async function fetchBulkHistoricalDataLegacy(token = 'all', maxPages = 1000, use
       }
     }
 
-    console.log(`   📋 Fetching market details for ${allEvents.length} ${t} events...`);
+    console.log(`   ðŸ“‹ Fetching market details for ${allEvents.length} ${t} events...`);
 
     const BATCH_SIZE = 3;
     let processedCount = 0;
@@ -8798,13 +8410,13 @@ async function fetchBulkHistoricalDataLegacy(token = 'all', maxPages = 1000, use
         ? Math.min(5000, 500 * Math.pow(2, consecutiveErrors))
         : 750;
       if (consecutiveErrors > 0) {
-        console.log(`   ⏳ Rate limited, backing off ${baseDelay}ms...`);
+        console.log(`   â³ Rate limited, backing off ${baseDelay}ms...`);
       }
       await sleep(baseDelay);
     }
 
     const tokenSettlements = allSettlements.filter(s => s.token === t).length;
-    console.log(`   ✅ ${t}: ${tokenSettlements} settlements with valid data`);
+    console.log(`   âœ… ${t}: ${tokenSettlements} settlements with valid data`);
   }
 
   return allSettlements;
@@ -8821,7 +8433,7 @@ async function fetchBulkHistoricalDataLegacy(token = 'all', maxPages = 1000, use
  */
 async function enrichSettlementsWithCandlesticks(settlements, userConfig = null) {
   const cfg = userConfig || config;
-  console.log(`📊 Attempting to enrich ${settlements.length} settlements with candlestick data...`);
+  console.log(`ðŸ“Š Attempting to enrich ${settlements.length} settlements with candlestick data...`);
 
   let enrichedCount = 0;
   let failedCount = 0;
@@ -8874,17 +8486,17 @@ async function enrichSettlementsWithCandlesticks(settlements, userConfig = null)
       failedCount++;
       // Kalshi likely doesn't retain candlestick history for settled markets
       if (failedCount >= 10 && enrichedCount === 0) {
-        console.log(`   ⚠️ Candlestick enrichment not available (${failedCount} failures, 0 successes)`);
+        console.log(`   âš ï¸ Candlestick enrichment not available (${failedCount} failures, 0 successes)`);
         break; // Stop trying if it's clearly not working
       }
     }
   }
 
   if (enrichedCount > 0) {
-    console.log(`   ✅ Enriched ${enrichedCount}/${sampleSize} settlements with betting-time data`);
+    console.log(`   âœ… Enriched ${enrichedCount}/${sampleSize} settlements with betting-time data`);
   } else {
-    console.log(`   ℹ️ No candlestick data available for historical settlements (expected - Kalshi may not retain this)`);
-    console.log(`   ℹ️ Using prospective data collection instead for future model training`);
+    console.log(`   â„¹ï¸ No candlestick data available for historical settlements (expected - Kalshi may not retain this)`);
+    console.log(`   â„¹ï¸ Using prospective data collection instead for future model training`);
   }
 
   return settlements;
@@ -9140,13 +8752,13 @@ function analyzeSettlementData(settlements) {
  * This is the main learning function
  */
 async function updateLearnedParameters(userConfig = null) {
-  console.log('📚 Starting EMPIRICAL TABLES build from historical data...');
+  console.log('ðŸ“š Starting EMPIRICAL TABLES build from historical data...');
 
   try {
     const settlements = await fetchBulkHistoricalData('all', 1000, userConfig);
 
     if (settlements.length < 100) {
-      console.log(`⚠️ Insufficient data for learning: only ${settlements.length} settlements`);
+      console.log(`âš ï¸ Insufficient data for learning: only ${settlements.length} settlements`);
       return { success: false, error: 'Insufficient data', sampleSize: settlements.length };
     }
 
@@ -9159,7 +8771,7 @@ async function updateLearnedParameters(userConfig = null) {
     const empiricalTables = buildEmpiricalLookupTables(settlements);
 
     if (!empiricalTables) {
-      console.log('⚠️ Failed to build empirical tables');
+      console.log('âš ï¸ Failed to build empirical tables');
       return { success: false, error: 'Failed to build empirical tables' };
     }
 
@@ -9189,22 +8801,22 @@ async function updateLearnedParameters(userConfig = null) {
     // Save to disk
     saveLearnedParams();
 
-    console.log(`\n✅ EMPIRICAL TABLES BUILD COMPLETE!`);
+    console.log(`\nâœ… EMPIRICAL TABLES BUILD COMPLETE!`);
     console.log(`   Sample size: ${settlements.length}`);
     console.log(`   Win rate buckets: ${Object.keys(empiricalTables.winRateByDistance).filter(k => empiricalTables.winRateByDistance[k].count > 0).length}`);
     console.log(`   Confidence: ${(empiricalTables.confidence * 100).toFixed(0)}%`);
-    console.log(`\n📊 Selectivity Rules:`);
+    console.log(`\nðŸ“Š Selectivity Rules:`);
     console.log(`   Min signal strength: ${empiricalTables.selectivityRules.minSignalStrength}`);
     console.log(`   Min empirical win rate: ${empiricalTables.selectivityRules.minEmpiricalWinRate}%`);
     console.log(`   Min edge after fees: ${empiricalTables.selectivityRules.minEdgeAfterFees}%`);
     console.log(`   Max bets per hour: ${empiricalTables.selectivityRules.maxBetsPerHour}`);
-    console.log(`\n📈 Win Rate by Distance (favored side):`);
+    console.log(`\nðŸ“ˆ Win Rate by Distance (favored side):`);
     for (const [bucket, data] of Object.entries(empiricalTables.winRateByDistance)) {
       if (data.count > 0) {
         console.log(`   ${bucket}%: ${data.favoredWinRate}% win rate (n=${data.count})`);
       }
     }
-    console.log(`\n💰 Token Analysis:`);
+    console.log(`\nðŸ’° Token Analysis:`);
     for (const [token, data] of Object.entries(learnedParams.byToken)) {
       console.log(`   ${token}: ${data.sampleSize} samples | avg dist ${data.avgSettlementDistance?.toFixed(3)}% | NO bias ${data.noBias}% | vol rank ${data.volatilityRank}`);
       if (data.optimalEntryWindows) {
@@ -9216,12 +8828,12 @@ async function updateLearnedParameters(userConfig = null) {
     let mlResult = null;
     try {
       const mlTrainingData = buildMLTrainingData(settlements);
-      console.log(`\n🧠 ML: Built ${mlTrainingData.length} training samples from ${settlements.length} settlements`);
+      console.log(`\nðŸ§  ML: Built ${mlTrainingData.length} training samples from ${settlements.length} settlements`);
       if (mlTrainingData.length >= 200) {
         mlResult = trainMLModel(mlTrainingData);
       }
     } catch (mlErr) {
-      console.error('⚠️ ML training failed (non-fatal):', mlErr.message);
+      console.error('âš ï¸ ML training failed (non-fatal):', mlErr.message);
     }
 
     return {
@@ -9244,7 +8856,7 @@ async function updateLearnedParameters(userConfig = null) {
       } : { trained: false, reason: mlResult?.reason || 'Unknown' }
     };
   } catch (err) {
-    console.error('❌ Learning failed:', err.message);
+    console.error('âŒ Learning failed:', err.message);
     return { success: false, error: err.message };
   }
 }
@@ -9535,7 +9147,7 @@ app.get('/api/historical/bulk-settlements', async (req, res) => {
     const { token = 'all', maxPages = 10 } = req.query;
     const userConfig = req.userState?.config || config;
 
-    console.log(`📊 Bulk settlement fetch requested: token=${token}, maxPages=${maxPages}`);
+    console.log(`ðŸ“Š Bulk settlement fetch requested: token=${token}, maxPages=${maxPages}`);
 
     const settlements = await fetchBulkHistoricalData(
       token,
@@ -9569,7 +9181,7 @@ app.get('/api/historical/analyze', async (req, res) => {
     const { token = 'all', maxPages = 20 } = req.query;
     const userConfig = req.userState?.config || config;
 
-    console.log(`📈 Running settlement analysis: token=${token}, maxPages=${maxPages}`);
+    console.log(`ðŸ“ˆ Running settlement analysis: token=${token}, maxPages=${maxPages}`);
 
     const settlements = await fetchBulkHistoricalData(
       token,
@@ -9612,17 +9224,17 @@ app.post('/api/historical/learn', async (req, res) => {
     // Allow userId query param for admin/CLI access (one-time table building)
     let userConfig = req.userState?.config || config;
     const queryUserId = req.query.userId;
-    console.log(`📚 Learn request: queryUserId=${queryUserId}, reqUserAuth=${req.userState?.config?.isAuthenticated}`);
+    console.log(`ðŸ“š Learn request: queryUserId=${queryUserId}, reqUserAuth=${req.userState?.config?.isAuthenticated}`);
     if (queryUserId) {
       const state = getUserState(queryUserId);
-      console.log(`📚 Loaded state for ${queryUserId}: isAuth=${state?.config?.isAuthenticated}, hasKey=${!!state?.config?.apiKeyId}`);
+      console.log(`ðŸ“š Loaded state for ${queryUserId}: isAuth=${state?.config?.isAuthenticated}, hasKey=${!!state?.config?.apiKeyId}`);
       if (state?.config?.isAuthenticated && state?.config?.apiKeyId) {
         userConfig = state.config;
-        console.log(`📚 Using credentials from user ${queryUserId}`);
+        console.log(`ðŸ“š Using credentials from user ${queryUserId}`);
       }
     }
 
-    console.log(`📚 Manual learning triggered via API (auth=${userConfig.isAuthenticated}, key=${!!userConfig.apiKeyId})`);
+    console.log(`ðŸ“š Manual learning triggered via API (auth=${userConfig.isAuthenticated}, key=${!!userConfig.apiKeyId})`);
 
     const result = await updateLearnedParameters(userConfig);
 
@@ -10077,7 +9689,7 @@ app.post('/api/auth/login', async (req, res) => {
     const result = await auth.loginUser(email, password);
 
     // User state is automatically loaded via middleware when they make authenticated requests
-    console.log(`🔐 User logged in: ${email}`);
+    console.log(`ðŸ” User logged in: ${email}`);
 
     res.json({
       success: true,
@@ -10149,7 +9761,7 @@ app.post('/api/auth/configure', async (req, res) => {
 
       // Save user state to disk
       saveUserState(req.userId);
-      console.log(`🔑 Saved Kalshi credentials for user ${req.userId}`);
+      console.log(`ðŸ”‘ Saved Kalshi credentials for user ${req.userId}`);
 
       res.json({
         success: true,
@@ -10197,7 +9809,7 @@ app.post('/api/auth/disconnect', (req, res) => {
     // Save user state
     saveUserState(req.userId);
 
-    console.log(`🔌 User ${req.userId} disconnected from Kalshi`);
+    console.log(`ðŸ”Œ User ${req.userId} disconnected from Kalshi`);
 
     res.json({ success: true, message: 'Disconnected from Kalshi' });
   } catch (error) {
@@ -10260,7 +9872,7 @@ app.get('/api/portfolio', async (req, res) => {
             // Price is a decimal probability, convert to cents
             priceCents = Math.round(priceCents * 100);
           }
-          // Total cost = number of contracts × price per contract (in cents)
+          // Total cost = number of contracts Ã— price per contract (in cents)
           const totalCost = count * priceCents;
 
           // Debug logging disabled for performance
@@ -10415,7 +10027,7 @@ app.get('/api/portfolio', async (req, res) => {
       // Start position protection monitoring if user has open positions
       if (req.userId && userPortfolio.positions?.length > 0 && !userTakeProfitIntervals.has(req.userId) &&
           (userConfig.takeProfitSettings?.enabled === true || userConfig.activeMonitoring?.stopLossEnabled === true)) {
-        console.log(`🛡️ Starting position protection for user ${req.userId} (${userPortfolio.positions.length} open positions)`);
+        console.log(`ðŸ›¡ï¸ Starting position protection for user ${req.userId} (${userPortfolio.positions.length} open positions)`);
         startTakeProfitScanning(15000, req.userId, userConfig, userPortfolio);
       }
 
@@ -10910,7 +10522,7 @@ app.delete('/api/history', (req, res) => {
   res.json({ success: true, message: 'Bet history cleared' });
 });
 
-// Global kill switch endpoints — halt/resume all betting
+// Global kill switch endpoints â€” halt/resume all betting
 app.post('/api/kill-switch/activate', (req, res) => {
   if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
   try {
@@ -10921,8 +10533,8 @@ app.post('/api/kill-switch/activate', (req, res) => {
       clearInterval(interval);
       userAutoBetIntervals.delete(uid);
     }
-    console.error(`🚨 KILL SWITCH ACTIVATED by ${req.userId}`);
-    res.json({ success: true, message: 'Kill switch activated — all betting halted' });
+    console.error(`ðŸš¨ KILL SWITCH ACTIVATED by ${req.userId}`);
+    res.json({ success: true, message: 'Kill switch activated â€” all betting halted' });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -10933,8 +10545,8 @@ app.post('/api/kill-switch/deactivate', (req, res) => {
   try {
     if (fs.existsSync(KILL_SWITCH_FILE)) fs.unlinkSync(KILL_SWITCH_FILE);
     globalKillSwitch = false;
-    console.log(`✅ Kill switch deactivated by ${req.userId}`);
-    res.json({ success: true, message: 'Kill switch deactivated — betting can resume' });
+    console.log(`âœ… Kill switch deactivated by ${req.userId}`);
+    res.json({ success: true, message: 'Kill switch deactivated â€” betting can resume' });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -11059,20 +10671,20 @@ app.use((err, req, res, next) => {
 // Initialize database before starting server
 initDatabase().then(() => {
   const server = app.listen(PORT, '0.0.0.0', async () => {
-    console.log(`🎰 Shimi Crypto Bot running on port ${PORT}`);
-    console.log(`📊 Tracking ${Object.keys(TRACKED_TOKENS).length} tokens: ${Object.keys(TRACKED_TOKENS).join(', ')}`);
-    console.log(`💰 Min edge: ${config.minEdge}% | Max bet: ${config.maxBetPercent}%`);
-    console.log(`📈 Performance tracking: ${performanceData.bets.length} historical bets loaded`);
+    console.log(`ðŸŽ° Shimi Crypto Bot running on port ${PORT}`);
+    console.log(`ðŸ“Š Tracking ${Object.keys(TRACKED_TOKENS).length} tokens: ${Object.keys(TRACKED_TOKENS).join(', ')}`);
+    console.log(`ðŸ’° Min edge: ${config.minEdge}% | Max bet: ${config.maxBetPercent}%`);
+    console.log(`ðŸ“ˆ Performance tracking: ${performanceData.bets.length} historical bets loaded`);
 
     // Auto-load Kalshi credentials from environment
     await loadCredentialsFromEnv();
 
   // Initialize WebSocket for real-time market data (Phase 1)
-  console.log(`🔌 Initializing Kalshi WebSocket connection...`);
+  console.log(`ðŸ”Œ Initializing Kalshi WebSocket connection...`);
   try {
     initializeWebSocket();
   } catch (err) {
-    console.log(`⚠️ WebSocket initialization failed (falling back to REST): ${err.message}`);
+    console.log(`âš ï¸ WebSocket initialization failed (falling back to REST): ${err.message}`);
   }
 
   // Check pending settlements every 2 minutes
@@ -11126,7 +10738,7 @@ initDatabase().then(() => {
   const RENDER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
   setInterval(() => {
     fetch(`${RENDER_URL}/api/health`)
-      .then(() => console.log('🔄 Keep-alive ping successful'))
+      .then(() => console.log('ðŸ”„ Keep-alive ping successful'))
       .catch(() => {}); // Silently ignore errors
   }, 10 * 60 * 1000);
 
@@ -11138,14 +10750,14 @@ initDatabase().then(() => {
   // Initial learning check (delayed 30 seconds to let server stabilize)
   setTimeout(async () => {
     if (isLearningDataStale()) {
-      console.log('📚 Learned thresholds are stale, triggering learning update...');
+      console.log('ðŸ“š Learned thresholds are stale, triggering learning update...');
       try {
         await updateLearnedParameters();
       } catch (err) {
-        console.log(`⚠️ Initial learning failed: ${err.message}`);
+        console.log(`âš ï¸ Initial learning failed: ${err.message}`);
       }
     } else {
-      console.log(`📚 Learned thresholds are current (last updated: ${learnedParams.lastUpdated})`);
+      console.log(`ðŸ“š Learned thresholds are current (last updated: ${learnedParams.lastUpdated})`);
       console.log(`   Global threshold: ${learnedParams.thresholds.coinFlipExit}%`);
       for (const [token, data] of Object.entries(learnedParams.byToken)) {
         if (data.sampleSize > 0) {
@@ -11160,11 +10772,11 @@ initDatabase().then(() => {
     const hour = new Date().getHours();
     // Only run between 4-5 AM to minimize impact on trading
     if (hour === 4) {
-      console.log('📚 Running scheduled daily threshold learning...');
+      console.log('ðŸ“š Running scheduled daily threshold learning...');
       try {
         await updateLearnedParameters();
       } catch (err) {
-        console.log(`⚠️ Scheduled learning failed: ${err.message}`);
+        console.log(`âš ï¸ Scheduled learning failed: ${err.message}`);
       }
     }
   }, 60 * 60 * 1000); // Check every hour
@@ -11174,13 +10786,13 @@ initDatabase().then(() => {
     });
   });
 }).catch(err => {
-  console.error('❌ Failed to initialize database:', err);
+  console.error('âŒ Failed to initialize database:', err);
   process.exit(1);
 });
 
-// Graceful shutdown — flush debounced writes before exit
+// Graceful shutdown â€” flush debounced writes before exit
 function gracefulShutdown(signal) {
-  console.log(`\n🛑 ${signal} received — flushing data before exit...`);
+  console.log(`\nðŸ›‘ ${signal} received â€” flushing data before exit...`);
   // Cancel all pending debounced timers (they won't fire in time)
   for (const [key, timer] of Object.entries(_debouncedTimers)) {
     if (timer) {
@@ -11188,7 +10800,7 @@ function gracefulShutdown(signal) {
       _debouncedTimers[key] = null;
     }
   }
-  // Direct synchronous writes — bypass debouncing since we're shutting down
+  // Direct synchronous writes â€” bypass debouncing since we're shutting down
   try {
     if (takeProfitHistory.length > MAX_TP_HISTORY) {
       takeProfitHistory = takeProfitHistory.slice(-MAX_TP_HISTORY);
@@ -11216,7 +10828,7 @@ function gracefulShutdown(signal) {
     fs.writeFileSync(DAILY_LOSS_FILE, JSON.stringify(lossObj, null, 2));
     console.log('   Saved daily loss tracker');
   } catch (e) { console.error('   Failed to save daily loss tracker:', e.message); }
-  console.log('👋 Goodbye!');
+  console.log('ðŸ‘‹ Goodbye!');
   process.exit(0);
 }
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
