@@ -6776,6 +6776,18 @@ async function runAutoBet(userId = null) {
     console.log('\n🤖 ========== AUTO-BET SCAN ==========');
     if (userId) console.log(`   User: ${userId}`);
 
+    // Refresh balance from Kalshi BEFORE bankroll floor check (prevents stale cache blocking bets)
+    if (userConfig.isAuthenticated) {
+      try {
+        const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
+        userPortfolio.balance = balanceData.balance || 0;
+        userConfig.bankroll = userPortfolio.balance;
+        console.log(`   💰 Fresh balance: $${(userPortfolio.balance / 100).toFixed(2)}`);
+      } catch (e) {
+        console.log('⚠️ Could not refresh balance:', e.message);
+      }
+    }
+
     // SAFETY CHECK 1: Bankroll floor — don't bet if balance too low
     if (isBankrollTooLow(userConfig)) {
       const minBankroll = userConfig.minBankrollCents || 200;
@@ -7179,46 +7191,19 @@ async function runAutoBet(userId = null) {
 
     const priceCents = Math.round(best.betPrice * 100);
 
-    // KELLY CRITERION POSITION SIZING (ADAPTIVE)
-    // Low vol: 1/5 Kelly + 15% bankroll cap (high certainty). Normal: 1/8 Kelly + 10% cap.
-    const isLowVol = best.regime === 'low';
-    const kellyFraction = isLowVol ? 0.20 : 0.125; // 1/5 Kelly in low vol, 1/8 otherwise
-    const bankrollCents = userConfig.bankroll ?? 1000;
-    const winProb = (best.winProbability || 60) / 100;
-
-    const priceDecimal = priceCents / 100;
-
     // Guard against extreme prices
-    if (priceDecimal <= 0.01 || priceDecimal >= 0.99) {
-      console.log(`[KELLY] Skipping extreme price ${priceCents}¢ - too risky`);
+    if (priceCents <= 1 || priceCents >= 99) {
+      console.log(`⚠️ Skipping extreme price ${priceCents}¢`);
       lastScanStatus.status = 'price_extreme';
       lastScanStatus.statusMessage = `Price ${priceCents}¢ too extreme`;
       console.log('========================================\n');
       return;
     }
 
-    // Verify positive edge before Kelly
-    if (winProb <= priceDecimal) {
-      console.log(`[KELLY] No edge: winProb ${(winProb*100).toFixed(1)}% <= price ${priceCents}¢`);
-      lastScanStatus.status = 'no_edge';
-      lastScanStatus.statusMessage = `No edge: ${(winProb*100).toFixed(0)}% <= ${priceCents}¢`;
-      console.log('========================================\n');
-      return;
-    }
+    // Static bet sizing: spend up to the remaining per-token/cycle budget
+    const MAX_BET_CENTS = hardCapCents;
 
-    const oddsRatio = (1 - priceDecimal) / priceDecimal;
-    const kellyOptimal = ((oddsRatio * winProb) - (1 - winProb)) / oddsRatio;
-
-    // Apply fractional Kelly with HARD 10% bankroll cap
-    let kellyBetCents = Math.round(bankrollCents * Math.max(0, kellyOptimal) * kellyFraction);
-    const maxBankrollPct = Math.round(bankrollCents * (isLowVol ? 0.15 : 0.10)); // 15% in low vol, 10% otherwise
-    kellyBetCents = Math.min(kellyBetCents, maxBankrollPct);
-
-    // Apply min/max constraints: minimum $1, maximum from hard cap
-    const MIN_BET_CENTS = 100; // $1 minimum
-    const MAX_BET_CENTS = Math.min(hardCapCents, Math.max(MIN_BET_CENTS, kellyBetCents));
-
-    console.log(`   Kelly sizing: edge=${((winProb - priceDecimal)*100).toFixed(1)}%, kelly=${kellyOptimal.toFixed(3)}, fraction=${kellyFraction}${isLowVol ? ' (low-vol)' : ''}, bet=$${(kellyBetCents/100).toFixed(2)} → capped=$${(MAX_BET_CENTS/100).toFixed(2)}`);
+    console.log(`   Bet sizing: budget=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
 
     // Calculate contracts but cap total cost
     let count = Math.floor(MAX_BET_CENTS / priceCents);
