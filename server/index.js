@@ -257,6 +257,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
     minSignalStrength: 55, // 0-100 score required to bet (with soft penalties, 55 is appropriate)
     minEmpiricalWinRate: 62, // Minimum win rate from lookup tables (empirically grounded)
     minEdgeAfterFees: 3, // 3% minimum edge after all fees (still +EV)
+    minUnfavoredEdge: 5, // 5% minimum net edge for unfavored-side bets (higher bar)
     maxBetsPerHour: 8, // Rate limit shouldn't block good opportunities
     maxBetsPerToken: 3, // Per-token concentration limit
     requireRegimeCheck: true // Must pass volatility regime check
@@ -7023,8 +7024,8 @@ async function runAutoBet(userId = null) {
       betCount: newBetCount
     });
 
-    // Record for empirical rate limiting
-    recordEmpiricalBet(best.token || best.cryptoType);
+    // Record for empirical rate limiting (with side for saturation tracking)
+    recordEmpiricalBet(best.token || best.cryptoType, best.betSide);
 
     if (best.isScaleIn) {
       console.log(` SCALE-IN: Adding bet #${newBetCount} on ${best.ticker} (signal increased to ${best.signalStrength})`);
@@ -7407,7 +7408,8 @@ app.get('/api/candlesticks/:ticker', async (req, res) => {
 const empiricalBetTracking = {
   recentBetsThisHour: [], // Timestamps of bets in the last hour
   betsByToken: new Map(), // Token -> count of bets in last hour
-  lastSpikeTimes: new Map() // Token -> timestamp of last detected spike
+  lastSpikeTimes: new Map(), // Token -> timestamp of last detected spike
+  recentSidesByToken: new Map() // Token -> [{side, timestamp}] for saturation tracking
 };
 
 // Volatility regime cache (30s TTL) - called 3x+ per 10s scan for display
@@ -7775,34 +7777,55 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const withinTimeWindow = timeRemaining >= (entryWindows.timeMin || 2) &&
                            timeRemaining <= (entryWindows.timeMax || 10);
 
-  // Determine bet side based on price position
+  // Determine bet side: evaluate BOTH sides and pick the one with better edge
   const isAboveStrike = currentPrice > strikePrice;
-  let betSide, marketPrice;
+  let favoredSide, unfavoredSide, favoredPrice, unfavoredPrice;
 
   if (parsed.marketType === 'above') {
     // YES wins if price >= strike at expiry
     if (isAboveStrike) {
-      betSide = 'YES';
-      marketPrice = parsed.yesAsk || 0.5;
+      favoredSide = 'YES'; unfavoredSide = 'NO';
+      favoredPrice = parsed.yesAsk || 0.5; unfavoredPrice = parsed.noAsk || 0.5;
     } else {
-      betSide = 'NO';
-      marketPrice = parsed.noAsk || 0.5;
+      favoredSide = 'NO'; unfavoredSide = 'YES';
+      favoredPrice = parsed.noAsk || 0.5; unfavoredPrice = parsed.yesAsk || 0.5;
     }
   } else {
     // Below market: YES wins if price < strike
     if (isAboveStrike) {
-      betSide = 'NO';
-      marketPrice = parsed.noAsk || 0.5;
+      favoredSide = 'NO'; unfavoredSide = 'YES';
+      favoredPrice = parsed.noAsk || 0.5; unfavoredPrice = parsed.yesAsk || 0.5;
     } else {
-      betSide = 'YES';
-      marketPrice = parsed.yesAsk || 0.5;
+      favoredSide = 'YES'; unfavoredSide = 'NO';
+      favoredPrice = parsed.yesAsk || 0.5; unfavoredPrice = parsed.noAsk || 0.5;
     }
+  }
+
+  // Compute gross edge for both sides
+  const favoredWinRate = empirical.winRate;
+  const unfavoredWinRate = 100 - empirical.winRate;
+  const favoredGrossEdge = favoredWinRate - (favoredPrice * 100);
+  const unfavoredGrossEdge = unfavoredWinRate - (unfavoredPrice * 100);
+
+  // Pick the side with higher positive gross edge
+  // Guard rail: skip unfavored if ask price is too low (no market maker)
+  let betSide, marketPrice, isFavoredSideBet;
+  const unfavoredViable = unfavoredPrice >= 0.02 && unfavoredGrossEdge > favoredGrossEdge && unfavoredGrossEdge > 0;
+  if (unfavoredViable) {
+    betSide = unfavoredSide;
+    marketPrice = unfavoredPrice;
+    isFavoredSideBet = false;
+    console.log(` Dual-side: unfavored ${betSide} edge ${unfavoredGrossEdge.toFixed(1)}% > favored ${favoredSide} edge ${favoredGrossEdge.toFixed(1)}%`);
+  } else {
+    betSide = favoredSide;
+    marketPrice = favoredPrice;
+    isFavoredSideBet = true;
   }
 
   const marketPriceCents = Math.round(marketPrice * 100);
 
   // DEBUG: Log price values to trace mismatch
-  console.log(` ${token} prices: yesAsk=${(parsed.yesAsk*100).toFixed(0)}c noAsk=${(parsed.noAsk*100).toFixed(0)}c | betSide=${betSide} | marketPrice=${marketPriceCents}c`);
+  console.log(` ${token} prices: yesAsk=${(parsed.yesAsk*100).toFixed(0)}c noAsk=${(parsed.noAsk*100).toFixed(0)}c | betSide=${betSide}${isFavoredSideBet ? '' : ' (unfavored)'} | marketPrice=${marketPriceCents}c`);
 
   // Check price window - allow up to 97c for high-confidence near-expiry bets
   const withinPriceWindow = marketPriceCents >= (entryWindows.priceMin || 40) &&
@@ -7819,8 +7842,8 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const marketImpliedProb = marketPrice * 100; // Market price as probability (e.g., 80c = 80%)
 
   // Use our empirical win rate based on distance from strike
-  // This is the key insight: at 0.5% from strike, favored side wins ~88%, not what market implies
-  let adjustedWinRate = empirical.winRate;
+  // For unfavored side, invert: if favored wins 88%, unfavored wins 12%
+  let adjustedWinRate = isFavoredSideBet ? empirical.winRate : (100 - empirical.winRate);
 
   // VOLATILITY-TIME THEORETICAL MODEL: z-score-based probability from price history
   // During low-vol hours, empirical tables underestimate probability because they average all conditions
@@ -7854,6 +7877,10 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
         // Z-score: how many std devs is the distance from strike?
         const zScore = (absDistance / 100) / Math.max(volRemaining, 1e-10);
         theoreticalWinRate = Math.min(98, normalCDF(zScore) * 100);
+        // Invert theoretical for unfavored side
+        if (!isFavoredSideBet) {
+          theoreticalWinRate = 100 - theoreticalWinRate;
+        }
 
         // Determine blend weight based on vol regime
         const tokenData = learnedParams.byToken?.[token];
@@ -7930,7 +7957,8 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       // Scale ML weight by accuracy above baseline (55%)
       // At 55% accuracy: 0% weight, at 70% accuracy: 30% weight
       mlWeight = Math.min(0.30, Math.max(0, (mlModel.performance.accuracy - 0.55) * 2));
-      const mlWinRate = mlPrediction * 100; // ML predicts favored side win probability
+      // ML predicts favored side win probability; invert for unfavored bets
+      const mlWinRate = isFavoredSideBet ? mlPrediction * 100 : (1 - mlPrediction) * 100;
       const blendedWinRate = adjustedWinRate * (1 - mlWeight) + mlWinRate * mlWeight;
       console.log(` ML blend: ml=${mlWinRate.toFixed(1)}% (weight=${(mlWeight*100).toFixed(0)}%) blended=${blendedWinRate.toFixed(1)}% (was ${adjustedWinRate.toFixed(1)}%)`);
       adjustedWinRate = blendedWinRate;
@@ -7983,19 +8011,31 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // Build rejection reasons - only hard rejections for genuine deal-breakers
   const reasons = [];
 
-  if (adjustedWinRate < (rules.minEmpiricalWinRate || 62)) {
-    reasons.push(`Win rate ${adjustedWinRate.toFixed(1)}% < ${rules.minEmpiricalWinRate || 62}%`);
+  if (isFavoredSideBet) {
+    // Favored bets: standard win rate and edge thresholds
+    if (adjustedWinRate < (rules.minEmpiricalWinRate || 62)) {
+      reasons.push(`Win rate ${adjustedWinRate.toFixed(1)}% < ${rules.minEmpiricalWinRate || 62}%`);
+    }
+
+    // In low vol, outcomes are more predictable - smaller edge is more reliable
+    const effectiveMinEdge = regime.regime === 'low'
+      ? Math.max(1, (rules.minEdgeAfterFees || 3) - 2)
+      : (rules.minEdgeAfterFees || 3);
+    if (netEdge < effectiveMinEdge) {
+      reasons.push(`Edge ${netEdge.toFixed(1)}% < ${effectiveMinEdge}%${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
+    }
+  } else {
+    // Unfavored bets: skip win rate filter (inherently <50%), require higher edge + cheap price
+    const minUnfavoredEdge = rules.minUnfavoredEdge || 5;
+    if (netEdge < minUnfavoredEdge) {
+      reasons.push(`Unfavored edge ${netEdge.toFixed(1)}% < ${minUnfavoredEdge}%`);
+    }
+    if (marketPriceCents > 40) {
+      reasons.push(`Unfavored price ${marketPriceCents}c > 40c max`);
+    }
   }
 
-  // In low vol, outcomes are more predictable - smaller edge is more reliable
-  const effectiveMinEdge = regime.regime === 'low'
-    ? Math.max(1, (rules.minEdgeAfterFees || 3) - 2)
-    : (rules.minEdgeAfterFees || 3);
-  if (netEdge < effectiveMinEdge) {
-    reasons.push(`Edge ${netEdge.toFixed(1)}% < ${effectiveMinEdge}%${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
-  }
-
-  if (!withinPriceWindow) {
+  if (!withinPriceWindow && isFavoredSideBet) {
     reasons.push(`Price ${marketPriceCents}c outside optimal window [${entryWindows.priceMin}-${entryWindows.priceMax}c]`);
   }
 
@@ -8045,10 +8085,36 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
   }
 
+  // Early-entry penalty: within time window but too early (>5 min left)
+  // Scales with time remaining: 13min=-12, 10min=-8, 8min=-5, 6min=-2, 5min=0
+  if (withinTimeWindow && timeRemaining > 5) {
+    const earlyPenalty = -Math.round(Math.min(12, (timeRemaining - 5) * 1.5));
+    adjustedSignalStrength += earlyPenalty;
+    windowPenalties.push(`early-entry ${earlyPenalty}pts`);
+  }
+
   // Stale momentum: soft penalty instead of hard block
   if (isStaleMomentum) {
     adjustedSignalStrength += -15;
     windowPenalties.push(`stale momentum -15pts`);
+  }
+
+  // NO bias bonus: learned data shows NO wins more often than YES across all tokens
+  // Wire in the existing getNoBiasBonus() function to reward NO-side bets
+  if (betSide === 'NO') {
+    const noBiasBonus = getNoBiasBonus(token);
+    if (noBiasBonus > 0) {
+      adjustedSignalStrength += noBiasBonus;
+      windowPenalties.push(`NO bias +${noBiasBonus}pts`);
+    }
+  }
+
+  // Same-side saturation: penalize one-sided streaks per token
+  const consecutiveSameSide = getConsecutiveSameSideCount(token, betSide);
+  if (consecutiveSameSide >= 3) {
+    const saturationPenalty = -Math.min(20, 5 * (consecutiveSameSide - 2));
+    adjustedSignalStrength += saturationPenalty;
+    windowPenalties.push(`saturation ${saturationPenalty}pts (${consecutiveSameSide}x ${betSide})`);
   }
 
   if (windowPenalties.length > 0) {
@@ -8104,6 +8170,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     withinPriceWindow,
     timeRemaining,
     token,
+    isFavoredSideBet,
     reasons,
     // UI display aliases
     betSide,
@@ -8370,13 +8437,28 @@ function buildEmpiricalLookupTables(settlements) {
 /**
  * Record a bet for rate limiting tracking
  * @param {string} token - Token that was bet on
+ * @param {string} [side] - 'YES' or 'NO' for saturation tracking
  */
-function recordEmpiricalBet(token) {
+function recordEmpiricalBet(token, side) {
   const now = Date.now();
   empiricalBetTracking.recentBetsThisHour.push(now);
 
   const currentCount = empiricalBetTracking.betsByToken.get(token) || 0;
   empiricalBetTracking.betsByToken.set(token, currentCount + 1);
+
+  // Track bet side for saturation detection
+  if (side) {
+    if (!empiricalBetTracking.recentSidesByToken.has(token)) {
+      empiricalBetTracking.recentSidesByToken.set(token, []);
+    }
+    const sides = empiricalBetTracking.recentSidesByToken.get(token);
+    sides.push({ side, timestamp: now });
+    // Keep only last 2 hours of side data
+    const twoHoursAgo = now - 2 * 60 * 60 * 1000;
+    while (sides.length > 0 && sides[0].timestamp < twoHoursAgo) {
+      sides.shift();
+    }
+  }
 
   // Clean up old entries every 10 bets
   if (empiricalBetTracking.recentBetsThisHour.length % 10 === 0) {
@@ -8391,6 +8473,26 @@ function recordEmpiricalBet(token) {
       }
     }
   }
+}
+
+/**
+ * Count consecutive same-side bets from most recent backward
+ * @param {string} token - Token to check
+ * @param {string} side - 'YES' or 'NO'
+ * @returns {number} Consecutive count of same-side bets
+ */
+function getConsecutiveSameSideCount(token, side) {
+  const sides = empiricalBetTracking.recentSidesByToken.get(token);
+  if (!sides || sides.length === 0) return 0;
+  let count = 0;
+  for (let i = sides.length - 1; i >= 0; i--) {
+    if (sides[i].side === side) {
+      count++;
+    } else {
+      break;
+    }
+  }
+  return count;
 }
 
 // ============================================

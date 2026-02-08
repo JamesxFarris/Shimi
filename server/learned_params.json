@@ -142,6 +142,7 @@
     "minSignalStrength": 55,
     "minEmpiricalWinRate": 62,
     "minEdgeAfterFees": 3,
+    "minUnfavoredEdge": 5,
     "maxBetsPerHour": 8,
     "maxBetsPerToken": 3,
     "requireRegimeCheck": true
