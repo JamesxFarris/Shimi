@@ -147,7 +147,7 @@ export class KalshiWebSocket {
 
         this.ws.on('error', (error) => {
           this.onError('[WS] WebSocket error:', error.message);
-          // Track auth failures — retrying won't help without new credentials
+          // Track auth failures -- retrying won't help without new credentials
           if (error.message?.includes('401')) {
             this.authFailed = true;
           }
@@ -161,7 +161,7 @@ export class KalshiWebSocket {
           this.onConnectionChange(false);
           this.stopHeartbeat();
 
-          // Don't reconnect on auth failure — wait for setCredentials
+          // Don't reconnect on auth failure -- wait for setCredentials
           if (this.authFailed) {
             console.log('[WS] Auth failed (401). Waiting for valid credentials before reconnecting.');
             return;

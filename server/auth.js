@@ -4,7 +4,7 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { pool } from './db.js';
 
-// In production, JWT_SECRET MUST be set — random secrets invalidate all sessions on restart
+// In production, JWT_SECRET MUST be set -- random secrets invalidate all sessions on restart
 if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
   console.error('FATAL: JWT_SECRET must be set in production environment');
   process.exit(1);

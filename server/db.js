@@ -30,7 +30,7 @@ export async function initDatabase() {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
-    console.log('✅ Database tables initialized');
+    console.log('Database tables initialized');
   } finally {
     client.release();
   }
