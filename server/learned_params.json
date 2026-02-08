@@ -82,8 +82,8 @@
   "byToken": {
     "BTC": {
       "sampleSize": 4837,
-      "avgSettlementDistance": null,
-      "settlementDistanceStdDev": null,
+      "avgSettlementDistance": 0.25,
+      "settlementDistanceStdDev": 0.3,
       "yesWinRate": 49.51,
       "noWinRate": 50.49,
       "noBias": 0.97,
@@ -101,8 +101,8 @@
     },
     "ETH": {
       "sampleSize": 4825,
-      "avgSettlementDistance": null,
-      "settlementDistanceStdDev": null,
+      "avgSettlementDistance": 0.37,
+      "settlementDistanceStdDev": 0.4,
       "yesWinRate": 49.62,
       "noWinRate": 50.38,
       "noBias": 0.77,
@@ -120,8 +120,8 @@
     },
     "SOL": {
       "sampleSize": 2790,
-      "avgSettlementDistance": null,
-      "settlementDistanceStdDev": null,
+      "avgSettlementDistance": 0.36,
+      "settlementDistanceStdDev": 0.4,
       "yesWinRate": 47.78,
       "noWinRate": 52.22,
       "noBias": 4.44,

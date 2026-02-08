@@ -126,7 +126,7 @@ const DEFAULT_CONFIG = {
     stopLossEnabled: false,      // Cut losses at threshold (disabled by default)
     stopLossThreshold: -40,      // Exit if position is down 40%
     easyProfitEnabled: true,     // Take "free money" on high-confidence positions
-    easyProfitMinPrice: 75,      // Minimum buy price for easy profit (75Â¢ = 75% implied prob)
+    easyProfitMinPrice: 75,      // Minimum buy price for easy profit (75c = 75% implied prob)
     easyProfitThreshold: 12,     // Near expiry (<5min): take 12%+ profit (accounts for fees)
     coinFlipPreventionEnabled: true  // Exit coin-flip positions near expiry (can disable to ride it out)
     // Note: Early exits (>5min left) require 18%+ profit to justify fees
@@ -200,7 +200,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
   byToken: {
     BTC: {
       sampleSize: 0,
-      avgSettlementDistance: 0,
+      avgSettlementDistance: 0.25,
       settlementDistanceStdDev: 0,
       yesWinRate: 50,
       noWinRate: 50,
@@ -211,13 +211,13 @@ const DEFAULT_EMPIRICAL_TABLES = {
         distanceMax: 5.0,   // Don't reject large moves
         timeMin: 2,         // Allow late entries
         timeMax: 13,        // 15-min markets: allow entries from minute 2-13
-        priceMin: 40,       // Below 40Â¢ fees are 5%+ and edge model has no signal
+        priceMin: 40,       // Below 40c fees are 5%+ and edge model has no signal
         priceMax: 95        // Capture near-certainty late-game bets
       }
     },
     ETH: {
       sampleSize: 0,
-      avgSettlementDistance: 0,
+      avgSettlementDistance: 0.37,
       settlementDistanceStdDev: 0,
       yesWinRate: 50,
       noWinRate: 50,
@@ -234,7 +234,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
     },
     SOL: {
       sampleSize: 0,
-      avgSettlementDistance: 0,
+      avgSettlementDistance: 0.36,
       settlementDistanceStdDev: 0,
       yesWinRate: 50,
       noWinRate: 50,
@@ -1293,7 +1293,7 @@ function trackBet(betInfo) {
   performanceData.summary.totalWagered += bet.totalCost;
 
   savePerformanceData();
-  console.log(`ðŸ“Š Tracked bet: ${bet.side} on ${bet.token} @ ${bet.price}Â¢ (${bet.predictedProb.toFixed(1)}% predicted)`);
+  console.log(`ðŸ“Š Tracked bet: ${bet.side} on ${bet.token} @ ${bet.price}c (${bet.predictedProb.toFixed(1)}% predicted)`);
 
   return bet;
 }
@@ -1371,7 +1371,7 @@ function settleBet(betId, outcome, settlementPrice, actualProfit) {
     matchSettlementWithSnapshots(bet.ticker, result);
   }
 
-  console.log(`ðŸ“Š Settled bet: ${bet.side} on ${bet.token} â†’ ${outcome.toUpperCase()} (${actualProfit > 0 ? '+' : ''}${actualProfit}Â¢)`);
+  console.log(`ðŸ“Š Settled bet: ${bet.side} on ${bet.token} â†’ ${outcome.toUpperCase()} (${actualProfit > 0 ? '+' : ''}${actualProfit}c)`);
   return bet;
 }
 
@@ -3159,7 +3159,7 @@ function simpleEdgeCheck(currentPrice, strikePrice, marketPrice, side, volatilit
   if (Math.abs(zScore) >= 1.5) {
     if (zScore > 0) {
       // Price is well ABOVE strike - YES (above) is very likely
-      // If YES is cheap (< 85Â¢), there's edge
+      // If YES is cheap (< 85c), there's edge
       result.isObviousBet = true;
       result.obviousSide = 'YES';
       // Estimate: if 1.5+ std devs above, ~93% chance it stays above
@@ -3167,7 +3167,7 @@ function simpleEdgeCheck(currentPrice, strikePrice, marketPrice, side, volatilit
       result.obviousEdge = (estimatedProb - marketPrice) * 100;
     } else {
       // Price is well BELOW strike - NO (below) is very likely
-      // If NO is cheap (< 85Â¢), there's edge
+      // If NO is cheap (< 85c), there's edge
       result.isObviousBet = true;
       result.obviousSide = 'NO';
       const estimatedProb = normalCDF(-zScore);  // Prob of staying below
@@ -3315,7 +3315,7 @@ function syncKalshiPositionsToBetHistory(userState, positions, userId = null) {
     userBetHistory.push(syntheticBet);
     existingTickers.add(pos.ticker);
     syncedCount++;
-    console.log(`ðŸ”„ Synced position: ${pos.ticker} | ${contracts} contracts @ ${pos.average_price || '?'}Â¢ | exposure: $${(totalCost / 100).toFixed(2)}`);
+    console.log(`ðŸ”„ Synced position: ${pos.ticker} | ${contracts} contracts @ ${pos.average_price || '?'}c | exposure: $${(totalCost / 100).toFixed(2)}`);
   }
 
   if (syncedCount > 0) {
@@ -4339,7 +4339,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
   let avgCost = position.average_price || 0; // In cents
   if (avgCost === 0 && position.market_exposure && contracts > 0) {
     avgCost = Math.round(position.market_exposure / contracts);
-    console.log(`[TakeProfit] ${ticker}: Using market_exposure fallback for avgCost: ${avgCost}Â¢`);
+    console.log(`[TakeProfit] ${ticker}: Using market_exposure fallback for avgCost: ${avgCost}c`);
   }
 
   if (contracts === 0 || avgCost === 0) {
@@ -4361,20 +4361,20 @@ async function evaluateTakeProfit(position, userConfig = null) {
     const oppositeBid = side === 'yes' ? orderbook.bestNoBid : orderbook.bestYesBid;
     if (oppositeAsk && oppositeAsk > 0) {
       currentBid = 100 - oppositeAsk;
-      console.log(`[StopLoss] ${ticker}: No ${side} bid â€” inferred ${currentBid}Â¢ from opposite ask (${oppositeAsk}Â¢)`);
+      console.log(`[StopLoss] ${ticker}: No ${side} bid â€” inferred ${currentBid}c from opposite ask (${oppositeAsk}c)`);
     } else if (oppositeBid && oppositeBid > 0) {
       currentBid = 100 - oppositeBid;
-      console.log(`[StopLoss] ${ticker}: No ${side} bid â€” inferred ${currentBid}Â¢ from opposite bid (${oppositeBid}Â¢)`);
+      console.log(`[StopLoss] ${ticker}: No ${side} bid â€” inferred ${currentBid}c from opposite bid (${oppositeBid}c)`);
     } else {
       console.log(`[StopLoss] ${ticker}: No bids on either side â€” skipping (no liquidity)`);
       return { shouldExit: false, reason: 'No liquidity â€” no bids on either side of orderbook' };
     }
-    // Clamp inferred price to at least 1Â¢
+    // Clamp inferred price to at least 1c
     if (currentBid < 1) currentBid = 1;
   }
 
   // Calculate current profit WITH KALSHI FEES
-  // Kalshi charges taker fee on sells: ceil(0.07 Ã— contracts Ã— price Ã— (1 - price)), capped at 2Â¢/contract
+  // Kalshi charges taker fee on sells: ceil(0.07 Ã— contracts Ã— price Ã— (1 - price)), capped at 2c/contract
   const sellPrice = currentBid / 100; // Convert to dollars for fee calc
   const sellFeePerContract = Math.min(0.02, Math.ceil(0.07 * sellPrice * (1 - sellPrice) * 100) / 100);
   const totalSellFee = Math.round(sellFeePerContract * contracts * 100); // In cents
@@ -4389,7 +4389,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
   const profitPercent = ((netProceedsAfterSell - totalCostWithFees) / totalCostWithFees) * 100;
 
   // Log position status for debugging
-  console.log(`[StopLoss] ${ticker}: avgCost=${avgCost}Â¢, bid=${currentBid}Â¢, profit=${profitPercent.toFixed(1)}%`);
+  console.log(`[StopLoss] ${ticker}: avgCost=${avgCost}c, bid=${currentBid}c, profit=${profitPercent.toFixed(1)}%`);
 
   // Get market for stop-loss calculations (needed before stop-loss check)
   const marketsForStopLoss = marketCache.data || [];
@@ -4595,11 +4595,11 @@ async function evaluateTakeProfit(position, userConfig = null) {
   const activeMonitoring = cfg.activeMonitoring || {};
 
   // 1. EASY PROFIT - Take "free money" on high-confidence positions
-  // If we bought at 75-85Â¢ (high implied probability), take smaller profits
+  // If we bought at 75-85c (high implied probability), take smaller profits
   // BUT: Don't sell too early - wait for time pressure OR higher profit to justify fees
-  // Kalshi fees (~2-3Â¢ round trip) eat into small profits significantly
+  // Kalshi fees (~2-3c round trip) eat into small profits significantly
   const easyProfitEnabled = activeMonitoring.easyProfitEnabled !== false; // Default true
-  const easyProfitMinPrice = activeMonitoring.easyProfitMinPrice || 75;   // 75Â¢ = 75% implied prob
+  const easyProfitMinPrice = activeMonitoring.easyProfitMinPrice || 75;   // 75c = 75% implied prob
   const easyProfitThreshold = activeMonitoring.easyProfitThreshold || 12; // Take 12%+ profit (accounts for fees)
   const easyProfitEarlyThreshold = 18; // If taking early (>5min left), need higher profit to justify fees
 
@@ -4614,11 +4614,11 @@ async function evaluateTakeProfit(position, userConfig = null) {
     // B) Early (>5 min): Need higher profit (18%+) to justify fees and opportunity cost
     if (timeRemainingMin !== null && timeRemainingMin < 5 && profitPercent >= easyProfitThreshold) {
       shouldExit = true;
-      exitReason = `EASY PROFIT: High-confidence (${avgCost}Â¢) at +${profitPercent.toFixed(1)}% with ${timeRemainingMin.toFixed(1)}min left - securing gains`;
+      exitReason = `EASY PROFIT: High-confidence (${avgCost}c) at +${profitPercent.toFixed(1)}% with ${timeRemainingMin.toFixed(1)}min left - securing gains`;
     } else if (profitPercent >= easyProfitEarlyThreshold) {
       // Higher profit justifies early exit even with fees
       shouldExit = true;
-      exitReason = `EASY PROFIT: High-confidence (${avgCost}Â¢) at +${profitPercent.toFixed(1)}% - profit high enough to justify fees`;
+      exitReason = `EASY PROFIT: High-confidence (${avgCost}c) at +${profitPercent.toFixed(1)}% - profit high enough to justify fees`;
     }
   }
 
@@ -4636,7 +4636,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
   // 4. CLASSIC EV COMPARISON (when profit meets base threshold)
   else if (!shouldExit && profitPercent >= baseMinProfit && evExit > adjustedEvHold) {
     shouldExit = true;
-    exitReason = `EV exit (${evExit.toFixed(0)}Â¢) > EV hold (${adjustedEvHold.toFixed(0)}Â¢)`;
+    exitReason = `EV exit (${evExit.toFixed(0)}c) > EV hold (${adjustedEvHold.toFixed(0)}c)`;
   }
 
   // 5. MOMENTUM REVERSAL OVERRIDE
@@ -4662,7 +4662,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
         console.log(`[TakeProfit] ${ticker}: High prob (${(probWin*100).toFixed(0)}%) with <3min left - letting it ride`);
       } else if (probWin >= 0.60 && evHold > evExit * 1.5) {
         // Medium-high prob with much better EV hold - also let ride
-        console.log(`[TakeProfit] ${ticker}: ${(probWin*100).toFixed(0)}% prob, EV hold (${evHold.toFixed(0)}Â¢) >> EV exit (${evExit.toFixed(0)}Â¢) - holding`);
+        console.log(`[TakeProfit] ${ticker}: ${(probWin*100).toFixed(0)}% prob, EV hold (${evHold.toFixed(0)}c) >> EV exit (${evExit.toFixed(0)}c) - holding`);
       } else {
         // Lower probability or EV doesn't favor holding - take the profit
         shouldExit = true;
@@ -4741,7 +4741,7 @@ async function executeTakeProfitExit(position, analysis, userConfig = null, user
     console.log(`   ðŸ“Š ${position.ticker}`);
     console.log(`   ðŸ’µ Profit: ${analysis.profitPercent.toFixed(1)}% | Net: $${(analysis.netProfit/100).toFixed(2)}`);
     console.log(`   ðŸ“ˆ Urgency: ${analysis.urgencyScore}/100`);
-    console.log(`   ðŸ“‰ EV exit: ${analysis.evExit?.toFixed(0) || '?'}Â¢ vs EV hold: ${analysis.evHold?.toFixed(0) || '?'}Â¢`);
+    console.log(`   ðŸ“‰ EV exit: ${analysis.evExit?.toFixed(0) || '?'}c vs EV hold: ${analysis.evHold?.toFixed(0) || '?'}c`);
     if (analysis.momentum) {
       console.log(`   ðŸ”„ Momentum: ${analysis.momentum.direction} (${(analysis.momentum.strength*100).toFixed(0)}%)`);
     }
@@ -4760,14 +4760,14 @@ async function executeTakeProfitExit(position, analysis, userConfig = null, user
     // Place sell order at current bid (or slightly below for faster fill)
     const sellPrice = Math.max(1, analysis.currentBid - 1); // 1 cent below bid for faster fill
 
-    // SAFETY: Refuse to sell at catastrophically low prices (e.g., empty orderbook â†’ 1Â¢)
+    // SAFETY: Refuse to sell at catastrophically low prices (e.g., empty orderbook â†’ 1c)
     // Exception: allow if < 1 minute to expiry (position genuinely expiring worthless)
     const minSellPrice = Math.max(1, Math.round(analysis.avgCost * 0.3));
     const nearExpiry = analysis.timeRemaining != null && analysis.timeRemaining < 60 * 1000;
     if (sellPrice < minSellPrice && !nearExpiry) {
-      console.log(`\nâš ï¸ [SELL GUARD] Refusing to sell ${ticker} at ${sellPrice}Â¢ â€” below 30% of entry (${analysis.avgCost}Â¢). Min sell: ${minSellPrice}Â¢`);
+      console.log(`\nâš ï¸ [SELL GUARD] Refusing to sell ${ticker} at ${sellPrice}c â€” below 30% of entry (${analysis.avgCost}c). Min sell: ${minSellPrice}c`);
       console.log(`   This likely means the orderbook is empty/thin. Position may still be worth more.`);
-      return { executed: false, reason: `Sell price ${sellPrice}Â¢ too far below entry ${analysis.avgCost}Â¢ (floor: ${minSellPrice}Â¢)` };
+      return { executed: false, reason: `Sell price ${sellPrice}c too far below entry ${analysis.avgCost}c (floor: ${minSellPrice}c)` };
     }
 
     const orderRequest = {
@@ -4786,7 +4786,7 @@ async function executeTakeProfitExit(position, analysis, userConfig = null, user
     }
 
     console.log(`\nðŸ’° [TakeProfit] EXECUTING EXIT:`);
-    console.log(`   ðŸ“Š ${ticker} | ${contracts} contracts @ ${sellPrice}Â¢`);
+    console.log(`   ðŸ“Š ${ticker} | ${contracts} contracts @ ${sellPrice}c`);
     console.log(`   ðŸ’µ Locking in ${analysis.profitPercent.toFixed(1)}% profit ($${(analysis.netProfit/100).toFixed(2)})`);
     console.log(`   ðŸ“ˆ Urgency score: ${analysis.urgencyScore}/100`);
     console.log(`   Order: ${JSON.stringify(orderRequest)}`);
@@ -4797,7 +4797,7 @@ async function executeTakeProfitExit(position, analysis, userConfig = null, user
       const filledCount = response.order.filled_count || 0;
       const fillPrice = response.order.average_fill_price || sellPrice;
 
-      console.log(`   âœ… Order ${response.order.order_id}: ${filledCount}/${contracts} filled @ ${fillPrice}Â¢`);
+      console.log(`   âœ… Order ${response.order.order_id}: ${filledCount}/${contracts} filled @ ${fillPrice}c`);
 
       if (filledCount > 0) {
         const actualProfit = (fillPrice - analysis.avgCost) * filledCount;
@@ -5792,7 +5792,7 @@ app.post('/api/bet', async (req, res) => {
     if (count < 1) {
       return res.status(400).json({
         success: false,
-        error: `Contract price too high (${priceCents}Â¢). Max price: 99Â¢`
+        error: `Contract price too high (${priceCents}c). Max price: 99c`
       });
     }
 
@@ -5804,7 +5804,7 @@ app.post('/api/bet', async (req, res) => {
       return res.status(400).json({ success: false, error: `Bet blocked: ${validation.reason}` });
     }
 
-    console.log(`Bet: ${ticker} | ${side} | price=${priceCents}Â¢ | count=${count} | total=${totalCost}Â¢`);
+    console.log(`Bet: ${ticker} | ${side} | price=${priceCents}c | count=${count} | total=${totalCost}c`);
 
     const betRecord = {
       id: Date.now().toString(),
@@ -5886,7 +5886,7 @@ app.post('/api/bet', async (req, res) => {
       orderRequest.no_price = fillPrice;
     }
 
-    console.log(`Placing order (ask: ${priceCents}Â¢, bid: ${fillPrice}Â¢):`, JSON.stringify(orderRequest));
+    console.log(`Placing order (ask: ${priceCents}c, bid: ${fillPrice}c):`, JSON.stringify(orderRequest));
 
     try {
       // Use userConfig for authentication
@@ -6312,7 +6312,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       orderRequest.no_price = fillPrice;
     }
 
-    console.log(`Auto-bet placing order (ask: ${priceCents}Â¢, bid: ${fillPrice}Â¢):`, JSON.stringify(orderRequest));
+    console.log(`Auto-bet placing order (ask: ${priceCents}c, bid: ${fillPrice}c):`, JSON.stringify(orderRequest));
 
     try {
       const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest, userConfig);
@@ -6743,7 +6743,7 @@ async function runAutoBet(userId = null) {
     if (opportunities.length > 0) {
       console.log(`   ðŸŽ¯ Top empirical opportunities:`);
       opportunities.slice(0, 3).forEach(m => {
-        console.log(`      - ${m.title}: signal=${m.signalStrength} | win=${m.winProbability}% @ ${m.marketPriceCents}Â¢ | edge=${m.edge?.toFixed(1)}% | regime=${m.regime}`);
+        console.log(`      - ${m.title}: signal=${m.signalStrength} | win=${m.winProbability}% @ ${m.marketPriceCents}c | edge=${m.edge?.toFixed(1)}% | regime=${m.regime}`);
       });
     }
 
@@ -6789,7 +6789,7 @@ async function runAutoBet(userId = null) {
     console.log(`\nðŸ’° BEST EMPIRICAL OPPORTUNITY [${category.toUpperCase()}]:`);
     console.log(`   ${best.title}`);
     console.log(`   ðŸ“Š Signal Strength: ${best.signalStrength}/100`);
-    console.log(`   Side: ${best.betSide} @ ${best.marketPriceCents}Â¢ | Win rate: ${best.winProbability}% (empirical)`);
+    console.log(`   Side: ${best.betSide} @ ${best.marketPriceCents}c | Win rate: ${best.winProbability}% (empirical)`);
     console.log(`   Current: $${best.currentPrice?.toFixed(2) || 'N/A'} | Strike: $${best.strikePrice?.toFixed(2) || 'N/A'}`);
     console.log(`   Distance: ${best.absDistance?.toFixed(2)}% from strike | Regime: ${best.regime}`);
     console.log(`   Edge: +${best.edge?.toFixed(1)}% (after fees) | Sample size: ${best.sampleSize}`);
@@ -6876,9 +6876,9 @@ async function runAutoBet(userId = null) {
 
     // Guard against extreme prices
     if (priceCents <= 1 || priceCents >= 99) {
-      console.log(`âš ï¸ Skipping extreme price ${priceCents}Â¢`);
+      console.log(`âš ï¸ Skipping extreme price ${priceCents}c`);
       lastScanStatus.status = 'price_extreme';
-      lastScanStatus.statusMessage = `Price ${priceCents}Â¢ too extreme`;
+      lastScanStatus.statusMessage = `Price ${priceCents}c too extreme`;
       console.log('========================================\n');
       return;
     }
@@ -6893,8 +6893,8 @@ async function runAutoBet(userId = null) {
     if (count < 1) {
       console.log('âš ï¸ Bet size too small for risk budget');
       lastScanStatus.status = 'bet_too_small';
-      lastScanStatus.statusMessage = `Bet size too small (price ${priceCents}Â¢ > budget $${(MAX_BET_CENTS/100).toFixed(2)})`;
-      lastScanStatus.blockedReasons.push(`Budget too low for ${priceCents}Â¢ contract`);
+      lastScanStatus.statusMessage = `Bet size too small (price ${priceCents}c > budget $${(MAX_BET_CENTS/100).toFixed(2)})`;
+      lastScanStatus.blockedReasons.push(`Budget too low for ${priceCents}c contract`);
       return;
     }
 
@@ -6978,13 +6978,13 @@ async function runAutoBet(userId = null) {
 
       console.log(`\nðŸŽ° SIMULATED BET PLACED:`);
       console.log(`   ${betRecord.side.toUpperCase()} on ${assetName}`);
-      console.log(`   ${count} contracts @ ${priceCents}Â¢ = $${(betRecord.totalCost/100).toFixed(2)}`);
+      console.log(`   ${count} contracts @ ${priceCents}c = $${(betRecord.totalCost/100).toFixed(2)}`);
       console.log(`   Edge: +${best.edge.toFixed(1)}% | Win prob: ${best.winProbability}%`);
       console.log(`   New balance: $${(userConfig.bankroll/100).toFixed(2)}`);
       console.log('========================================\n');
 
       lastScanStatus.status = 'bet_placed';
-      lastScanStatus.statusMessage = `Simulated ${best.betSide} on ${assetName} (${count}x @ ${priceCents}Â¢)`;
+      lastScanStatus.statusMessage = `Simulated ${best.betSide} on ${assetName} (${count}x @ ${priceCents}c)`;
       lastScanStatus.lastBet = {
         ticker: best.ticker,
         side: best.betSide,
@@ -7021,7 +7021,7 @@ async function runAutoBet(userId = null) {
     } else {
       orderRequest.no_price = fillPrice;
     }
-    console.log(`   Order (ask: ${priceCents}Â¢, bid: ${fillPrice}Â¢): ${JSON.stringify(orderRequest)}`);
+    console.log(`   Order (ask: ${priceCents}c, bid: ${fillPrice}c): ${JSON.stringify(orderRequest)}`);
 
     const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest, userConfig);
     console.log(`   Response: ${JSON.stringify(orderResponse)}`);
@@ -7102,13 +7102,13 @@ async function runAutoBet(userId = null) {
 
     console.log(`\nâœ… REAL BET FILLED:`);
     console.log(`   ${betRecord.side.toUpperCase()} on ${best.cryptoType || best.assetType}`);
-    console.log(`   ${filledCount} contracts @ ${betRecord.avgPrice}Â¢`);
+    console.log(`   ${filledCount} contracts @ ${betRecord.avgPrice}c`);
     console.log(`   Edge: +${best.edge.toFixed(1)}% | New balance: $${(userConfig.bankroll/100).toFixed(2)}`);
     console.log('========================================\n');
 
     // assetName already defined above
     lastScanStatus.status = 'bet_placed';
-    lastScanStatus.statusMessage = `LIVE ${best.betSide} on ${assetName} (${filledCount}x @ ${betRecord.avgPrice}Â¢)`;
+    lastScanStatus.statusMessage = `LIVE ${best.betSide} on ${assetName} (${filledCount}x @ ${betRecord.avgPrice}c)`;
     lastScanStatus.lastBet = {
       ticker: best.ticker,
       side: best.betSide,
@@ -7400,7 +7400,7 @@ function _detectVolatilityRegimeInner(token, priceHistory = null) {
 
   // Get token-specific volatility thresholds from learned data
   const tokenData = learnedParams.byToken[token];
-  const avgVol = tokenData?.avgSettlementDistance || 0.5;
+  const avgVol = tokenData?.avgSettlementDistance || DEFAULT_EMPIRICAL_TABLES.byToken[token]?.avgSettlementDistance || 0.3;
 
   // Classify regime based on current vs historical volatility
   if (volatility < avgVol * 0.7) {
@@ -7682,21 +7682,21 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const marketPriceCents = Math.round(marketPrice * 100);
 
   // DEBUG: Log price values to trace mismatch
-  console.log(`    ðŸ“Š ${token} prices: yesAsk=${(parsed.yesAsk*100).toFixed(0)}Â¢ noAsk=${(parsed.noAsk*100).toFixed(0)}Â¢ | betSide=${betSide} | marketPrice=${marketPriceCents}Â¢`);
+  console.log(`    ðŸ“Š ${token} prices: yesAsk=${(parsed.yesAsk*100).toFixed(0)}c noAsk=${(parsed.noAsk*100).toFixed(0)}c | betSide=${betSide} | marketPrice=${marketPriceCents}c`);
 
-  // Check price window - allow up to 97Â¢ for high-confidence near-expiry bets
+  // Check price window - allow up to 97c for high-confidence near-expiry bets
   const withinPriceWindow = marketPriceCents >= (entryWindows.priceMin || 40) &&
                             marketPriceCents <= (entryWindows.priceMax || 95);
 
   // STALE MOMENTUM: Flag for soft penalty instead of hard block
-  // Markets >90Â¢ with >5min left are likely priced in, but edge calc handles this naturally
+  // Markets >90c with >5min left are likely priced in, but edge calc handles this naturally
   const isStaleMomentum = marketPriceCents > 90 && timeRemaining > 5;
 
   // EDGE CALCULATION: Use distance-based empirical win rate vs market implied probability
   // Our win rate comes from how often the favored side wins at this distance from strike
   // Market price reflects what others are willing to pay - our edge is when we have better data
 
-  const marketImpliedProb = marketPrice * 100; // Market price as probability (e.g., 80Â¢ = 80%)
+  const marketImpliedProb = marketPrice * 100; // Market price as probability (e.g., 80c = 80%)
 
   // Use our empirical win rate based on distance from strike
   // This is the key insight: at 0.5% from strike, favored side wins ~88%, not what market implies
@@ -7737,7 +7737,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
         // Determine blend weight based on vol regime
         const tokenData = learnedParams.byToken?.[token];
-        const typicalVol = tokenData?.avgSettlementDistance || 0.5;
+        const typicalVol = tokenData?.avgSettlementDistance || DEFAULT_EMPIRICAL_TABLES.byToken[token]?.avgSettlementDistance || 0.3;
         const currentVol = (regime.volatility !== undefined) ? regime.volatility : (stdDev * 100);
         const volRatio = currentVol / Math.max(typicalVol, 0.01);
 
@@ -7816,10 +7816,10 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   console.log(`    ðŸ“Š Edge calc: empirical=${empirical.winRate.toFixed(1)}% vs market=${marketImpliedProb.toFixed(0)}% @ distance=${absDistance.toFixed(2)}%`);
 
   // DYNAMIC FEE CALCULATION - Kalshi formula: ceil(0.07 Ã— contracts Ã— price Ã— (1-price))
-  // Fee is capped at 2Â¢ per contract. For edge calculation, use per-contract fee as percentage.
-  // At 50Â¢: fee = 0.07 * 0.50 * 0.50 = 1.75% of contract value
-  // At 65Â¢: fee = 0.07 * 0.65 * 0.35 = 1.59% of contract value
-  // At 75Â¢: fee = 0.07 * 0.75 * 0.25 = 1.31% of contract value
+  // Fee is capped at 2c per contract. For edge calculation, use per-contract fee as percentage.
+  // At 50c: fee = 0.07 * 0.50 * 0.50 = 1.75% of contract value
+  // At 65c: fee = 0.07 * 0.65 * 0.35 = 1.59% of contract value
+  // At 75c: fee = 0.07 * 0.75 * 0.25 = 1.31% of contract value
   const feePerContract = Math.min(2, Math.ceil(7 * marketPrice * (1 - marketPrice))) / 100; // in cents, then to dollars
   const feePct = (feePerContract / marketPrice) * 100; // fee as % of bet cost
 
@@ -7830,7 +7830,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     const spread = betSide === 'YES' ? orderbook.yesSpread : orderbook.noSpread;
     if (spread && spread > 0 && spread < 50) {
       // Spread is in cents - convert to % of price for edge calculation
-      // Half spread paid on entry. Example: 4Â¢ spread at 50Â¢ = (4/2)/50 * 100 = 4%
+      // Half spread paid on entry. Example: 4c spread at 50c = (4/2)/50 * 100 = 4%
       spreadPenalty = (spread / 2) / marketPrice;
     }
   }
@@ -7870,7 +7870,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   }
 
   if (!withinPriceWindow) {
-    reasons.push(`Price ${marketPriceCents}Â¢ outside optimal window [${entryWindows.priceMin}-${entryWindows.priceMax}Â¢]`);
+    reasons.push(`Price ${marketPriceCents}c outside optimal window [${entryWindows.priceMin}-${entryWindows.priceMax}c]`);
   }
 
   // Apply soft penalties for distance/time instead of hard rejections
@@ -7881,9 +7881,11 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     const dMin = entryWindows.distanceMin || 0.1;
     const dMax = entryWindows.distanceMax || 5.0;
     const farOutside = absDistance < dMin * 0.5 || absDistance > dMax * 1.5;
-    const penalty = farOutside ? -20 : -10;
+    // During low vol, small distances are expected - halve the penalty
+    const basePenalty = farOutside ? -20 : -10;
+    const penalty = regime.regime === 'low' ? Math.round(basePenalty / 2) : basePenalty;
     adjustedSignalStrength += penalty;
-    windowPenalties.push(`distance ${penalty}pts`);
+    windowPenalties.push(`distance ${penalty}pts${regime.regime === 'low' ? ' (low-vol halved)' : ''}`);
   }
 
   if (!withinTimeWindow) {
@@ -7913,12 +7915,15 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     console.log(`    ðŸ“‰ Window penalties: ${windowPenalties.join(', ')} â†’ signal ${signalStrength}â†’${adjustedSignalStrength}`);
   }
 
-  if (adjustedSignalStrength < (rules.minSignalStrength || 55)) {
-    reasons.push(`Signal strength ${adjustedSignalStrength} < ${rules.minSignalStrength || 55} (base: ${signalStrength}, penalties: ${windowPenalties.join(', ') || 'none'})`);
+  // Low vol = more predictable outcomes, lower signal threshold needed
+  const baseMinSignal = rules.minSignalStrength || 55;
+  const effectiveMinSignal = regime.regime === 'low' ? Math.max(30, baseMinSignal - 15) : baseMinSignal;
+  if (adjustedSignalStrength < effectiveMinSignal) {
+    reasons.push(`Signal ${adjustedSignalStrength} < ${effectiveMinSignal}${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
   }
 
   // Final decision
-  const shouldBet = reasons.length === 0 && adjustedSignalStrength >= (rules.minSignalStrength || 55);
+  const shouldBet = reasons.length === 0 && adjustedSignalStrength >= effectiveMinSignal;
 
   // Fee in cents for display
   const feeCents = calculateKalshiFee(1, marketPrice);
