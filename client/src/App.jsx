@@ -559,15 +559,10 @@ function App() {
   // New: Risk tracking and market filtering
   const [risk, setRisk] = useState({
     current: 0,
-    max: 1500,
-    remaining: 1500,
-    currentDollars: '0.00',
-    maxDollars: '15.00'
+    currentDollars: '0.00'
   })
   const [riskSettings, setRiskSettings] = useState({
-    maxPerBet: 500,
-    maxPerTokenPerCycle: 500,
-    maxTotal: 1500
+    maxPerTokenPerCycle: 500
   })
   // Profile system removed - Kalshi credentials tied directly to user account
   const [quoteIndex, setQuoteIndex] = useState(Math.floor(Math.random() * tradingQuotes.length))
@@ -1124,12 +1119,6 @@ function App() {
       const data = await res.json()
       if (data.success && data.riskLimits) {
         setRiskSettings(data.riskLimits)
-        const totalMax = data.riskLimits.maxTotal || 1500
-        setRisk(prev => ({
-          ...prev,
-          max: totalMax,
-          maxDollars: (totalMax / 100).toFixed(2)
-        }))
       }
     } catch (err) {
       console.error('Error fetching risk settings:', err)
@@ -1170,12 +1159,6 @@ function App() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       if (data.success) {
-        const totalMax = data.riskLimits.maxTotal || 1500
-        setRisk(prev => ({
-          ...prev,
-          max: totalMax,
-          maxDollars: (totalMax / 100).toFixed(2)
-        }))
         setRiskSettings(data.riskLimits)
         // Refresh opportunities to update exposure bar
         await fetchOpportunities()
@@ -1360,14 +1343,8 @@ function App() {
           </div>
           <div className="risk-display-sidebar">
             <div className="risk-header">
-              <span className="risk-label">Exposure</span>
-              <span className="risk-value">${risk.currentDollars || '0.00'} / ${risk.maxDollars || '15.00'}</span>
-            </div>
-            <div className="risk-bar-small">
-              <div
-                className="risk-fill-small"
-                style={{ width: `${Math.min(100, ((risk.current || 0) / (risk.max || 1500)) * 100)}%` }}
-              ></div>
+              <span className="risk-label">Positions</span>
+              <span className="risk-value">{risk.positionCount || 0}</span>
             </div>
           </div>
           <div className={`connection-status ${isAuthenticated ? 'connected' : 'simulated'}`}>
@@ -1499,28 +1476,6 @@ function App() {
               <div className="risk-card">
                 <div className="risk-card-header">
                   <span className="risk-card-title">Risk Exposure</span>
-                  <span className={`risk-card-status ${
-                    (risk.current / risk.max) > 0.9 ? 'danger' :
-                    (risk.current / risk.max) > 0.7 ? 'warning' : ''
-                  }`}>
-                    {(risk.current / risk.max) > 0.9 ? 'AT LIMIT' :
-                     (risk.current / risk.max) > 0.7 ? 'HIGH' : 'SAFE'}
-                  </span>
-                </div>
-                <div className="risk-exposure-bar">
-                  <div className="risk-exposure-label">
-                    <span>Current: ${risk.currentDollars || '0.00'}</span>
-                    <span>Max: ${risk.maxDollars || '15.00'}</span>
-                  </div>
-                  <div className="risk-exposure-track">
-                    <div
-                      className={`risk-exposure-fill ${
-                        (risk.current / risk.max) > 0.9 ? 'danger' :
-                        (risk.current / risk.max) > 0.7 ? 'warning' : ''
-                      }`}
-                      style={{ width: `${Math.min(100, (risk.current / risk.max) * 100)}%` }}
-                    />
-                  </div>
                 </div>
                 <div className="risk-tokens">
                   {['BTC', 'ETH', 'SOL'].map(token => {
@@ -1541,23 +1496,6 @@ function App() {
                     <span className="risk-token-value">{risk.positionCount || 0}</span>
                   </div>
                 </div>
-                {risk.rollingSpend > 0 && (
-                  <div className="risk-exposure-bar" style={{ marginTop: '6px' }}>
-                    <div className="risk-exposure-label">
-                      <span>2hr Spend: ${risk.rollingSpendDollars || '0.00'}</span>
-                      <span>Cap: ${risk.rollingSpendCapDollars || '0.00'}</span>
-                    </div>
-                    <div className="risk-exposure-track">
-                      <div
-                        className={`risk-exposure-fill ${
-                          (risk.rollingSpend / (risk.rollingSpendCap || 1)) > 0.9 ? 'danger' :
-                          (risk.rollingSpend / (risk.rollingSpendCap || 1)) > 0.7 ? 'warning' : ''
-                        }`}
-                        style={{ width: `${Math.min(100, (risk.rollingSpend / (risk.rollingSpendCap || 1)) * 100)}%` }}
-                      />
-                    </div>
-                  </div>
-                )}
               </div>
 
               {/* Quick Actions */}
@@ -1884,12 +1822,8 @@ function App() {
                       <span className="settings-value">{formatCurrency(balance)}</span>
                     </div>
                     <div className="settings-item">
-                      <span className="settings-label">Max per Bet</span>
-                      <span className="settings-value">${((riskSettings.maxPerBet || 200) / 100).toFixed(2)}</span>
-                    </div>
-                    <div className="settings-item">
-                      <span className="settings-label">Max Exposure</span>
-                      <span className="settings-value">${((riskSettings.maxTotal || 1500) / 100).toFixed(2)}</span>
+                      <span className="settings-label">Per Token / Cycle</span>
+                      <span className="settings-value">${((riskSettings.maxPerTokenPerCycle || 500) / 100).toFixed(2)}</span>
                     </div>
                     <div className="settings-item">
                       <span className="settings-label">Min Edge</span>
@@ -1917,26 +1851,11 @@ function App() {
                     <div className="risk-pool-settings">
                       <h4>Exposure Limits</h4>
                       <DollarStepper
-                        label="Max per bet"
-                        value={Math.round((riskSettings.maxPerBet || 200) / 100)}
-                        onChange={(v) => updateRiskSettings('maxPerBet', v * 100)}
-                        min={1}
-                        max={10}
-                      />
-                      <DollarStepper
                         label="Per token / cycle"
                         value={Math.round((riskSettings.maxPerTokenPerCycle || 500) / 100)}
                         onChange={(v) => updateRiskSettings('maxPerTokenPerCycle', v * 100)}
                         min={2}
                         max={50}
-                      />
-                      <h4 style={{ marginTop: '16px' }}>Total Exposure</h4>
-                      <DollarStepper
-                        label="Max Exposure"
-                        value={Math.round((riskSettings.maxTotal || 1500) / 100)}
-                        onChange={(v) => updateRiskSettings('maxTotal', v * 100)}
-                        min={5}
-                        max={100}
                       />
                     </div>
                   </div>
@@ -2281,16 +2200,9 @@ function App() {
             </span>
           </div>
           <div className="mobile-exposure-right">
-            <span className="mobile-exposure-label">Exposure</span>
-            <div className="mobile-exposure-bar">
-              <div
-                className="mobile-exposure-fill"
-                style={{ width: `${Math.min(100, ((risk.current || 0) / (risk.max || 1500)) * 100)}%` }}
-              ></div>
-            </div>
+            <span className="mobile-exposure-label">Positions</span>
             <span className="mobile-exposure-value">
-              ${risk.currentDollars || '0.00'}
-              {risk.rollingSpend > 0 && <span className="risk-token-rolling"> (${risk.rollingSpendDollars} 2hr)</span>}
+              {risk.positionCount || 0}
             </span>
           </div>
         </div>
