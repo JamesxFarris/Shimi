@@ -4809,6 +4809,65 @@ body {
   opacity: 0.8;
 }
 
+/* Cycle Budget Bar */
+.cycle-budget-bar {
+  margin-top: calc(10px * var(--base-scale));
+  padding-top: calc(10px * var(--base-scale));
+  border-top: 1px solid var(--border-color);
+}
+
+.cycle-budget-labels {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: calc(6px * var(--base-scale));
+}
+
+.cycle-budget-title {
+  font-family: var(--font-display);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.cycle-budget-value {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--neon-cyan);
+}
+
+.cycle-budget-value.warning {
+  color: var(--neon-yellow);
+}
+
+.cycle-budget-value.danger {
+  color: var(--accent-red);
+}
+
+.cycle-budget-track {
+  height: 6px;
+  background: var(--bg-elevated);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.cycle-budget-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--neon-green), var(--neon-cyan));
+  transition: width 0.4s ease;
+}
+
+.cycle-budget-fill.warning {
+  background: linear-gradient(90deg, var(--neon-yellow), var(--neon-orange));
+}
+
+.cycle-budget-fill.danger {
+  background: linear-gradient(90deg, var(--accent-red), var(--neon-magenta));
+}
+
 @media (max-width: 768px) {
   .sidebar {
     display: none;

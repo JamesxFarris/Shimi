@@ -67,6 +67,7 @@ const DEFAULT_CONFIG = {
   riskLimits: {
     maxPerTokenPerCycle: 500,   // $5.00 max per token per 15-min cycle
     maxPerMarket: 500,          // $5.00 max per single market ticker (caps scale-in accumulation)
+    maxTotalPerCycle: 1500,     // $15.00 max TOTAL across all tokens per 15-min cycle
   },
   // Scale-in settings: add to position when probability improves
   scaleIn: {
@@ -3472,6 +3473,37 @@ function getMaxPerTokenPerCycle(userConfig = null) {
   return cfg.riskLimits.maxPerTokenPerCycle || cfg.riskLimits.maxPerToken || 500; // Default $5.00
 }
 
+// Get max total spend across ALL tokens per 15-min cycle
+function getMaxTotalPerCycle(userConfig = null) {
+  const cfg = userConfig || config;
+  return cfg.riskLimits?.maxTotalPerCycle || 1500; // Default $15.00
+}
+
+// Get total rolling spend across ALL tokens in the cycle window
+function getRollingTotalSpend(userId = null, windowMs = CYCLE_WINDOW_MS) {
+  const cutoff = Date.now() - windowMs;
+
+  // In-memory tracker
+  const key = userId || 'default';
+  const entries = rollingSpendTracker.get(key) || [];
+  const memorySpend = entries.filter(e => e.timestamp > cutoff)
+    .reduce((sum, e) => sum + e.amount, 0);
+
+  // betHistory (source of truth)
+  const userState = userId ? userStates.get(userId) : null;
+  const userBetHistory = userState?.betHistory || betHistory;
+  const historySpend = computeRollingSpendFromHistory(userBetHistory, null, windowMs);
+
+  return Math.max(memorySpend, historySpend);
+}
+
+// Get remaining total budget for the cycle
+function getRemainingTotalBudget(userConfig = null, userId = null) {
+  const maxTotal = getMaxTotalPerCycle(userConfig);
+  const totalSpend = getRollingTotalSpend(userId, CYCLE_WINDOW_MS);
+  return Math.max(0, maxTotal - totalSpend);
+}
+
 // HARD CAP validation - ensures bet won't exceed ANY limit before placing
 // This is the final safety check to prevent exposure limit violations
 function validateBetWontExceedLimits(ticker, betCostCents, userState, userConfig, userId = null) {
@@ -3485,6 +3517,13 @@ function validateBetWontExceedLimits(ticker, betCostCents, userState, userConfig
     if (cycleSpend + betCostCents > maxPerCycle) {
       return { valid: false, reason: `Would exceed ${token} cycle limit: $${((cycleSpend + betCostCents)/100).toFixed(2)} > $${(maxPerCycle/100).toFixed(2)}` };
     }
+  }
+
+  // Check 1.5: Total cycle budget (umbrella across all tokens)
+  const maxTotalCycle = getMaxTotalPerCycle(userConfig);
+  const totalCycleSpend = getRollingTotalSpend(resolvedUserId, CYCLE_WINDOW_MS);
+  if (totalCycleSpend + betCostCents > maxTotalCycle) {
+    return { valid: false, reason: `Would exceed total cycle budget: $${((totalCycleSpend + betCostCents)/100).toFixed(2)} > $${(maxTotalCycle/100).toFixed(2)}` };
   }
 
   // Check 2: Per-market cap (scale-in accumulation limit)
@@ -5319,7 +5358,10 @@ app.get('/api/opportunities/all', async (req, res) => {
           ETH: getRollingSpendByToken(req.userId, 'ETH', CYCLE_WINDOW_MS),
           SOL: getRollingSpendByToken(req.userId, 'SOL', CYCLE_WINDOW_MS)
         },
-        rollingTokenCap: getMaxPerTokenPerCycle(userConfig)
+        rollingTokenCap: getMaxPerTokenPerCycle(userConfig),
+        maxTotalPerCycle: getMaxTotalPerCycle(userConfig),
+        totalCycleSpend: getRollingTotalSpend(req.userId, CYCLE_WINDOW_MS),
+        remainingTotalBudget: getRemainingTotalBudget(userConfig, req.userId)
       },
       opportunities: allOpportunities
     });
@@ -5413,7 +5455,7 @@ app.get('/api/settings/risk', (req, res) => {
 
 // Update risk settings - PER-USER
 app.post('/api/settings/risk', (req, res) => {
-  const { maxPerTokenPerCycle, maxPerToken } = req.body;
+  const { maxPerTokenPerCycle, maxPerToken, maxTotalPerCycle } = req.body;
 
   // Use per-user config
   const userConfig = req.userState?.config;
@@ -5433,6 +5475,10 @@ app.post('/api/settings/risk', (req, res) => {
   // Legacy: if client sends old maxPerToken, store as maxPerTokenPerCycle
   if (maxPerToken !== undefined && maxPerTokenPerCycle === undefined) {
     userConfig.riskLimits.maxPerTokenPerCycle = Math.max(200, Math.min(50000, parseInt(maxPerToken) || 500));
+  }
+  // Max total spend across all tokens per cycle (umbrella cap)
+  if (maxTotalPerCycle !== undefined) {
+    userConfig.riskLimits.maxTotalPerCycle = Math.max(200, Math.min(100000, parseInt(maxTotalPerCycle) || 1500));
   }
 
   console.log(`âš™ï¸ Risk settings updated for user ${req.userId}:`, JSON.stringify(userConfig.riskLimits));
@@ -5773,17 +5819,21 @@ app.post('/api/bet', async (req, res) => {
       });
     }
 
-    // Calculate bet size based on per-token-per-cycle limit
+    // Calculate bet size based on per-token-per-cycle limit AND total cycle budget
     const remainingTokenBudget = getRemainingTokenBudget(ticker, market.assetType, req.userState, userConfig, req.userId);
+    const remainingTotalBudget = getRemainingTotalBudget(userConfig, req.userId);
+    const effectiveBudget = Math.min(remainingTokenBudget, remainingTotalBudget);
     const maxPerTokenPerCycle = getMaxPerTokenPerCycle(userConfig);
 
-    const TARGET_BET_CENTS = remainingTokenBudget;
+    const TARGET_BET_CENTS = effectiveBudget;
 
-    if (remainingTokenBudget < priceCents) {
+    if (effectiveBudget < priceCents) {
       const token = getTokenFromTicker(ticker) || market.assetType || 'token';
+      const tokenLimit = remainingTokenBudget < priceCents;
+      const reason = tokenLimit ? `${token} token cycle limit` : 'total cycle budget';
       return res.status(400).json({
         success: false,
-        error: `Token cycle limit reached for ${token}. Only $${(remainingTokenBudget/100).toFixed(2)} remaining of $${(maxPerTokenPerCycle/100).toFixed(2)} per cycle.`
+        error: `Cycle limit reached (${reason}). Only $${(effectiveBudget/100).toFixed(2)} remaining.`
       });
     }
 
@@ -5858,7 +5908,10 @@ app.post('/api/bet', async (req, res) => {
             ETH: getRollingSpendByToken(req.userId, 'ETH', CYCLE_WINDOW_MS),
             SOL: getRollingSpendByToken(req.userId, 'SOL', CYCLE_WINDOW_MS)
           },
-          rollingTokenCap: getMaxPerTokenPerCycle(userConfig)
+          rollingTokenCap: getMaxPerTokenPerCycle(userConfig),
+          maxTotalPerCycle: getMaxTotalPerCycle(userConfig),
+          totalCycleSpend: getRollingTotalSpend(req.userId, CYCLE_WINDOW_MS),
+          remainingTotalBudget: getRemainingTotalBudget(userConfig, req.userId)
         }
       });
     }
@@ -5994,7 +6047,10 @@ app.post('/api/bet', async (req, res) => {
             ETH: getRollingSpendByToken(req.userId, 'ETH', CYCLE_WINDOW_MS),
             SOL: getRollingSpendByToken(req.userId, 'SOL', CYCLE_WINDOW_MS)
           },
-          rollingTokenCap: getMaxPerTokenPerCycle(userConfig)
+          rollingTokenCap: getMaxPerTokenPerCycle(userConfig),
+          maxTotalPerCycle: getMaxTotalPerCycle(userConfig),
+          totalCycleSpend: getRollingTotalSpend(req.userId, CYCLE_WINDOW_MS),
+          remainingTotalBudget: getRemainingTotalBudget(userConfig, req.userId)
         }
       });
 
@@ -6154,15 +6210,19 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
 
     const category = best.marketCategory || 'crypto';
     const remainingTokenBudget = getRemainingTokenBudget(best.ticker, best.assetType || best.cryptoType, req.userState, userConfig, req.userId);
+    const remainingTotalBudget = getRemainingTotalBudget(userConfig, req.userId);
+    const effectiveBudget = Math.min(remainingTokenBudget, remainingTotalBudget);
     console.log(`Auto-bet found [${category}]: ${best.title} | Win prob: ${best.winProbability}% | Side: ${best.betSide}`);
 
-    // Check per-token limit first
-    if (remainingTokenBudget < 10) {
+    // Check per-token limit AND total cycle budget
+    if (effectiveBudget < 10) {
       const token = getTokenFromTicker(best.ticker) || best.assetType || best.cryptoType || 'token';
-      console.log(`âš ï¸ Token cycle limit reached for ${token} - $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)} max per cycle`);
+      const tokenLimit = remainingTokenBudget < 10;
+      const reason = tokenLimit ? `${token} token cycle limit` : 'total cycle budget';
+      console.log(`Token limit reached: ${reason}`);
       return res.json({
         success: true,
-        message: `Token cycle limit reached for ${token}. Max $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)} per cycle.`,
+        message: `Cycle limit reached (${reason}). Token: ${(remainingTokenBudget/100).toFixed(2)}, Total: ${(remainingTotalBudget/100).toFixed(2)}`,
         bet: null,
         risk: getRiskByType(req.userState)
       });
@@ -6186,8 +6246,8 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       }
     }
 
-    // Cap bet at remaining token budget
-    const MAX_BET_CENTS = remainingTokenBudget;
+    // Cap bet at effective budget (min of token and total cycle budget)
+    const MAX_BET_CENTS = effectiveBudget;
 
     const priceCents = Math.round(best.betPrice * 100);
 
@@ -6288,7 +6348,10 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
             ETH: getRollingSpendByToken(req.userId, 'ETH', CYCLE_WINDOW_MS),
             SOL: getRollingSpendByToken(req.userId, 'SOL', CYCLE_WINDOW_MS)
           },
-          rollingTokenCap: getMaxPerTokenPerCycle(userConfig)
+          rollingTokenCap: getMaxPerTokenPerCycle(userConfig),
+          maxTotalPerCycle: getMaxTotalPerCycle(userConfig),
+          totalCycleSpend: getRollingTotalSpend(req.userId, CYCLE_WINDOW_MS),
+          remainingTotalBudget: getRemainingTotalBudget(userConfig, req.userId)
         }
       });
     }
@@ -6409,7 +6472,10 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
             ETH: getRollingSpendByToken(req.userId, 'ETH', CYCLE_WINDOW_MS),
             SOL: getRollingSpendByToken(req.userId, 'SOL', CYCLE_WINDOW_MS)
           },
-          rollingTokenCap: getMaxPerTokenPerCycle(userConfig)
+          rollingTokenCap: getMaxPerTokenPerCycle(userConfig),
+          maxTotalPerCycle: getMaxTotalPerCycle(userConfig),
+          totalCycleSpend: getRollingTotalSpend(req.userId, CYCLE_WINDOW_MS),
+          remainingTotalBudget: getRemainingTotalBudget(userConfig, req.userId)
         }
       });
     } catch (orderError) {
@@ -6544,11 +6610,18 @@ async function runAutoBet(userId = null) {
           console.log(`   ðŸ’µ ${token}: $${(exposure/100).toFixed(2)} exposure (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)})`);
         }
       }
-      const preTokenExposure = getExposureByToken(userState);
+      // Show rolling spend per token (actual budget tracking)
+      const rollingSpend = {
+        BTC: getRollingSpendByToken(userId, 'BTC', CYCLE_WINDOW_MS),
+        ETH: getRollingSpendByToken(userId, 'ETH', CYCLE_WINDOW_MS),
+        SOL: getRollingSpendByToken(userId, 'SOL', CYCLE_WINDOW_MS)
+      };
+      const totalSpend = rollingSpend.BTC + rollingSpend.ETH + rollingSpend.SOL;
       const maxPerCycle = getMaxPerTokenPerCycle(userConfig);
-      console.log(`ðŸ“Š Pre-bet token budgets: ${JSON.stringify(
-        Object.fromEntries(Object.entries(preTokenExposure).map(([k,v]) => [k, '$'+(v/100).toFixed(2)]))
-      )} | Cycle limit: $${(maxPerCycle/100).toFixed(2)}/token`);
+      const maxTotal = getMaxTotalPerCycle(userConfig);
+      console.log(`Pre-bet rolling spend (15min): ${JSON.stringify(
+        Object.fromEntries(Object.entries(rollingSpend).map(([k,v]) => [k, '$'+(v/100).toFixed(2)]))
+      )} | Total: $${(totalSpend/100).toFixed(2)}/$${(maxTotal/100).toFixed(2)} | Per-token limit: $${(maxPerCycle/100).toFixed(2)}`);
 
       // TAKE-PROFIT SCAN (Phase 5) - after positions loaded
       if (userConfig.takeProfitSettings?.enabled && userPortfolio.positions?.length > 0) {
@@ -6834,14 +6907,18 @@ async function runAutoBet(userId = null) {
 
     // Check per-token limit
     const remainingTokenBudget = getRemainingTokenBudget(best.ticker, best.assetType || best.cryptoType, userState, userConfig, userId);
+    const remainingTotalBudget = getRemainingTotalBudget(userConfig, userId);
+    const effectiveBudget = Math.min(remainingTokenBudget, remainingTotalBudget);
     const tokenName = getTokenFromTicker(best.ticker) || best.assetType || best.cryptoType || 'token';
-    if (remainingTokenBudget < 10) {
-      console.log(`âš ï¸ Token cycle limit reached for ${tokenName} ($${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)} max/cycle) - skipping...`);
+    if (effectiveBudget < 10) {
+      const tokenLimit = remainingTokenBudget < 10;
+      const reason = tokenLimit ? `${tokenName} token cycle limit` : 'total cycle budget';
+      console.log(`Token limit reached: ${reason}`);
       console.log('========================================\n');
 
       lastScanStatus.status = 'token_limit';
-      lastScanStatus.statusMessage = `Token cycle limit reached for ${tokenName}`;
-      lastScanStatus.blockedReasons.push(`${tokenName} cycle limit: $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)} max per cycle`);
+      lastScanStatus.statusMessage = `Cycle limit reached: ${reason}`;
+      lastScanStatus.blockedReasons.push(`${reason}: token=$${(remainingTokenBudget/100).toFixed(2)}, total=$${(remainingTotalBudget/100).toFixed(2)}`);
       return;
     }
 
@@ -6868,9 +6945,11 @@ async function runAutoBet(userId = null) {
                            best.signalStrength >= 75 ? 'ðŸ“Š GOOD SIGNAL' : 'âš ï¸ MODERATE SIGNAL';
     console.log(`   ${confidenceLevel}`);
     console.log(`   Token budget for ${tokenName}: $${(remainingTokenBudget/100).toFixed(2)} remaining`);
+    console.log(`   Total cycle budget: $${(getRemainingTotalBudget(userConfig, userId)/100).toFixed(2)} remaining of $${(getMaxTotalPerCycle(userConfig)/100).toFixed(2)}`);
+    console.log(`   Effective budget: $${(effectiveBudget/100).toFixed(2)} (min of token=$${(remainingTokenBudget/100).toFixed(2)}, total=$${(remainingTotalBudget/100).toFixed(2)})`);
 
-    // Cap bet at remaining token budget
-    const hardCapCents = remainingTokenBudget;
+    // Cap bet at effective budget (min of token and total cycle budget)
+    const hardCapCents = effectiveBudget;
 
     const priceCents = Math.round(best.betPrice * 100);
 
@@ -10078,7 +10157,10 @@ app.get('/api/portfolio', async (req, res) => {
             ETH: getRollingSpendByToken(req.userId, 'ETH', CYCLE_WINDOW_MS),
             SOL: getRollingSpendByToken(req.userId, 'SOL', CYCLE_WINDOW_MS)
           },
-          rollingTokenCap: getMaxPerTokenPerCycle(userConfig)
+          rollingTokenCap: getMaxPerTokenPerCycle(userConfig),
+          maxTotalPerCycle: getMaxTotalPerCycle(userConfig),
+          totalCycleSpend: getRollingTotalSpend(req.userId, CYCLE_WINDOW_MS),
+          remainingTotalBudget: getRemainingTotalBudget(userConfig, req.userId)
         }
       });
     } else {
@@ -10102,7 +10184,10 @@ app.get('/api/portfolio', async (req, res) => {
             ETH: getRollingSpendByToken(req.userId, 'ETH', CYCLE_WINDOW_MS),
             SOL: getRollingSpendByToken(req.userId, 'SOL', CYCLE_WINDOW_MS)
           },
-          rollingTokenCap: getMaxPerTokenPerCycle(userConfig)
+          rollingTokenCap: getMaxPerTokenPerCycle(userConfig),
+          maxTotalPerCycle: getMaxTotalPerCycle(userConfig),
+          totalCycleSpend: getRollingTotalSpend(req.userId, CYCLE_WINDOW_MS),
+          remainingTotalBudget: getRemainingTotalBudget(userConfig, req.userId)
         }
       });
     }
@@ -10121,6 +10206,9 @@ app.get('/api/portfolio', async (req, res) => {
         current: errRisk.total,
         currentDollars: (errRisk.total / 100).toFixed(2),
         maxPerTokenPerCycle: getMaxPerTokenPerCycle(userConfig),
+        maxTotalPerCycle: getMaxTotalPerCycle(userConfig),
+        totalCycleSpend: getRollingTotalSpend(req.userId, CYCLE_WINDOW_MS),
+        remainingTotalBudget: getRemainingTotalBudget(userConfig, req.userId),
         byToken: getExposureByToken(req.userState),
         positionCount: 0
       },

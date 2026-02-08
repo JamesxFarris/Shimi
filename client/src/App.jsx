@@ -1403,6 +1403,29 @@ function App() {
                     <span className="risk-token-value">{risk.positionCount || 0}</span>
                   </div>
                 </div>
+                {(() => {
+                  const totalSpend = risk.totalCycleSpend || 0;
+                  const totalLimit = risk.maxTotalPerCycle || (riskSettings.maxTotalPerCycle || 1500);
+                  const pct = totalLimit > 0 ? Math.min(100, (totalSpend / totalLimit) * 100) : 0;
+                  const isWarning = pct >= 70;
+                  const isDanger = pct >= 90;
+                  return (
+                    <div className="cycle-budget-bar">
+                      <div className="cycle-budget-labels">
+                        <span className="cycle-budget-title">Cycle Budget</span>
+                        <span className={`cycle-budget-value ${isDanger ? 'danger' : isWarning ? 'warning' : ''}`}>
+                          ${(totalSpend / 100).toFixed(2)} / ${(totalLimit / 100).toFixed(2)}
+                        </span>
+                      </div>
+                      <div className="cycle-budget-track">
+                        <div
+                          className={`cycle-budget-fill ${isDanger ? 'danger' : isWarning ? 'warning' : ''}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Quick Actions */}
@@ -1733,6 +1756,10 @@ function App() {
                       <span className="settings-value">${((riskSettings.maxPerTokenPerCycle || 500) / 100).toFixed(2)}</span>
                     </div>
                     <div className="settings-item">
+                      <span className="settings-label">Total Cycle Budget</span>
+                      <span className="settings-value">${((riskSettings.maxTotalPerCycle || 1500) / 100).toFixed(2)}</span>
+                    </div>
+                    <div className="settings-item">
                       <span className="settings-label">Min Edge</span>
                       <span className="settings-value">{selectivityRules.minEdgeAfterFees || 5}%</span>
                     </div>
@@ -1763,6 +1790,13 @@ function App() {
                         onChange={(v) => updateRiskSettings('maxPerTokenPerCycle', v * 100)}
                         min={2}
                         max={50}
+                      />
+                      <DollarStepper
+                        label="Total cycle budget"
+                        value={Math.round((riskSettings.maxTotalPerCycle || 1500) / 100)}
+                        onChange={(v) => updateRiskSettings('maxTotalPerCycle', v * 100)}
+                        min={2}
+                        max={100}
                       />
                     </div>
                   </div>
