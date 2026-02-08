@@ -26,6 +26,7 @@ export class KalshiWebSocket {
     this.reconnectDelayMs = options.reconnectDelayMs || 5000;
     this.heartbeatInterval = null;
     this.subscriptions = new Set();
+    this.authFailed = false;
 
     // Callbacks
     this.onTickerUpdate = options.onTickerUpdate || (() => {});
@@ -48,10 +49,23 @@ export class KalshiWebSocket {
   setCredentials(apiKeyId, privateKey) {
     this.apiKeyId = apiKeyId;
     this.privateKey = privateKey;
+    this.authFailed = false;
+    this.reconnectAttempts = 0;
 
-    // If already connected, re-authenticate
-    if (this.isConnected && !this.isAuthenticated) {
-      this.authenticate();
+    // Disconnect and reconnect with new credentials
+    if (this.ws) {
+      this.stopHeartbeat();
+      this.ws.close();
+      this.ws = null;
+      this.isConnected = false;
+      this.isAuthenticated = false;
+    }
+
+    if (apiKeyId && privateKey) {
+      console.log('[WS] New credentials received, reconnecting...');
+      this.connect().catch(err => {
+        console.log('[WS] Reconnection with new credentials failed:', err.message);
+      });
     }
   }
 
@@ -133,6 +147,10 @@ export class KalshiWebSocket {
 
         this.ws.on('error', (error) => {
           this.onError('[WS] WebSocket error:', error.message);
+          // Track auth failures — retrying won't help without new credentials
+          if (error.message?.includes('401')) {
+            this.authFailed = true;
+          }
           reject(error);
         });
 
@@ -142,6 +160,12 @@ export class KalshiWebSocket {
           this.isAuthenticated = false;
           this.onConnectionChange(false);
           this.stopHeartbeat();
+
+          // Don't reconnect on auth failure — wait for setCredentials
+          if (this.authFailed) {
+            console.log('[WS] Auth failed (401). Waiting for valid credentials before reconnecting.');
+            return;
+          }
 
           // Attempt reconnection
           this.scheduleReconnect();

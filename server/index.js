@@ -1158,7 +1158,11 @@ function restoreActiveProfile() {
       config.apiKeyId = profile.kalshiApiKeyId;
       config.privateKey = profile.kalshiPrivateKey;
       config.isAuthenticated = true;
-      console.log(`ðŸ”‘ Restored Kalshi credentials for ${profile.name}`);
+      console.log(`ðŸ"' Restored Kalshi credentials for ${profile.name}`);
+      // Update WebSocket with restored credentials
+      if (kalshiWs) {
+        kalshiWs.setCredentials(config.apiKeyId, config.privateKey);
+      }
     }
 
     // Restore settings
@@ -1549,6 +1553,10 @@ async function loadCredentialsFromEnv() {
       portfolio.balance = balanceData.balance || 0;
       config.bankroll = portfolio.balance;
       console.log(`âœ… Kalshi authenticated! Balance: $${(portfolio.balance / 100).toFixed(2)}`);
+      // Update WebSocket with valid credentials
+      if (kalshiWs) {
+        kalshiWs.setCredentials(config.apiKeyId, config.privateKey);
+      }
     } catch (error) {
       console.error('âŒ Kalshi credentials invalid:', error.message);
       config.apiKeyId = null;
@@ -4004,7 +4012,10 @@ async function fetchCandlesticks(ticker, periodMinutes = 1, count = 15, userConf
     return result;
 
   } catch (error) {
-    console.log(`[Candles] Error fetching ${ticker}:`, error.message);
+    // Only log non-404 errors — 404s are expected for expired/settled markets
+    if (!error.message?.includes('404')) {
+      console.log(`[Candles] Error fetching ${ticker}:`, error.message);
+    }
     // Return empty data if fetch fails
     return {
       ticker,
@@ -9761,7 +9772,12 @@ app.post('/api/auth/configure', async (req, res) => {
 
       // Save user state to disk
       saveUserState(req.userId);
-      console.log(`ðŸ”‘ Saved Kalshi credentials for user ${req.userId}`);
+      console.log(`ðŸ"' Saved Kalshi credentials for user ${req.userId}`);
+
+      // Update WebSocket with valid credentials
+      if (kalshiWs) {
+        kalshiWs.setCredentials(userConfig.apiKeyId, userConfig.privateKey);
+      }
 
       res.json({
         success: true,
