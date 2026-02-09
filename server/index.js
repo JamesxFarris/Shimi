@@ -70,8 +70,7 @@ const DEFAULT_CONFIG = {
   maxBetPercent: 15,
   minEdge: 5, // 5% minimum - model has uncertainty, need buffer
   autoBetEnabled: false,
-  // Safety: daily loss limit and bankroll floor
-  dailyLossLimitPct: 30, // Stop auto-betting if down 30% in rolling 24 hours
+  // Safety: bankroll floor
   minBankrollCents: 200, // Never auto-bet if bankroll drops below $2.00
   // Risk management settings (in cents) - per-token-per-cycle is the primary limit
   riskLimits: {
@@ -818,11 +817,6 @@ function settleBet(betId, outcome, settlementPrice, actualProfit) {
   bet.settlementPrice = settlementPrice;
   bet.actualProfit = actualProfit;
   bet.settledAt = new Date().toISOString();
-
-  // Track losses for daily loss limit
-  if (outcome === 'lost') {
-    trackDailyLoss(bet.userId || 'default', bet.totalCost || 0);
-  }
 
   // Update summary
   performanceData.summary.pending--;
@@ -1939,77 +1933,6 @@ function computeRollingSpendFromHistory(betHistoryArr, token, windowMs = 2 * 60 
     total += bet.totalCost || 0;
   }
   return total;
-}
-
-// Daily loss tracking rolling 24-hour P&L (persisted to disk)
-const DAILY_LOSS_FILE = path.join(__dirname, 'daily_loss_tracker.json');
-const dailyLossTracker = new Map(); // userId -> { losses: [{amount, timestamp}], startBalance: number }
-
-// Load daily loss tracker from disk on startup
-try {
-  if (fs.existsSync(DAILY_LOSS_FILE)) {
-    const saved = JSON.parse(fs.readFileSync(DAILY_LOSS_FILE, 'utf8'));
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    for (const [key, tracker] of Object.entries(saved)) {
-      // Only restore entries within the 24h window
-      const validLosses = (tracker.losses || []).filter(l => l.timestamp > cutoff);
-      if (validLosses.length > 0) {
-        dailyLossTracker.set(key, { losses: validLosses, startBalance: tracker.startBalance || 0 });
-      }
-    }
-    console.log(` Loaded daily loss tracker: ${dailyLossTracker.size} users with recent losses`);
-  }
-} catch (e) {
-  console.warn('Could not load daily loss tracker:', e.message);
-}
-
-function saveDailyLossTracker() {
-  debouncedWrite('dailyLossTracker', () => {
-    try {
-      const obj = {};
-      for (const [key, tracker] of dailyLossTracker) {
-        obj[key] = tracker;
-      }
-      fs.writeFileSync(DAILY_LOSS_FILE, JSON.stringify(obj, null, 2));
-    } catch (e) {
-      console.error('Failed to save daily loss tracker:', e.message);
-    }
-  });
-}
-
-function trackDailyLoss(userId, lossCents) {
-  const key = userId || 'default';
-  if (!dailyLossTracker.has(key)) {
-    dailyLossTracker.set(key, { losses: [], startBalance: 0 });
-  }
-  const tracker = dailyLossTracker.get(key);
-  tracker.losses.push({ amount: lossCents, timestamp: Date.now() });
-  // Clean entries older than 24 hours
-  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  tracker.losses = tracker.losses.filter(l => l.timestamp > cutoff);
-  saveDailyLossTracker();
-}
-
-function getDailyLossCents(userId) {
-  const key = userId || 'default';
-  const tracker = dailyLossTracker.get(key);
-  if (!tracker) return 0;
-  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-  return tracker.losses
-    .filter(l => l.timestamp > cutoff)
-    .reduce((sum, l) => sum + l.amount, 0);
-}
-
-function shouldStopForDailyLoss(userId, userConfig) {
-  const cfg = userConfig || config;
-  const limitPct = cfg.dailyLossLimitPct || 30;
-  const bankroll = cfg.bankroll || 1000;
-  const maxLossCents = Math.round(bankroll * (limitPct / 100));
-  const currentLoss = getDailyLossCents(userId);
-  if (currentLoss >= maxLossCents) {
-    return { stop: true, reason: `Daily loss limit hit: lost $${(currentLoss/100).toFixed(2)} (${limitPct}% of $${(bankroll/100).toFixed(2)} bankroll)` };
-  }
-  return { stop: false, currentLoss, maxLoss: maxLossCents };
 }
 
 function isBankrollTooLow(userConfig) {
@@ -4327,16 +4250,6 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       });
     }
 
-    // SAFETY: Daily loss limit check
-    const dailyLossCheck = shouldStopForDailyLoss(req.userId, userConfig);
-    if (dailyLossCheck.stop) {
-      return res.json({
-        success: true,
-        message: dailyLossCheck.reason,
-        bet: null
-      });
-    }
-
     // CRITICAL: Refresh positions from Kalshi FIRST to get accurate risk
     if (userConfig.isAuthenticated) {
       try {
@@ -4742,21 +4655,6 @@ async function runAutoBet(userId = null) {
         status: 'bankroll_floor',
         statusMessage: `Balance too low ($${((userConfig.bankroll || 0)/100).toFixed(2)} < $${(minBankroll/100).toFixed(2)} min)`,
         blockedReasons: ['Bankroll below minimum floor']
-      };
-      console.log('========================================\n');
-      return;
-    }
-
-    // SAFETY CHECK 2: Daily loss limit stop if lost too much in rolling 24 hours
-    const dailyLossCheck = shouldStopForDailyLoss(userId, userConfig);
-    if (dailyLossCheck.stop) {
-      console.log(` DAILY LOSS LIMIT: ${dailyLossCheck.reason}`);
-      lastScanStatus = {
-        ...lastScanStatus,
-        timestamp: new Date().toISOString(),
-        status: 'daily_loss_limit',
-        statusMessage: dailyLossCheck.reason,
-        blockedReasons: [dailyLossCheck.reason]
       };
       console.log('========================================\n');
       return;
@@ -9302,14 +9200,6 @@ function gracefulShutdown(signal) {
     fs.writeFileSync(PRICE_SNAPSHOTS_FILE, JSON.stringify(priceSnapshots, null, 2));
     console.log(' Saved price snapshots');
   } catch (e) { console.error(' Failed to save price snapshots:', e.message); }
-  try {
-    const lossObj = {};
-    for (const [key, tracker] of dailyLossTracker) {
-      lossObj[key] = tracker;
-    }
-    fs.writeFileSync(DAILY_LOSS_FILE, JSON.stringify(lossObj, null, 2));
-    console.log(' Saved daily loss tracker');
-  } catch (e) { console.error(' Failed to save daily loss tracker:', e.message); }
   console.log(' Goodbye!');
   process.exit(0);
 }
