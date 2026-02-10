@@ -267,7 +267,6 @@ const DEFAULT_EMPIRICAL_TABLES = {
     minEmpiricalWinRate: 62, // Minimum win rate from lookup tables (empirically grounded)
     minEdgeAfterFees: 3, // 3% minimum edge after all fees (still +EV)
     minUnfavoredEdge: 5, // 5% minimum net edge for unfavored-side bets (higher bar)
-    maxBetsPerHour: 8, // Rate limit shouldn't block good opportunities
     maxBetsPerToken: 3, // Per-token concentration limit
     requireRegimeCheck: true // Must pass volatility regime check
   },
@@ -5501,7 +5500,6 @@ app.get('/api/candlesticks/:ticker', async (req, res) => {
 
 // Track recent bets for rate limiting and performance
 const empiricalBetTracking = {
-  recentBetsThisHour: [], // Timestamps of bets in the last hour
   betsByToken: new Map(), // Token -> count of bets in last hour
   lastSpikeTimes: new Map(), // Token -> timestamp of last detected spike
   recentSidesByToken: new Map() // Token -> [{side, timestamp}] for saturation tracking
@@ -5690,18 +5688,6 @@ function calculateSignalStrength(winRate, edge, sampleSize, regime, timeRemainin
  */
 function shouldSitOut(tables, token = null) {
   const reasons = [];
-  const rules = tables?.selectivityRules || learnedParams.selectivityRules;
-  const now = Date.now();
-  const oneHourAgo = now - 60 * 60 * 1000;
-
-  // Clean up old timestamps and enforce maxBetsPerHour
-  empiricalBetTracking.recentBetsThisHour = empiricalBetTracking.recentBetsThisHour
-    .filter(ts => ts > oneHourAgo);
-
-  const maxBetsPerHour = rules?.maxBetsPerHour || 8;
-  if (empiricalBetTracking.recentBetsThisHour.length >= maxBetsPerHour) {
-    reasons.push(`Rate limit: ${empiricalBetTracking.recentBetsThisHour.length}/${maxBetsPerHour} bets this hour`);
-  }
 
   // Check if we have sufficient data
   if ((tables?.sampleSize || learnedParams.sampleSize) < 100) {
@@ -6537,8 +6523,6 @@ function buildEmpiricalLookupTables(settlements) {
  */
 function recordEmpiricalBet(token, side) {
   const now = Date.now();
-  empiricalBetTracking.recentBetsThisHour.push(now);
-
   const currentCount = empiricalBetTracking.betsByToken.get(token) || 0;
   empiricalBetTracking.betsByToken.set(token, currentCount + 1);
 
@@ -6556,12 +6540,8 @@ function recordEmpiricalBet(token, side) {
     }
   }
 
-  // Clean up old entries every 10 bets
-  if (empiricalBetTracking.recentBetsThisHour.length % 10 === 0) {
-    const oneHourAgo = now - 60 * 60 * 1000;
-    empiricalBetTracking.recentBetsThisHour = empiricalBetTracking.recentBetsThisHour
-      .filter(ts => ts > oneHourAgo);
-
+  // Reset token counts periodically
+  if (Math.random() < 0.1) {
     // Reset token counts every hour
     for (const [t, count] of empiricalBetTracking.betsByToken) {
       if (count > 0) {
@@ -7168,7 +7148,6 @@ async function updateLearnedParameters(userConfig = null) {
     console.log(` Min signal strength: ${empiricalTables.selectivityRules.minSignalStrength}`);
     console.log(` Min empirical win rate: ${empiricalTables.selectivityRules.minEmpiricalWinRate}%`);
     console.log(` Min edge after fees: ${empiricalTables.selectivityRules.minEdgeAfterFees}%`);
-    console.log(` Max bets per hour: ${empiricalTables.selectivityRules.maxBetsPerHour}`);
     console.log(`\n Win Rate by Distance (favored side):`);
     for (const [bucket, data] of Object.entries(empiricalTables.winRateByDistance)) {
       if (data.count > 0) {
@@ -7746,7 +7725,7 @@ app.post('/api/model/selectivity', (req, res) => {
   const updates = req.body;
 
   // Validate and merge updates
-  const validFields = ['minSignalStrength', 'minEmpiricalWinRate', 'minEdgeAfterFees', 'maxBetsPerHour', 'maxBetsPerToken'];
+  const validFields = ['minSignalStrength', 'minEmpiricalWinRate', 'minEdgeAfterFees', 'maxBetsPerToken'];
   const current = userConfig.selectivityRules || { ...learnedParams.selectivityRules };
 
   for (const field of validFields) {
