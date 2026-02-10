@@ -5882,9 +5882,24 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
   }
 
-  // Compute gross edge for both sides
-  const favoredWinRate = empirical.winRate;
-  const unfavoredWinRate = 100 - empirical.winRate;
+  // Compute gross edge for both sides, adjusted for YES/NO bias
+  // SOL has 4.44% NO bias (NO wins more often), so shift edge toward NO
+  const noBias = learnedParams.byToken?.[token]?.noBias || 0;
+  const biasAdj = (noBias > 0 && learnedParams.byToken?.[token]?.sampleSize >= 100) ? noBias / 2 : 0;
+  let favoredWinRate = empirical.winRate;
+  let unfavoredWinRate = 100 - empirical.winRate;
+  if (biasAdj > 0) {
+    if (favoredSide === 'YES') {
+      // YES is favored but historically underperforms — penalize YES edge, boost NO
+      favoredWinRate -= biasAdj;
+      unfavoredWinRate += biasAdj;
+    } else {
+      // NO is favored AND has historical advantage — boost NO edge
+      favoredWinRate += biasAdj;
+      unfavoredWinRate -= biasAdj;
+    }
+    console.log(` NO-bias adj: ${token} bias=${noBias.toFixed(1)}% adj=±${biasAdj.toFixed(1)}% → favored(${favoredSide})=${favoredWinRate.toFixed(1)}% unfavored=${unfavoredWinRate.toFixed(1)}%`);
+  }
   const favoredGrossEdge = favoredWinRate - (favoredPrice * 100);
   const unfavoredGrossEdge = unfavoredWinRate - (unfavoredPrice * 100);
 
@@ -6181,20 +6196,31 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     windowPenalties.push(`stale momentum -15pts`);
   }
 
-  // NO bias bonus: learned data shows NO wins more often than YES across all tokens
-  // Wire in the existing getNoBiasBonus() function to reward NO-side bets
+  // YES/NO bias adjustment: learned data shows NO wins more often across all tokens
+  // Apply symmetric bonus/penalty so side selection isn't one-sided
   if (betSide === 'NO') {
     const noBiasBonus = getNoBiasBonus(token);
     if (noBiasBonus > 0) {
       adjustedSignalStrength += noBiasBonus;
       windowPenalties.push(`NO bias +${noBiasBonus}pts`);
     }
+  } else if (betSide === 'YES') {
+    // Symmetric YES penalty: if NO has a learned advantage, penalize YES bets
+    const tokenNoBias = learnedParams.byToken?.[token]?.noBias || 0;
+    if (tokenNoBias > 1 && learnedParams.byToken?.[token]?.sampleSize >= 100) {
+      const yesPenalty = -Math.min(5, tokenNoBias / 2);
+      adjustedSignalStrength += yesPenalty;
+      windowPenalties.push(`YES penalty ${yesPenalty.toFixed(1)}pts (NO bias ${tokenNoBias.toFixed(1)}%)`);
+    }
   }
 
   // Same-side saturation: penalize one-sided streaks per token
+  // Tokens with high NO bias (like SOL 4.44%) trigger at 2 consecutive YES bets
+  const tokenNoBiasForSat = learnedParams.byToken?.[token]?.noBias || 0;
+  const saturationThreshold = (betSide === 'YES' && tokenNoBiasForSat > 3) ? 2 : 3;
   const consecutiveSameSide = getConsecutiveSameSideCount(token, betSide);
-  if (consecutiveSameSide >= 3) {
-    const saturationPenalty = -Math.min(20, 5 * (consecutiveSameSide - 2));
+  if (consecutiveSameSide >= saturationThreshold) {
+    const saturationPenalty = -Math.min(20, 5 * (consecutiveSameSide - (saturationThreshold - 1)));
     adjustedSignalStrength += saturationPenalty;
     windowPenalties.push(`saturation ${saturationPenalty}pts (${consecutiveSameSide}x ${betSide})`);
   }
