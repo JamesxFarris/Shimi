@@ -28,5 +28,8 @@ npm-debug.log*
 # Testing
 coverage/
 
+# Secrets
+server/jwt_secret.txt
+
 # Misc
 *.local

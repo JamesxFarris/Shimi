@@ -37,7 +37,7 @@ process.on('unhandledRejection', (err) => {
   console.error('Unhandled Rejection:', err);
 });
 
-app.use(cors());
+app.use(cors({ origin: process.env.CORS_ORIGIN || 'http://localhost:5173' }));
 app.use(express.json());
 
 
@@ -1821,7 +1821,8 @@ function validateBetWontExceedLimits(ticker, betCostCents, userState, userConfig
   }
 
   // Check 2: Per-market cap (scale-in accumulation limit)
-  const maxPerMarket = userConfig?.riskLimits?.maxPerMarket || 500;
+  // Derive from maxPerTokenPerCycle if not explicitly set, so raising per-token limit also raises per-market
+  const maxPerMarket = userConfig?.riskLimits?.maxPerMarket || getMaxPerTokenPerCycle(userConfig);
   const existingMarketExposure = getExposureForTicker(ticker, userState);
   const newMarketExposure = existingMarketExposure + betCostCents;
   if (newMarketExposure > maxPerMarket) {
@@ -3596,9 +3597,15 @@ app.post('/api/settings/risk', (req, res) => {
   if (maxPerToken !== undefined && maxPerTokenPerCycle === undefined) {
     userConfig.riskLimits.maxPerTokenPerCycle = Math.max(200, Math.min(50000, parseInt(maxPerToken) || 500));
   }
+  // Sync maxPerMarket with maxPerTokenPerCycle so per-market cap doesn't silently block larger bets
+  userConfig.riskLimits.maxPerMarket = userConfig.riskLimits.maxPerTokenPerCycle;
   // Max total spend across all tokens per cycle (umbrella cap)
   if (maxTotalPerCycle !== undefined) {
     userConfig.riskLimits.maxTotalPerCycle = Math.max(200, Math.min(100000, parseInt(maxTotalPerCycle) || 1500));
+  }
+  // Ensure total cycle cap is at least as large as per-token cap
+  if (userConfig.riskLimits.maxTotalPerCycle < userConfig.riskLimits.maxPerTokenPerCycle) {
+    userConfig.riskLimits.maxTotalPerCycle = userConfig.riskLimits.maxPerTokenPerCycle;
   }
 
   console.log(` Risk settings updated for user ${req.userId}:`, JSON.stringify(userConfig.riskLimits));
@@ -5939,9 +5946,9 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   const marketImpliedProb = marketPrice * 100; // Market price as probability (e.g., 80c = 80%)
 
-  // Use our empirical win rate based on distance from strike
-  // For unfavored side, invert: if favored wins 88%, unfavored wins 12%
-  let adjustedWinRate = isFavoredSideBet ? empirical.winRate : (100 - empirical.winRate);
+  // Use bias-adjusted win rates (accounts for YES/NO settlement bias per token)
+  // favoredWinRate and unfavoredWinRate already incorporate NO-bias from lines above
+  let adjustedWinRate = isFavoredSideBet ? favoredWinRate : unfavoredWinRate;
 
   // VOLATILITY-TIME THEORETICAL MODEL: z-score-based probability from price history
   // During low-vol hours, empirical tables underestimate probability because they average all conditions
