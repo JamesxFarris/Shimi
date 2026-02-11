@@ -8116,7 +8116,7 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // Get current user info
-app.get('/api/auth/me', (req, res) => {
+app.get('/api/auth/me', async (req, res) => {
   const authHeader = req.headers.authorization;
   const token = authHeader?.replace('Bearer ', '');
 
@@ -8129,7 +8129,7 @@ app.get('/api/auth/me', (req, res) => {
     return res.status(401).json({ success: false, error: 'Invalid token' });
   }
 
-  const userInfo = auth.getUserInfo(userId);
+  const userInfo = await auth.getUserInfo(userId);
   if (!userInfo) {
     return res.status(404).json({ success: false, error: 'User not found' });
   }
