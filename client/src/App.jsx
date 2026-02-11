@@ -1805,57 +1805,7 @@ function App() {
                   </button>
                 </div>
 
-                {/* Scale-In Settings */}
-                <div className="settings-card">
-                  <h3 className="settings-card-title">Scale-In Strategy</h3>
-                  <p className="settings-description">Add to positions when probability improves (Kelly-inspired scaling)</p>
-                  <div className="scale-in-settings">
-                    <div className="settings-input-group">
-                      <label>Enabled</label>
-                      <input
-                        type="checkbox"
-                        checked={scaleInSettings.enabled}
-                        onChange={(e) => updateScaleInSettings('enabled', e.target.checked)}
-                      />
-                    </div>
-                    <div className="settings-input-group">
-                      <label>Min probability increase (%)</label>
-                      <input
-                        type="number"
-                        min="5"
-                        max="50"
-                        step="5"
-                        value={scaleInSettings.minProbabilityIncrease}
-                        onChange={(e) => updateScaleInSettings('minProbabilityIncrease', parseInt(e.target.value) || 15)}
-                      />
-                    </div>
-                    <div className="settings-input-group">
-                      <label>Max bets per market</label>
-                      <input
-                        type="number"
-                        min="1"
-                        max="10"
-                        step="1"
-                        value={scaleInSettings.maxBetsPerMarket}
-                        onChange={(e) => updateScaleInSettings('maxBetsPerMarket', parseInt(e.target.value) || 3)}
-                      />
-                    </div>
-                    <div className="settings-input-group">
-                      <label>Min time between bets (sec)</label>
-                      <input
-                        type="number"
-                        min="30"
-                        max="600"
-                        step="30"
-                        value={Math.round(scaleInSettings.minTimeBetweenBets / 1000)}
-                        onChange={(e) => updateScaleInSettings('minTimeBetweenBets', (parseInt(e.target.value) || 60) * 1000)}
-                      />
-                    </div>
-                  </div>
-                  <button className={`save-settings-btn ${settingsSavedSection === 'scaleIn' ? 'saved' : ''}`} onClick={saveScaleInSettings}>
-                    {settingsSavedSection === 'scaleIn' ? '✓ Saved' : 'Save Scale-In Settings'}
-                  </button>
-                </div>
+                {/* Scale-In Settings - hidden from UI, logic still active server-side */}
 
 
                 {/* How It Works */}
