@@ -193,10 +193,10 @@ const DEFAULT_EMPIRICAL_TABLES = {
       sitOut: false
     },
     high: {
-      description: 'Elevated volatility, be cautious',
-      winRateMultiplier: 0.92, // Reduce confidence
+      description: 'Elevated volatility - sit out (model edge degrades)',
+      winRateMultiplier: 0.92,
       coinFlipThreshold: 0.4,
-      sitOut: false
+      sitOut: true // Sit out: empirical win rates unreliable in high vol
     },
     spike: {
       description: 'Volatility spike detected (2%+ in 5 min)',
@@ -220,9 +220,9 @@ const DEFAULT_EMPIRICAL_TABLES = {
         distanceMin: 0.1, // Low-vol hours produce 0.09-0.22% distances
         distanceMax: 5.0, // Don't reject large moves
         timeMin: 2, // Allow late entries
-        timeMax: 13, // 15-min markets: allow entries from minute 2-13
-        priceMin: 40, // Below 40c fees are 5%+ and edge model has no signal
-        priceMax: 95 // Capture near-certainty late-game bets
+        timeMax: 8, // Tightened from 13: only bet when 2-8 min remain (best data window)
+        priceMin: 55, // Raised from 40: below 55c is coin-flip territory
+        priceMax: 85 // Lowered from 95: above 85c is bad risk/reward (pay 85c to win 15c)
       }
     },
     ETH: {
@@ -237,9 +237,9 @@ const DEFAULT_EMPIRICAL_TABLES = {
         distanceMin: 0.15, // ETH slightly higher min than BTC
         distanceMax: 5.0,
         timeMin: 2,
-        timeMax: 13,
-        priceMin: 40,
-        priceMax: 95
+        timeMax: 8, // Tightened from 13
+        priceMin: 55, // Raised from 40
+        priceMax: 85 // Lowered from 95
       }
     },
     SOL: {
@@ -254,19 +254,19 @@ const DEFAULT_EMPIRICAL_TABLES = {
         distanceMin: 0.2, // Slightly higher buffer for most volatile token
         distanceMax: 5.0,
         timeMin: 2,
-        timeMax: 13,
-        priceMin: 40,
-        priceMax: 95
+        timeMax: 7, // Tighter than BTC/ETH: SOL needs more price confirmation
+        priceMin: 55, // Raised from 40
+        priceMax: 80 // Lower ceiling: SOL's 64% coin-flip rate makes high-price bets risky
       }
     }
   },
 
   // Selectivity rules (learned thresholds for when to bet)
   selectivityRules: {
-    minSignalStrength: 50, // 0-100 score required to bet (lowered from 55: bets scoring 50-54 still have positive net edge)
-    minEmpiricalWinRate: 62, // Minimum win rate from lookup tables (empirically grounded)
-    minEdgeAfterFees: 3, // 3% minimum edge after all fees (still +EV)
-    minUnfavoredEdge: 5, // 5% minimum net edge for unfavored-side bets (higher bar)
+    minSignalStrength: 58, // 0-100 score required to bet (raised from 50: only clear signals)
+    minEmpiricalWinRate: 68, // Minimum win rate from lookup tables (raised from 62: higher hit rate)
+    minEdgeAfterFees: 5, // 5% minimum edge after all fees (raised from 3: real buffer after friction)
+    minUnfavoredEdge: 8, // 8% minimum net edge for unfavored-side bets (raised from 5: long shots need bigger edge)
     maxBetsPerToken: 3, // Per-token concentration limit
     requireRegimeCheck: true // Must pass volatility regime check
   },
@@ -6130,9 +6130,9 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     timeRemaining
   );
 
-  // Get selectivity rules - user config takes precedence over empirical tables
-  const defaultRules = empiricalTables.selectivityRules || DEFAULT_EMPIRICAL_TABLES.selectivityRules;
-  const rules = { ...defaultRules, ...userRules };
+  // Get selectivity rules - code defaults are authoritative, user config overrides
+  // learned_params.json selectivityRules are ignored (may have stale thresholds)
+  const rules = { ...DEFAULT_EMPIRICAL_TABLES.selectivityRules, ...userRules };
 
   // Build rejection reasons - only hard rejections for genuine deal-breakers
   const reasons = [];
@@ -6143,10 +6143,10 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       reasons.push(`Win rate ${adjustedWinRate.toFixed(1)}% < ${rules.minEmpiricalWinRate || 62}%`);
     }
 
-    // In low vol, outcomes are more predictable - smaller edge is more reliable
+    // In low vol, outcomes are more predictable - smaller edge is acceptable but still need buffer
     const effectiveMinEdge = regime.regime === 'low'
-      ? Math.max(2, (rules.minEdgeAfterFees || 3) - 1)
-      : (rules.minEdgeAfterFees || 3);
+      ? Math.max(3.5, (rules.minEdgeAfterFees || 5) - 1.5)
+      : (rules.minEdgeAfterFees || 5);
     if (netEdge < effectiveMinEdge) {
       reasons.push(`Edge ${netEdge.toFixed(1)}% < ${effectiveMinEdge}%${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
     }
@@ -6159,18 +6159,19 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     if (marketPriceCents < 20) {
       reasons.push(`Unfavored price ${marketPriceCents}c < 20c min`);
     }
-    if (marketPriceCents > 40) {
-      reasons.push(`Unfavored price ${marketPriceCents}c > 40c max`);
+    if (marketPriceCents > 35) {
+      reasons.push(`Unfavored price ${marketPriceCents}c > 35c max`);
     }
-    const maxUnfavoredPerHour = rules.maxUnfavoredPerHour || 2;
+    const maxUnfavoredPerHour = rules.maxUnfavoredPerHour || 1; // Tightened from 2: limit long-shot exposure
     if (getRecentUnfavoredBetCount() >= maxUnfavoredPerHour) {
       reasons.push(`Unfavored frequency cap: ${getRecentUnfavoredBetCount()} >= ${maxUnfavoredPerHour}/hr`);
     }
   }
 
-  // Hard block: no bets in the first 5 minutes of a 15-min market (>10 min remaining)
-  if (timeRemaining > 10) {
-    reasons.push(`Too early: ${timeRemaining.toFixed(1)}min remaining > 10min max (market age < 5min)`);
+  // Hard block: no bets in the first 7 minutes of a 15-min market (>8 min remaining)
+  // Tightened from 10min: only bet when sufficient price data has accumulated
+  if (timeRemaining > 8) {
+    reasons.push(`Too early: ${timeRemaining.toFixed(1)}min remaining > 8min max (market age < 7min)`);
   }
 
   if (!withinPriceWindow && isFavoredSideBet) {
@@ -6221,9 +6222,9 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   }
 
   // Early-entry penalty: within time window but >5 min remaining
-  // Steeper scaling: 10min=-20, 8min=-12, 6min=-4, 5min=0
+  // Steeper scaling: 8min=-18, 7min=-12, 6min=-6, 5min=0
   if (withinTimeWindow && timeRemaining > 5) {
-    const earlyPenalty = -Math.round(Math.min(20, (timeRemaining - 5) * 4));
+    const earlyPenalty = -Math.round(Math.min(18, (timeRemaining - 5) * 6));
     adjustedSignalStrength += earlyPenalty;
     windowPenalties.push(`early-entry ${earlyPenalty}pts`);
   }
@@ -6267,10 +6268,22 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     console.log(` Window penalties: ${windowPenalties.join(', ')} signal ${signalStrength}${adjustedSignalStrength}`);
   }
 
-  // Low vol = more predictable outcomes, lower signal threshold needed
-  const baseMinSignal = rules.minSignalStrength || 50;
-  const effectiveMinSignal = regime.regime === 'low' ? Math.max(45, baseMinSignal - 10) : baseMinSignal;
-  if (adjustedSignalStrength < effectiveMinSignal) {
+  // Low vol = more predictable outcomes, modest signal reduction allowed
+  const baseMinSignal = rules.minSignalStrength || 58;
+  const effectiveMinSignal = regime.regime === 'low' ? Math.max(50, baseMinSignal - 8) : baseMinSignal;
+
+  // SOL penalty: 64% coin-flip rate means we need much higher conviction
+  // Require signal 68+ for SOL (10 points above base), and block SOL YES entirely
+  // (4.44% NO bias means YES bets fight against structural disadvantage)
+  if (token === 'SOL') {
+    const solMinSignal = Math.max(effectiveMinSignal, 68);
+    if (adjustedSignalStrength < solMinSignal) {
+      reasons.push(`SOL signal ${adjustedSignalStrength} < ${solMinSignal} (SOL requires higher conviction)`);
+    }
+    if (betSide === 'YES' && isFavoredSideBet) {
+      reasons.push(`SOL YES blocked: 4.44% NO bias makes YES structurally disadvantaged`);
+    }
+  } else if (adjustedSignalStrength < effectiveMinSignal) {
     reasons.push(`Signal ${adjustedSignalStrength} < ${effectiveMinSignal}${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
   }
 
