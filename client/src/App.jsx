@@ -579,7 +579,6 @@ function App() {
   const [settingsSavedSection, setSettingsSavedSection] = useState(null)
   const [settingsSaving, setSettingsSaving] = useState(false)
   // Model monitoring state
-  const [prospectiveData, setProspectiveData] = useState(null)
   const [selectivityRules, setSelectivityRules] = useState({ minEdgeAfterFees: 5, minSignalStrength: 70, minEmpiricalWinRate: 62 })
   const [marketFilter, setMarketFilter] = useState('all') // 'all', 'crypto', 'index'
   const [marketStats, setMarketStats] = useState({ totalAnalyzed: 0, recommended: 0, filteredNoEdge: 0, filteredLowProb: 0 })
@@ -940,22 +939,10 @@ function App() {
   }
 
 
-  // Fetch model monitoring data (prospective data, selectivity rules)
+  // Fetch model monitoring data (selectivity rules)
   const fetchModelMonitoring = async () => {
     try {
-      // Fetch all monitoring data in parallel
-      const [prospectiveRes, selectivityRes] = await Promise.all([
-        authFetch(`${API_BASE}/api/historical/prospective`),
-        authFetch(`${API_BASE}/api/model/selectivity`)
-      ])
-
-      if (prospectiveRes.ok) {
-        const data = await prospectiveRes.json()
-        if (data.success) {
-          setProspectiveData(data)
-        }
-      }
-
+      const selectivityRes = await authFetch(`${API_BASE}/api/model/selectivity`)
       if (selectivityRes.ok) {
         const data = await selectivityRes.json()
         if (data.success && data.selectivityRules) {
@@ -987,23 +974,6 @@ function App() {
     } catch (err) {
       console.error('Error updating selectivity rules:', err)
       setSelectivityRules(prev)
-    }
-  }
-
-  // Retrain model with prospective data
-  const retrainModel = async () => {
-    try {
-      const res = await authFetch(`${API_BASE}/api/historical/learn`, { method: 'POST' })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
-      if (data.success) {
-        alert(`Model retrained successfully! Win rate buckets: ${Object.keys(data.empiricalTables?.winRateByDistance || {}).length}`)
-        fetchModelMonitoring() // Refresh data
-      } else {
-        alert(`Retrain failed: ${data.error || 'Unknown error'}`)
-      }
-    } catch (err) {
-      alert(`Retrain error: ${err.message}`)
     }
   }
 
@@ -1893,36 +1863,6 @@ function App() {
                       </div>
                     </div>
                   </div>
-
-                  {/* Prospective Data Collection */}
-                  <div className="model-section" style={{ marginBottom: '20px' }}>
-                    <h4 style={{ margin: '0 0 12px 0', fontSize: '14px', color: '#ccc' }}>Prospective Data Collection</h4>
-                    <div className="model-stats-grid">
-                      <div>
-                        <div className="stat-number" style={{ color: '#4fc3f7' }}>{prospectiveData?.totalSnapshots || 0}</div>
-                        <div className="stat-label-small">Total Snapshots</div>
-                      </div>
-                      <div>
-                        <div className="stat-number" style={{ color: '#81c784' }}>{prospectiveData?.settledCount || 0}</div>
-                        <div className="stat-label-small">Settled</div>
-                      </div>
-                      <div>
-                        <div className="stat-number" style={{ color: '#ffb74d' }}>{prospectiveData?.pendingCount || 0}</div>
-                        <div className="stat-label-small">Pending</div>
-                      </div>
-                    </div>
-                    {prospectiveData?.settledCount >= 100 && (
-                      <button className="save-settings-btn" onClick={retrainModel} style={{ width: '100%' }}>
-                        Retrain Model ({prospectiveData?.settledCount} samples)
-                      </button>
-                    )}
-                    {prospectiveData?.settledCount < 100 && (
-                      <div style={{ fontSize: '12px', color: '#888', textAlign: 'center' }}>
-                        Need {100 - (prospectiveData?.settledCount || 0)} more settled snapshots to retrain
-                      </div>
-                    )}
-                  </div>
-
 
                   <button onClick={fetchModelMonitoring} style={{ marginTop: '16px', padding: '8px 16px', background: '#2a2a3e', border: 'none', borderRadius: '6px', color: '#ccc', cursor: 'pointer' }}>
                     Refresh Data

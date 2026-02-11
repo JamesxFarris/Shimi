@@ -9226,43 +9226,9 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
     }
   }, 2 * 60 * 1000);
 
-  // ============================================
-  // PROSPECTIVE DATA COLLECTION SCHEDULER
-  // ============================================
-  // Record price snapshots every minute for active markets
-  // This builds training data for future model improvements
-  setInterval(async () => {
-    try {
-      const tokens = ['BTC', 'ETH', 'SOL'];
-      let snapshotCount = 0;
-
-      for (const token of tokens) {
-        const price = cryptoPrices[token]?.price;
-        if (!price) continue;
-
-        // Get active markets for this token (use cached if available to reduce API calls)
-        try {
-          const series = `KX${token}15M`;
-          const marketsResponse = await kalshiRequest('GET', `/markets?series_ticker=${series}&status=open`, null, config);
-          const markets = marketsResponse.markets || [];
-
-          for (const market of markets) {
-            recordPriceSnapshot(market, price, token);
-            snapshotCount++;
-          }
-        } catch (e) {
-          // Silently continue if API call fails
-        }
-      }
-
-      // Save every 5 minutes (not every minute to reduce disk I/O)
-      if (snapshotCount > 0 && new Date().getMinutes() % 5 === 0) {
-        savePriceSnapshots();
-      }
-    } catch (err) {
-      // Silently ignore errors in background task
-    }
-  }, 60 * 1000); // Every 1 minute
+  // Prospective data collection scheduler removed: was making 3 extra Kalshi API calls/min
+  // contributing to 429 rate limits, and never produced usable data (price_snapshots.json was empty).
+  // The 12,452-settlement empirical tables from buildEmpiricalLookupTables are sufficient.
 
   // Keep-alive: Self-ping every 10 minutes to prevent Render free tier from spinning down
   const RENDER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
