@@ -5119,7 +5119,7 @@ async function runAutoBet(userId = null) {
     });
 
     // Record for empirical rate limiting (with side for saturation tracking)
-    recordEmpiricalBet(best.token || best.cryptoType, best.betSide);
+    recordEmpiricalBet(best.token || best.cryptoType, best.betSide, best.isFavoredSideBet !== false);
 
     if (best.isScaleIn) {
       console.log(` SCALE-IN: Adding bet #${newBetCount} on ${best.ticker} (signal increased to ${best.signalStrength})`);
@@ -5502,7 +5502,8 @@ app.get('/api/candlesticks/:ticker', async (req, res) => {
 const empiricalBetTracking = {
   betsByToken: new Map(), // Token -> count of bets in last hour
   lastSpikeTimes: new Map(), // Token -> timestamp of last detected spike
-  recentSidesByToken: new Map() // Token -> [{side, timestamp}] for saturation tracking
+  recentSidesByToken: new Map(), // Token -> [{side, timestamp}] for saturation tracking
+  recentUnfavoredBets: [] // [{timestamp}] for unfavored frequency limiting
 };
 
 // Volatility regime cache (30s TTL) - called 3x+ per 10s scan for display
@@ -5906,7 +5907,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // Pick the side with higher positive gross edge
   // Guard rail: skip unfavored if ask price is too low (no market maker)
   let betSide, marketPrice, isFavoredSideBet;
-  const unfavoredViable = unfavoredPrice >= 0.02 && unfavoredGrossEdge > favoredGrossEdge && unfavoredGrossEdge > 0;
+  const unfavoredViable = unfavoredPrice >= 0.20 && unfavoredGrossEdge > favoredGrossEdge && unfavoredGrossEdge > 0;
   if (unfavoredViable) {
     betSide = unfavoredSide;
     marketPrice = unfavoredPrice;
@@ -6003,6 +6004,11 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
         } else {
           // High vol: 0% (empirical tables are better)
           theoreticalWeight = 0;
+        }
+
+        // Cap theoretical model weight for unfavored bets (empirical data more reliable for long shots)
+        if (!isFavoredSideBet) {
+          theoreticalWeight = Math.min(theoreticalWeight, 0.25);
         }
 
         // Only blend when theoretical > empirical (boost confidence in calm conditions)
@@ -6116,19 +6122,26 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
     // In low vol, outcomes are more predictable - smaller edge is more reliable
     const effectiveMinEdge = regime.regime === 'low'
-      ? Math.max(1, (rules.minEdgeAfterFees || 3) - 2)
+      ? Math.max(2, (rules.minEdgeAfterFees || 3) - 1)
       : (rules.minEdgeAfterFees || 3);
     if (netEdge < effectiveMinEdge) {
       reasons.push(`Edge ${netEdge.toFixed(1)}% < ${effectiveMinEdge}%${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
     }
   } else {
     // Unfavored bets: skip win rate filter (inherently <50%), require higher edge + cheap price
-    const minUnfavoredEdge = rules.minUnfavoredEdge || 5;
+    const minUnfavoredEdge = rules.minUnfavoredEdge || 8;
     if (netEdge < minUnfavoredEdge) {
       reasons.push(`Unfavored edge ${netEdge.toFixed(1)}% < ${minUnfavoredEdge}%`);
     }
+    if (marketPriceCents < 20) {
+      reasons.push(`Unfavored price ${marketPriceCents}c < 20c min`);
+    }
     if (marketPriceCents > 40) {
       reasons.push(`Unfavored price ${marketPriceCents}c > 40c max`);
+    }
+    const maxUnfavoredPerHour = rules.maxUnfavoredPerHour || 2;
+    if (getRecentUnfavoredBetCount() >= maxUnfavoredPerHour) {
+      reasons.push(`Unfavored frequency cap: ${getRecentUnfavoredBetCount()} >= ${maxUnfavoredPerHour}/hr`);
     }
   }
 
@@ -6231,7 +6244,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   // Low vol = more predictable outcomes, lower signal threshold needed
   const baseMinSignal = rules.minSignalStrength || 55;
-  const effectiveMinSignal = regime.regime === 'low' ? Math.max(30, baseMinSignal - 15) : baseMinSignal;
+  const effectiveMinSignal = regime.regime === 'low' ? Math.max(45, baseMinSignal - 10) : baseMinSignal;
   if (adjustedSignalStrength < effectiveMinSignal) {
     reasons.push(`Signal ${adjustedSignalStrength} < ${effectiveMinSignal}${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
   }
@@ -6546,11 +6559,22 @@ function buildEmpiricalLookupTables(settlements) {
  * Record a bet for rate limiting tracking
  * @param {string} token - Token that was bet on
  * @param {string} [side] - 'YES' or 'NO' for saturation tracking
+ * @param {boolean} [isFavoredSideBet] - true if favored side, false if unfavored
  */
-function recordEmpiricalBet(token, side) {
+function recordEmpiricalBet(token, side, isFavoredSideBet = true) {
   const now = Date.now();
   const currentCount = empiricalBetTracking.betsByToken.get(token) || 0;
   empiricalBetTracking.betsByToken.set(token, currentCount + 1);
+
+  // Track unfavored bets for frequency limiting
+  if (!isFavoredSideBet) {
+    empiricalBetTracking.recentUnfavoredBets.push({ timestamp: now });
+    // Prune entries older than 1 hour
+    const oneHourAgo = now - 60 * 60 * 1000;
+    while (empiricalBetTracking.recentUnfavoredBets.length > 0 && empiricalBetTracking.recentUnfavoredBets[0].timestamp < oneHourAgo) {
+      empiricalBetTracking.recentUnfavoredBets.shift();
+    }
+  }
 
   // Track bet side for saturation detection
   if (side) {
@@ -6595,6 +6619,20 @@ function getConsecutiveSameSideCount(token, side) {
     }
   }
   return count;
+}
+
+/**
+ * Count unfavored bets placed in the last hour
+ * @returns {number} Number of unfavored bets in last hour
+ */
+function getRecentUnfavoredBetCount() {
+  const now = Date.now();
+  const oneHourAgo = now - 60 * 60 * 1000;
+  // Prune stale entries
+  while (empiricalBetTracking.recentUnfavoredBets.length > 0 && empiricalBetTracking.recentUnfavoredBets[0].timestamp < oneHourAgo) {
+    empiricalBetTracking.recentUnfavoredBets.shift();
+  }
+  return empiricalBetTracking.recentUnfavoredBets.length;
 }
 
 // ============================================
