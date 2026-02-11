@@ -5742,7 +5742,16 @@ function shouldSitOut(tables, token = null) {
  */
 function lookupEmpiricalWinRate(pctFromStrike, token = null) {
   const absDistance = Math.abs(pctFromStrike);
-  const winRateData = learnedParams.winRateByDistance || DEFAULT_EMPIRICAL_TABLES.winRateByDistance;
+
+  // Prefer per-token distance tables (SOL at 0.3% ≠ BTC at 0.3%)
+  // Fall back to global tables if token-specific data is insufficient
+  const tokenDistData = token && learnedParams.byToken?.[token]?.winRateByDistance;
+  const tokenBucketCount = tokenDistData ? Object.keys(tokenDistData).length : 0;
+  const useTokenTables = tokenBucketCount >= 5; // Need at least 5 populated buckets
+  const winRateData = useTokenTables ? tokenDistData : (learnedParams.winRateByDistance || DEFAULT_EMPIRICAL_TABLES.winRateByDistance);
+  if (useTokenTables) {
+    // Only log once per evaluation (caller handles this contextually)
+  }
 
   // Get sorted bucket keys from learned data
   const buckets = Object.keys(winRateData).map(Number).sort((a, b) => a - b);
@@ -6091,6 +6100,24 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
   }
 
+  // TIME-DECAY ADJUSTMENT: less time remaining = higher probability favored side holds
+  // The empirical tables average across all time windows, but a bet at 0.3% distance with
+  // 2 min left is much more likely to win than at 7 min left (less time for price to reverse).
+  // The theoretical model handles this in low-vol via z-scores, but in medium vol we need
+  // a direct adjustment. Based on random walk: P(cross barrier) ~ sqrt(time/vol).
+  // Conservative: boost up to 8% of the gap between current rate and 95% cap.
+  if (isFavoredSideBet && timeRemaining <= 5 && timeRemaining > 0 && adjustedWinRate < 93) {
+    const gapTo95 = 95 - adjustedWinRate;
+    const timeDecay = (5 - timeRemaining) / 5; // 0 at 5min, 1 at 0min
+    // Scale boost by distance: farther from strike = stronger time-decay advantage
+    const distanceScale = Math.min(1, absDistance / 0.5); // full effect at 0.5%+
+    const timeBoost = gapTo95 * 0.08 * timeDecay * distanceScale;
+    if (timeBoost > 0.5) {
+      adjustedWinRate += timeBoost;
+      console.log(` Time-decay boost: +${timeBoost.toFixed(1)}% (${timeRemaining.toFixed(1)}min left, ${absDistance.toFixed(2)}% dist) → ${adjustedWinRate.toFixed(1)}%`);
+    }
+  }
+
   console.log(` Edge calc: empirical=${empirical.winRate.toFixed(1)}% vs market=${marketImpliedProb.toFixed(0)}% @ distance=${absDistance.toFixed(2)}%`);
 
   // DYNAMIC FEE CALCULATION - Kalshi formula: ceil(0.07 -- contracts -- price -- (1-price))
@@ -6233,6 +6260,27 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   if (isStaleMomentum) {
     adjustedSignalStrength += -15;
     windowPenalties.push(`stale momentum -15pts`);
+  }
+
+  // SPREAD-WIDTH SIGNAL: tight spread = market makers agree (more reliable), wide = uncertainty
+  // Spread is already used as a cost (spreadPenalty), but it's also information about confidence
+  if (orderbook) {
+    const spread = betSide === 'YES' ? orderbook.yesSpread : orderbook.noSpread;
+    if (spread !== undefined && spread >= 0) {
+      if (spread <= 2) {
+        // Very tight spread: high agreement, boost confidence
+        adjustedSignalStrength += 4;
+        windowPenalties.push(`tight spread +4pts (${spread}c)`);
+      } else if (spread <= 4) {
+        // Normal spread: slight boost
+        adjustedSignalStrength += 2;
+        windowPenalties.push(`normal spread +2pts (${spread}c)`);
+      } else if (spread >= 7) {
+        // Wide spread: uncertainty, penalize
+        adjustedSignalStrength += -5;
+        windowPenalties.push(`wide spread -5pts (${spread}c)`);
+      }
+    }
   }
 
   // YES/NO bias adjustment: learned data shows NO wins more often across all tokens
@@ -6493,6 +6541,42 @@ function buildEmpiricalLookupTables(settlements) {
     const yesWinRate = (yesWins / tokenSettlements.length * 100);
     const noWinRate = 100 - yesWinRate;
 
+    // Build per-token distance tables (token-specific win rates by distance bucket)
+    // SOL at 0.3% behaves very differently from BTC at 0.3% due to volatility differences
+    const tokenWinRateByDistance = {};
+    const sortedTokenSettlements = [...tokenSettlements].sort((a, b) => a.pctFromStrike - b.pctFromStrike);
+    let tokenDistIdx = 0;
+
+    for (let bucketIdx = 0; bucketIdx < distanceBuckets.length; bucketIdx++) {
+      const bucket = distanceBuckets[bucketIdx];
+      const prevBucket = bucketIdx > 0 ? distanceBuckets[bucketIdx - 1] : 0;
+      let bCount = 0, bFavoredWins = 0;
+
+      while (tokenDistIdx < sortedTokenSettlements.length && sortedTokenSettlements[tokenDistIdx].pctFromStrike <= bucket) {
+        const d = sortedTokenSettlements[tokenDistIdx];
+        if (d.pctFromStrike > prevBucket) {
+          bCount++;
+          const yesFavored = d.wasAboveStrike;
+          const noFavored = d.wasBelowStrike;
+          const yesWon = d.result === 'yes';
+          const noWon = d.result === 'no';
+          if ((yesFavored && yesWon) || (noFavored && noWon)) bFavoredWins++;
+        }
+        tokenDistIdx++;
+      }
+
+      // Require 15+ samples per bucket for token-specific tables (smaller than global 5)
+      if (bCount >= 15) {
+        const capForBucket = distanceCaps[bucket] || 91;
+        const rawRate = (bFavoredWins / bCount * 100);
+        tokenWinRateByDistance[bucket] = {
+          count: bCount,
+          favoredWinRate: parseFloat(Math.min(capForBucket, rawRate).toFixed(2)),
+          surpriseRate: parseFloat((100 - Math.min(capForBucket, rawRate)).toFixed(2))
+        };
+      }
+    }
+
     tables.byToken[token] = {
       ...tables.byToken[token],
       sampleSize: tokenSettlements.length,
@@ -6500,8 +6584,14 @@ function buildEmpiricalLookupTables(settlements) {
       settlementDistanceStdDev: parseFloat(stdDev.toFixed(4)),
       yesWinRate: parseFloat(yesWinRate.toFixed(2)),
       noWinRate: parseFloat(noWinRate.toFixed(2)),
-      noBias: parseFloat((noWinRate - yesWinRate).toFixed(2))
+      noBias: parseFloat((noWinRate - yesWinRate).toFixed(2)),
+      winRateByDistance: tokenWinRateByDistance
     };
+
+    const tokenBucketCount = Object.keys(tokenWinRateByDistance).length;
+    if (tokenBucketCount > 0) {
+      console.log(` ${token}: built ${tokenBucketCount} per-token distance buckets`);
+    }
 
     // Learn optimal entry windows from data
     // Find distance range where favored side wins >= 65%
