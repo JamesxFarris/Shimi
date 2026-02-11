@@ -6173,8 +6173,11 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   if (isFavoredSideBet) {
     // Favored bets: standard win rate and edge thresholds
-    if (adjustedWinRate < (rules.minEmpiricalWinRate || 62)) {
-      reasons.push(`Win rate ${adjustedWinRate.toFixed(1)}% < ${rules.minEmpiricalWinRate || 62}%`);
+    const effectiveMinWinRate = regime.regime === 'low'
+      ? Math.max(60, (rules.minEmpiricalWinRate || 62) - 4)
+      : (rules.minEmpiricalWinRate || 62);
+    if (adjustedWinRate < effectiveMinWinRate) {
+      reasons.push(`Win rate ${adjustedWinRate.toFixed(1)}% < ${effectiveMinWinRate}%${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
     }
 
     // In low vol, outcomes are more predictable - smaller edge is acceptable but still need buffer
@@ -6204,8 +6207,9 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   // Hard block: no bets in the first 7 minutes of a 15-min market (>8 min remaining)
   // Tightened from 10min: only bet when sufficient price data has accumulated
-  if (timeRemaining > 8) {
-    reasons.push(`Too early: ${timeRemaining.toFixed(1)}min remaining > 8min max (market age < 7min)`);
+  const maxTimeRemaining = regime.regime === 'low' ? 9 : 8;
+  if (timeRemaining > maxTimeRemaining) {
+    reasons.push(`Too early: ${timeRemaining.toFixed(1)}min remaining > ${maxTimeRemaining}min max`);
   }
 
   if (!withinPriceWindow && isFavoredSideBet) {
@@ -6258,7 +6262,8 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // Early-entry penalty: within time window but >5 min remaining
   // Steeper scaling: 8min=-18, 7min=-12, 6min=-6, 5min=0
   if (withinTimeWindow && timeRemaining > 5) {
-    const earlyPenalty = -Math.round(Math.min(18, (timeRemaining - 5) * 6));
+    const earlyScale = regime.regime === 'low' ? 3 : 6;
+    const earlyPenalty = -Math.round(Math.min(18, (timeRemaining - 5) * earlyScale));
     adjustedSignalStrength += earlyPenalty;
     windowPenalties.push(`early-entry ${earlyPenalty}pts`);
   }
@@ -6326,7 +6331,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   // Low vol = more predictable outcomes, modest signal reduction allowed
   const baseMinSignal = rules.minSignalStrength || 58;
-  const effectiveMinSignal = regime.regime === 'low' ? Math.max(50, baseMinSignal - 8) : baseMinSignal;
+  const effectiveMinSignal = regime.regime === 'low' ? Math.max(46, baseMinSignal - 12) : baseMinSignal;
 
   // SOL: NO bias and saturation penalties already handle side selection naturally.
   // No extra signal floor or YES hard block — let the penalty system do its job.
