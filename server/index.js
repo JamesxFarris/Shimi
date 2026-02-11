@@ -264,7 +264,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
   // Selectivity rules (learned thresholds for when to bet)
   selectivityRules: {
     minSignalStrength: 58, // 0-100 score required to bet (raised from 50: only clear signals)
-    minEmpiricalWinRate: 68, // Minimum win rate from lookup tables (raised from 62: higher hit rate)
+    minEmpiricalWinRate: 64, // Minimum win rate from lookup tables (lowered from 68: allow borderline high-edge bets)
     minEdgeAfterFees: 5, // 5% minimum edge after all fees (raised from 3: real buffer after friction)
     minUnfavoredEdge: 8, // 8% minimum net edge for unfavored-side bets (raised from 5: long shots need bigger edge)
     maxBetsPerToken: 3, // Per-token concentration limit
@@ -6248,8 +6248,8 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       adjustedSignalStrength += bonus;
       windowPenalties.push(`late-game confirmed +${bonus}pts`);
     } else {
-      // Too early or no edge — steep penalty
-      const penalty = timeRemaining > 10 ? -25 : -15;
+      // Too early or no edge — penalty (softened: -10 instead of -15 for near-window markets)
+      const penalty = timeRemaining > 10 ? -25 : -10;
       adjustedSignalStrength += penalty;
       windowPenalties.push(`time ${penalty}pts (${timeRemaining.toFixed(1)}min left)`);
     }
@@ -6315,7 +6315,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const saturationThreshold = (betSide === 'YES' && tokenNoBiasForSat > 3) ? 2 : 3;
   const consecutiveSameSide = getConsecutiveSameSideCount(token, betSide);
   if (consecutiveSameSide >= saturationThreshold) {
-    const saturationPenalty = -Math.min(20, 5 * (consecutiveSameSide - (saturationThreshold - 1)));
+    const saturationPenalty = -Math.min(12, 5 * (consecutiveSameSide - (saturationThreshold - 1)));
     adjustedSignalStrength += saturationPenalty;
     windowPenalties.push(`saturation ${saturationPenalty}pts (${consecutiveSameSide}x ${betSide})`);
   }
@@ -6328,19 +6328,10 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const baseMinSignal = rules.minSignalStrength || 58;
   const effectiveMinSignal = regime.regime === 'low' ? Math.max(50, baseMinSignal - 8) : baseMinSignal;
 
-  // SOL penalty: 64% coin-flip rate means we need much higher conviction
-  // Require signal 68+ for SOL (10 points above base), and block SOL YES entirely
-  // (4.44% NO bias means YES bets fight against structural disadvantage)
-  if (token === 'SOL') {
-    const solMinSignal = Math.max(effectiveMinSignal, 68);
-    if (adjustedSignalStrength < solMinSignal) {
-      reasons.push(`SOL signal ${adjustedSignalStrength} < ${solMinSignal} (SOL requires higher conviction)`);
-    }
-    if (betSide === 'YES') {
-      reasons.push(`SOL YES blocked: 4.44% NO bias makes YES structurally disadvantaged`);
-    }
-  } else if (adjustedSignalStrength < effectiveMinSignal) {
-    reasons.push(`Signal ${adjustedSignalStrength} < ${effectiveMinSignal}${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
+  // SOL: NO bias and saturation penalties already handle side selection naturally.
+  // No extra signal floor or YES hard block — let the penalty system do its job.
+  if (adjustedSignalStrength < effectiveMinSignal) {
+    reasons.push(`Signal ${adjustedSignalStrength} < ${effectiveMinSignal}${regime.regime === 'low' ? ' (low-vol reduced)' : ''}${token === 'SOL' ? ' (SOL)' : ''}`);
   }
 
   // Final decision
