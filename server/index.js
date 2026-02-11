@@ -6273,7 +6273,8 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // Spread is already used as a cost (spreadPenalty), but it's also information about confidence
   if (orderbook) {
     const spread = betSide === 'YES' ? orderbook.yesSpread : orderbook.noSpread;
-    if (spread !== undefined && spread >= 0) {
+    if (spread !== undefined && spread > 0) {
+      // Only apply spread signal when we have real data (spread > 0, not missing)
       if (spread <= 2) {
         // Very tight spread: high agreement, boost confidence
         adjustedSignalStrength += 4;
