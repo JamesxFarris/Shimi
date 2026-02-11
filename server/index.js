@@ -5858,6 +5858,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
                                absDistance <= (entryWindows.distanceMax || 3.0);
   const withinTimeWindow = timeRemaining >= (entryWindows.timeMin || 2) &&
                            timeRemaining <= (entryWindows.timeMax || 10);
+  // Note: timeMax=10 means entry allowed when <=10min remain (i.e., 5+ min after market open)
 
   // Determine bet side: evaluate BOTH sides and pick the one with better edge
   const isAboveStrike = currentPrice > strikePrice;
@@ -6145,6 +6146,11 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
   }
 
+  // Hard block: no bets in the first 5 minutes of a 15-min market (>10 min remaining)
+  if (timeRemaining > 10) {
+    reasons.push(`Too early: ${timeRemaining.toFixed(1)}min remaining > 10min max (market age < 5min)`);
+  }
+
   if (!withinPriceWindow && isFavoredSideBet) {
     reasons.push(`Price ${marketPriceCents}c outside optimal window [${entryWindows.priceMin}-${entryWindows.priceMax}c]`);
   }
@@ -6185,20 +6191,17 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       adjustedSignalStrength += bonus;
       windowPenalties.push(`late-game confirmed +${bonus}pts`);
     } else {
-      // Too early or no edge standard penalty
-      const tMin = entryWindows.timeMin || 2;
-      const tMax = entryWindows.timeMax || 13;
-      const farOutside = timeRemaining < tMin * 0.5 || timeRemaining > tMax * 1.15;
-      const penalty = farOutside ? -10 : -5;
+      // Too early or no edge — steep penalty
+      const penalty = timeRemaining > 10 ? -25 : -15;
       adjustedSignalStrength += penalty;
-      windowPenalties.push(`time ${penalty}pts`);
+      windowPenalties.push(`time ${penalty}pts (${timeRemaining.toFixed(1)}min left)`);
     }
   }
 
-  // Early-entry penalty: within time window but too early (>5 min left)
-  // Scales with time remaining: 13min=-12, 10min=-8, 8min=-5, 6min=-2, 5min=0
+  // Early-entry penalty: within time window but >5 min remaining
+  // Steeper scaling: 10min=-20, 8min=-12, 6min=-4, 5min=0
   if (withinTimeWindow && timeRemaining > 5) {
-    const earlyPenalty = -Math.round(Math.min(12, (timeRemaining - 5) * 1.5));
+    const earlyPenalty = -Math.round(Math.min(20, (timeRemaining - 5) * 4));
     adjustedSignalStrength += earlyPenalty;
     windowPenalties.push(`early-entry ${earlyPenalty}pts`);
   }

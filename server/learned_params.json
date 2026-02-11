@@ -92,7 +92,7 @@
         "distanceMin": 0.1,
         "distanceMax": 5,
         "timeMin": 2,
-        "timeMax": 13,
+        "timeMax": 10,
         "priceMin": 40,
         "priceMax": 95
       },
@@ -111,7 +111,7 @@
         "distanceMin": 0.15,
         "distanceMax": 5,
         "timeMin": 2,
-        "timeMax": 13,
+        "timeMax": 10,
         "priceMin": 40,
         "priceMax": 95
       },
@@ -130,7 +130,7 @@
         "distanceMin": 0.2,
         "distanceMax": 5,
         "timeMin": 2,
-        "timeMax": 13,
+        "timeMax": 10,
         "priceMin": 40,
         "priceMax": 95
       },
