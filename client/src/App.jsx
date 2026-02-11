@@ -1869,19 +1869,6 @@ function App() {
                   </button>
                 </div>
 
-                {/* Tracked Tokens */}
-                <div className="settings-card wide">
-                  <h3 className="settings-card-title">Tracked Cryptocurrencies</h3>
-                  <div className="tokens-grid">
-                    {Object.entries(TOKEN_CONFIG).map(([token, config]) => (
-                      <div key={token} className="token-item" style={{ '--token-color': config.color }}>
-                        <span className="token-icon">{config.icon}</span>
-                        <span className="token-symbol">{token}</span>
-                        <span className="token-name">{config.name}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
               </div>
             </div>
           )}
