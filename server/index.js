@@ -5064,14 +5064,14 @@ async function runAutoBet(userId = null) {
       return;
     }
 
-    // Half-Kelly bet sizing: scale position with edge magnitude
+    // Quarter-Kelly bet sizing: conservative sizing to survive variance while compounding
     const bankroll = userConfig.bankroll || 0;
-    const kellyFraction = 0.5 * (best.edge / 100) / (1 - best.betPrice);
+    const kellyFraction = 0.25 * (best.edge / 100) / (1 - best.betPrice);
     const kellyBet = Math.round(kellyFraction * bankroll);
     // Cap at remaining cycle budget, floor at 1 contract price
     const MAX_BET_CENTS = Math.min(hardCapCents, Math.max(priceCents, kellyBet));
 
-    console.log(` Bet sizing: half-Kelly=${(kellyFraction*100).toFixed(1)}% of $${(bankroll/100).toFixed(2)} = $${(kellyBet/100).toFixed(2)}, capped=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
+    console.log(` Bet sizing: quarter-Kelly=${(kellyFraction*100).toFixed(1)}% of $${(bankroll/100).toFixed(2)} = $${(kellyBet/100).toFixed(2)}, capped=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
 
     // Calculate contracts but cap total cost
     let count = Math.floor(MAX_BET_CENTS / priceCents);
