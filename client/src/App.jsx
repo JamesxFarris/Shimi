@@ -233,12 +233,16 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
         </div>
       )}
 
-      {/* Locked overlay - shows filter reason */}
+      {/* Locked overlay - shows all filter reasons */}
       {isLocked && !isWaiting && (
         <div className="locked-overlay">
           <div className="smoke-effect"></div>
           <div className="locked-icon">🔒</div>
-          <div className="locked-text">{opp.filterReason || 'NO EDGE'}</div>
+          <div className="locked-reasons">
+            {(opp.filterReasons && opp.filterReasons.length > 0 ? opp.filterReasons : [opp.filterReason || 'NO EDGE']).map((r, i) => (
+              <div key={i} className="locked-reason-item">{r}</div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -1598,6 +1602,21 @@ function App() {
                         <span className="stat-value">${performance.summary.totalWageredDollars}</span>
                       </div>
                     </div>
+
+                    {/* Per-Token P/L Breakdown */}
+                    {performance.byToken && Object.keys(performance.byToken).length > 0 && (
+                      <div className="history-stats token-breakdown">
+                        {Object.entries(performance.byToken).map(([token, data]) => (
+                          <div key={token} className={`stat-summary ${data.profit >= 0 ? 'positive' : 'negative'}`}>
+                            <span className="stat-label">{token}</span>
+                            <span className="stat-value">
+                              {data.profit >= 0 ? '+' : ''}${(data.profit / 100).toFixed(2)}
+                            </span>
+                            <span className="stat-sublabel">{data.wins}W / {data.losses}L</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
 

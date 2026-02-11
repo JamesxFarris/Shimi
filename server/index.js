@@ -263,7 +263,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
 
   // Selectivity rules (learned thresholds for when to bet)
   selectivityRules: {
-    minSignalStrength: 55, // 0-100 score required to bet (with soft penalties, 55 is appropriate)
+    minSignalStrength: 50, // 0-100 score required to bet (lowered from 55: bets scoring 50-54 still have positive net edge)
     minEmpiricalWinRate: 62, // Minimum win rate from lookup tables (empirically grounded)
     minEdgeAfterFees: 3, // 3% minimum edge after all fees (still +EV)
     minUnfavoredEdge: 5, // 5% minimum net edge for unfavored-side bets (higher bar)
@@ -5064,10 +5064,14 @@ async function runAutoBet(userId = null) {
       return;
     }
 
-    // Static bet sizing: spend up to the remaining per-token/cycle budget
-    const MAX_BET_CENTS = hardCapCents;
+    // Half-Kelly bet sizing: scale position with edge magnitude
+    const bankroll = userConfig.bankroll || 0;
+    const kellyFraction = 0.5 * (best.edge / 100) / (1 - best.betPrice);
+    const kellyBet = Math.round(kellyFraction * bankroll);
+    // Cap at remaining cycle budget, floor at 1 contract price
+    const MAX_BET_CENTS = Math.min(hardCapCents, Math.max(priceCents, kellyBet));
 
-    console.log(` Bet sizing: budget=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
+    console.log(` Bet sizing: half-Kelly=${(kellyFraction*100).toFixed(1)}% of $${(bankroll/100).toFixed(2)} = $${(kellyBet/100).toFixed(2)}, capped=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
 
     // Calculate contracts but cap total cost
     let count = Math.floor(MAX_BET_CENTS / priceCents);
@@ -5115,16 +5119,6 @@ async function runAutoBet(userId = null) {
       scaleInNumber: newBetCount
     };
 
-    // Mark this market as bet on BEFORE placing the bet (or update for scale-in)
-    recentBets.set(runBetKey, {
-      timestamp: now,
-      side: best.betSide,
-      probability: parseFloat(best.winProbability),
-      signalStrength: best.signalStrength,
-      regime: best.regime,
-      betCount: newBetCount
-    });
-
     // Record for empirical rate limiting (with side for saturation tracking)
     recordEmpiricalBet(best.token || best.cryptoType, best.betSide, best.isFavoredSideBet !== false);
 
@@ -5140,6 +5134,16 @@ async function runAutoBet(userId = null) {
       userBetHistory.unshift(betRecord);
       userConfig.bankroll -= betRecord.totalCost;
       trackSpend(userId, betRecord.totalCost, getTokenFromTicker(best.ticker) || best.cryptoType || best.assetType);
+
+      // Mark recentBets AFTER simulated bet is recorded
+      recentBets.set(runBetKey, {
+        timestamp: now,
+        side: best.betSide,
+        probability: parseFloat(best.winProbability),
+        signalStrength: best.signalStrength,
+        regime: best.regime,
+        betCount: newBetCount
+      });
 
       // Track for performance analysis
       trackBet({
@@ -5277,6 +5281,16 @@ async function runAutoBet(userId = null) {
     betRecord.totalCost = filledCount * (order.average_fill_price || priceCents);
     userBetHistory.unshift(betRecord);
     trackSpend(userId, betRecord.totalCost, getTokenFromTicker(best.ticker) || best.cryptoType || best.assetType);
+
+    // Mark recentBets AFTER successful order fill (not before, so API failures allow retry)
+    recentBets.set(runBetKey, {
+      timestamp: now,
+      side: best.betSide,
+      probability: parseFloat(best.winProbability),
+      signalStrength: best.signalStrength,
+      regime: best.regime,
+      betCount: newBetCount
+    });
 
     // Track for performance analysis
     trackBet({
@@ -6030,7 +6044,8 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   }
 
   // Apply regime multiplier for BOTH directions
-  if (regime.multiplier && regime.multiplier !== 1) {
+  // Skip if theoretical model already handled volatility (theoreticalWeight > 0 means vol was blended in)
+  if (regime.multiplier && regime.multiplier !== 1 && theoreticalWeight === 0) {
     const empiricalEdge = adjustedWinRate - marketImpliedProb;
     if (regime.multiplier < 1) {
       // High vol: shrink edge toward market price
@@ -6253,7 +6268,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   }
 
   // Low vol = more predictable outcomes, lower signal threshold needed
-  const baseMinSignal = rules.minSignalStrength || 55;
+  const baseMinSignal = rules.minSignalStrength || 50;
   const effectiveMinSignal = regime.regime === 'low' ? Math.max(45, baseMinSignal - 10) : baseMinSignal;
   if (adjustedSignalStrength < effectiveMinSignal) {
     reasons.push(`Signal ${adjustedSignalStrength} < ${effectiveMinSignal}${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
@@ -6310,6 +6325,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     winProbability: adjustedWinRate.toFixed(1),
     isRecommended: shouldBet,
     filterReason: reasons.length > 0 ? reasons[0] : (shouldBet ? null : `Edge ${netEdge.toFixed(1)}%`),
+    filterReasons: reasons,
     isObviousBet: adjustedWinRate >= 70,
     isHighProb: adjustedWinRate >= 60,
     isLocked: !shouldBet,
