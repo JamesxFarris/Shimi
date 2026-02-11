@@ -307,7 +307,17 @@ let learnedParams = JSON.parse(JSON.stringify(DEFAULT_EMPIRICAL_TABLES));
 try {
   if (fs.existsSync(LEARNED_PARAMS_FILE)) {
     const data = JSON.parse(fs.readFileSync(LEARNED_PARAMS_FILE, 'utf8'));
-    learnedParams = { ...DEFAULT_LEARNED_PARAMS, ...data };
+    // Deep merge: preserve nested structures (byToken, winRateByDistance, etc.)
+    // Shallow merge would lose ETH/SOL if saved file only has partial byToken
+    learnedParams = {
+      ...DEFAULT_LEARNED_PARAMS,
+      ...data,
+      byToken: { ...DEFAULT_LEARNED_PARAMS.byToken, ...data.byToken },
+      winRateByDistance: { ...DEFAULT_LEARNED_PARAMS.winRateByDistance, ...(data.winRateByDistance || {}) },
+      volatilityRegimes: { ...DEFAULT_LEARNED_PARAMS.volatilityRegimes, ...(data.volatilityRegimes || {}) },
+      thresholds: { ...DEFAULT_LEARNED_PARAMS.thresholds, ...(data.thresholds || {}) },
+      yesNoBias: { ...DEFAULT_LEARNED_PARAMS.yesNoBias, ...(data.yesNoBias || {}) }
+    };
     console.log(` Loaded learned params: sample size ${learnedParams.sampleSize}, last updated ${learnedParams.lastUpdated}`);
   }
 } catch (err) {
@@ -5683,8 +5693,8 @@ function calculateSignalStrength(winRate, edge, sampleSize, regime, timeRemainin
   };
   score += regimePoints[regime] || 0;
 
-  // Time sweet spot contribution: 0-5 points
-  // Optimal: 3-8 minutes (enough time for price to stabilize but not too much uncertainty)
+  // Time sweet spot contribution: 0-8 points
+  // Optimal: 2-5 minutes (enough data, high certainty near expiry)
   let timePoints = 0;
   if (timeRemaining >= 2 && timeRemaining <= 5) {
     timePoints = 8; // Near expiry with data = highest certainty
@@ -5749,10 +5759,6 @@ function lookupEmpiricalWinRate(pctFromStrike, token = null) {
   const tokenBucketCount = tokenDistData ? Object.keys(tokenDistData).length : 0;
   const useTokenTables = tokenBucketCount >= 5; // Need at least 5 populated buckets
   const winRateData = useTokenTables ? tokenDistData : (learnedParams.winRateByDistance || DEFAULT_EMPIRICAL_TABLES.winRateByDistance);
-  if (useTokenTables) {
-    // Only log once per evaluation (caller handles this contextually)
-  }
-
   // Get sorted bucket keys from learned data
   const buckets = Object.keys(winRateData).map(Number).sort((a, b) => a - b);
 
@@ -5833,7 +5839,8 @@ function lookupEmpiricalWinRate(pctFromStrike, token = null) {
     sampleSize,
     bucket,
     surpriseRate: 100 - winRate,
-    usedLearnedData: !!(upperData && upperData.count >= MIN_SAMPLES_FOR_LEARNED)
+    usedLearnedData: !!(upperData && upperData.count >= MIN_SAMPLES_FOR_LEARNED),
+    usedTokenTables: useTokenTables
   };
 }
 
@@ -6313,7 +6320,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   }
 
   if (windowPenalties.length > 0) {
-    console.log(` Window penalties: ${windowPenalties.join(', ')} signal ${signalStrength}${adjustedSignalStrength}`);
+    console.log(` Window penalties: ${windowPenalties.join(', ')} signal ${signalStrength}→${adjustedSignalStrength}`);
   }
 
   // Low vol = more predictable outcomes, modest signal reduction allowed
@@ -6328,7 +6335,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     if (adjustedSignalStrength < solMinSignal) {
       reasons.push(`SOL signal ${adjustedSignalStrength} < ${solMinSignal} (SOL requires higher conviction)`);
     }
-    if (betSide === 'YES' && isFavoredSideBet) {
+    if (betSide === 'YES') {
       reasons.push(`SOL YES blocked: 4.44% NO bias makes YES structurally disadvantaged`);
     }
   } else if (adjustedSignalStrength < effectiveMinSignal) {
@@ -6371,7 +6378,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     regimeMultiplier: regime.multiplier,
     sampleSize: empirical.sampleSize,
     bucket: empirical.bucket,
-    extrapolated: empirical.extrapolated,
+    usedTokenTables: empirical.usedTokenTables || false,
     withinDistanceWindow,
     withinTimeWindow,
     withinPriceWindow,
@@ -7437,41 +7444,7 @@ function getNoBiasBonus(token) {
   return 3;
 }
 
-/**
- * Get empirical win rate for favored side at a given distance from strike
- * Uses historical data to estimate probability instead of theoretical models
- * @param {number} pctFromStrike - Percentage distance from strike price
- * @returns {number|null} Win rate percentage (50-100), or null if insufficient data
- */
-function getEmpiricalWinRate(pctFromStrike) {
-  const winRateData = learnedParams.winRateByDistance;
-  if (!winRateData || Object.keys(winRateData).length === 0) {
-    return null; // No learned data, use statistical model
-  }
-
-  // Find the closest bucket that is >= pctFromStrike
-  const buckets = Object.keys(winRateData).map(Number).sort((a, b) => a - b);
-
-  for (const bucket of buckets) {
-    if (pctFromStrike <= bucket) {
-      const data = winRateData[bucket];
-      if (data && data.count >= 20) {
-        return data.favoredSideWinRate;
-      }
-    }
-  }
-
-  // If distance is larger than all buckets, use the largest bucket
-  const lastBucket = buckets[buckets.length - 1];
-  if (lastBucket && winRateData[lastBucket]?.count >= 20) {
-    // For larger distances, extrapolate slightly higher win rate
-    const baseRate = winRateData[lastBucket].favoredSideWinRate;
-    const extrapolation = Math.min(5, (pctFromStrike - lastBucket) * 2);
-    return Math.min(99, baseRate + extrapolation);
-  }
-
-  return null; // Insufficient data
-}
+// Dead code removed: getEmpiricalWinRate() was superseded by lookupEmpiricalWinRate()
 
 /**
  * Get token volatility factor for adjusting thresholds
