@@ -1359,7 +1359,7 @@ function App() {
                   <span className="risk-card-title">Risk Exposure</span>
                 </div>
                 <div className="risk-tokens">
-                  {['BTC', 'ETH', 'SOL'].map(token => {
+                  {['BTC', 'ETH', 'SOL', 'XRP'].map(token => {
                     const cycleSpend = (risk.rollingSpendByToken?.[token] || 0);
                     const cycleLimit = risk.rollingTokenCap || (riskSettings.maxPerTokenPerCycle || 500);
                     const atLimit = cycleSpend >= cycleLimit * 0.9;

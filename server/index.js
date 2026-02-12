@@ -258,6 +258,23 @@ const DEFAULT_EMPIRICAL_TABLES = {
         priceMin: 55, // Raised from 40
         priceMax: 80 // Lower ceiling: SOL's 64% coin-flip rate makes high-price bets risky
       }
+    },
+    XRP: {
+      sampleSize: 0,
+      avgSettlementDistance: 0.35,
+      settlementDistanceStdDev: 0,
+      yesWinRate: 50,
+      noWinRate: 50,
+      noBias: 0,
+      volatilityRank: 3, // XRP similar volatility to SOL
+      optimalEntryWindows: {
+        distanceMin: 0.2,
+        distanceMax: 5.0,
+        timeMin: 2,
+        timeMax: 7,
+        priceMin: 55,
+        priceMax: 80
+      }
     }
   },
 
@@ -1138,11 +1155,12 @@ const OBVIOUS_BET_MIN_EDGE = 1; // 1% edge OK if probability is >90% (free money
 // CRYPTO PRICE TRACKING - EXPANDED TOKENS
 // ============================================
 
-// Only tracking 15-minute BTC, ETH, SOL markets
+// Only tracking 15-minute BTC, ETH, SOL, XRP markets
 const TRACKED_TOKENS = {
   BTC: { name: 'Bitcoin', minPrice: 10000, maxPrice: 500000 },
   ETH: { name: 'Ethereum', minPrice: 100, maxPrice: 20000 },
-  SOL: { name: 'Solana', minPrice: 1, maxPrice: 1000 }
+  SOL: { name: 'Solana', minPrice: 1, maxPrice: 1000 },
+  XRP: { name: 'XRP', minPrice: 0.1, maxPrice: 50 }
 };
 
 // NEWS & SENTIMENT - module imported from ./sentiment.js
@@ -1220,7 +1238,8 @@ Object.keys(TRACKED_TOKENS).forEach(token => {
 const KRAKEN_SYMBOLS = {
   BTC: 'BTC/USD',
   ETH: 'ETH/USD',
-  SOL: 'SOL/USD'
+  SOL: 'SOL/USD',
+  XRP: 'XRP/USD'
 };
 
 // Reverse map: "BTC/USD" -> "BTC"
@@ -1231,7 +1250,7 @@ for (const [token, symbol] of Object.entries(KRAKEN_SYMBOLS)) {
 
 // CoinGecko ID mapping (FALLBACK - slower but reliable)
 const COINGECKO_IDS = {
-  BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana'
+  BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana', XRP: 'ripple'
 };
 
 // Track which price source we're using
@@ -1280,7 +1299,7 @@ function initKrakenWebSocket() {
     krakenWsReconnectDelay = 1000;
     console.log(' Kraken WebSocket connected - real-time prices active');
 
-    // Subscribe to ticker for BTC/USD, ETH/USD, SOL/USD
+    // Subscribe to ticker for all tracked tokens
     const subscribeMsg = JSON.stringify({
       method: 'subscribe',
       params: {
@@ -1344,7 +1363,8 @@ let coinbaseWsReconnectTimer = null;
 const COINBASE_SYMBOLS = {
   'BTC-USD': 'BTC',
   'ETH-USD': 'ETH',
-  'SOL-USD': 'SOL'
+  'SOL-USD': 'SOL',
+  'XRP-USD': 'XRP'
 };
 
 function initCoinbaseWebSocket() {
@@ -1430,7 +1450,8 @@ async function fetchKrakenPrices() {
     const KRAKEN_RESPONSE_MAP = {
       'XXBTZUSD': 'BTC', 'XBTUSD': 'BTC',
       'XETHZUSD': 'ETH', 'ETHUSD': 'ETH',
-      'SOLUSD': 'SOL'
+      'SOLUSD': 'SOL',
+      'XXRPZUSD': 'XRP', 'XRPUSD': 'XRP'
     };
 
     for (const [pair, ticker] of Object.entries(data.result || {})) {
@@ -3153,11 +3174,12 @@ async function fetchCryptoMarkets() {
   }
 
   try {
-    // ONLY fetch 15-minute BTC, ETH, SOL markets
+    // ONLY fetch 15-minute BTC, ETH, SOL, XRP markets
     const cryptoSeries = [
       'KXBTC15M', // Bitcoin 15-minute up/down
       'KXETH15M', // Ethereum 15-minute up/down
       'KXSOL15M', // Solana 15-minute up/down
+      'KXXRP15M', // XRP 15-minute up/down
     ];
 
     const allMarkets = [];
@@ -3391,9 +3413,9 @@ app.get('/api/opportunities/all', async (req, res) => {
       })
       .filter(m => m !== null);
 
-    // ALWAYS SHOW 3 CARDS - one for each token (BTC, ETH, SOL)
+    // ALWAYS SHOW CARDS - one for each token (BTC, ETH, SOL, XRP)
     // Create placeholder cards for tokens without active markets
-    const tokenSlots = ['BTC', 'ETH', 'SOL'].map(token => {
+    const tokenSlots = Object.keys(TRACKED_TOKENS).map(token => {
       // Find the best opportunity for this token
       const tokenOpps = allAnalyzed.filter(m => m.assetType === token || m.cryptoType === token);
 
@@ -4874,7 +4896,7 @@ async function runAutoBet(userId = null) {
 
     // Show regime status for each token
     console.log(` Volatility regimes:`);
-    for (const token of ['BTC', 'ETH', 'SOL']) {
+    for (const token of Object.keys(TRACKED_TOKENS)) {
       const regime = detectVolatilityRegime(token);
       console.log(` ${token}: ${regime.regime} (${regime.reason})`);
     }
@@ -6527,7 +6549,7 @@ function buildEmpiricalLookupTables(settlements) {
   }
 
   // Build token-specific stats
-  const tokens = ['BTC', 'ETH', 'SOL'];
+  const tokens = Object.keys(TRACKED_TOKENS);
   for (const token of tokens) {
     const tokenSettlements = distances.filter(d => d.token === token);
     if (tokenSettlements.length < 20) continue;
@@ -6777,7 +6799,7 @@ function getRecentUnfavoredBetCount() {
  */
 async function fetchBulkHistoricalData(token = 'all', maxPages = 1000, userConfig = null) {
   const cfg = userConfig || config;
-  const tokens = token === 'all' ? ['BTC', 'ETH', 'SOL'] : [token.toUpperCase()];
+  const tokens = token === 'all' ? Object.keys(TRACKED_TOKENS) : [token.toUpperCase()];
   const allSettlements = [];
 
   for (const t of tokens) {
@@ -6858,7 +6880,7 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 1000, userConfi
 // Legacy function kept for backwards compatibility - redirects to new implementation
 async function fetchBulkHistoricalDataLegacy(token = 'all', maxPages = 1000, userConfig = null) {
   const cfg = userConfig || config;
-  const tokens = token === 'all' ? ['BTC', 'ETH', 'SOL'] : [token.toUpperCase()];
+  const tokens = token === 'all' ? Object.keys(TRACKED_TOKENS) : [token.toUpperCase()];
   const allSettlements = [];
 
   for (const t of tokens) {
@@ -7482,7 +7504,7 @@ app.get('/api/historical/crypto-settlements', async (req, res) => {
     const userConfig = req.userState?.config || config;
 
     const cryptoSeries = token === 'all'
-      ? ['KXBTC15M', 'KXETH15M', 'KXSOL15M']
+      ? Object.keys(TRACKED_TOKENS).map(t => `KX${t}15M`)
       : [`KX${token.toUpperCase()}15M`];
 
     const allMarkets = [];
@@ -7780,7 +7802,7 @@ app.get('/api/historical/params', (req, res) => {
 // POST /api/historical/snapshot
 app.post('/api/historical/snapshot', async (req, res) => {
   try {
-    const tokens = ['BTC', 'ETH', 'SOL'];
+    const tokens = Object.keys(TRACKED_TOKENS);
     let snapshotCount = 0;
 
     for (const token of tokens) {
