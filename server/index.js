@@ -6025,10 +6025,10 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
         if (volRatio < 0.15) {
           // Ultra-low vol (< 15% of avg): z-score model is extremely reliable
           // Price is barely moving, distance from strike is very predictive
-          theoreticalWeight = 0.55 + timeBonus * 0.20;
+          theoreticalWeight = 0.65 + timeBonus * 0.20;
         } else if (volRatio < 0.5) {
-          // Very low vol: 40% base + up to 20% near expiry
-          theoreticalWeight = 0.40 + timeBonus * 0.20;
+          // Very low vol: 50% base + up to 20% near expiry
+          theoreticalWeight = 0.50 + timeBonus * 0.20;
         } else if (volRatio < 0.8) {
           // Low vol: 20% base + up to 15% near expiry
           theoreticalWeight = 0.20 + timeBonus * 0.15;
@@ -6146,7 +6146,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // Account for fill slippage: convert cents to % of market price (same units as feePct/spreadPenalty)
   // In low-vol regimes, order books are calmer -- reduce slippage assumption
   const baseSlippageCents = userRules.fillSlippageCents ?? 3;
-  const slippageCents = regime.regime === 'low' ? Math.max(1, baseSlippageCents - 1) : baseSlippageCents;
+  const slippageCents = regime.regime === 'low' ? Math.max(1, baseSlippageCents - 2) : baseSlippageCents;
   const slippagePct = (slippageCents / (marketPrice * 100)) * 100;
   const grossEdge = adjustedWinRate - marketImpliedProb;
   const netEdge = grossEdge - feePct - spreadPenalty - slippagePct;
