@@ -5096,10 +5096,21 @@ async function runAutoBet(userId = null) {
       return;
     }
 
-    // Flat sizing: always bet the per-token cycle limit (Kelly temporarily disabled)
-    const MAX_BET_CENTS = hardCapCents;
+    // Quarter-Kelly sizing: balances growth vs. variance protection
+    const bankroll = userConfig.bankroll || 0;
+    const kellyFraction = bankroll > 0
+      ? 0.25 * (best.edge / 100) / Math.max(0.01, 1 - best.betPrice)
+      : 0;
+    const kellyBet = Math.max(0, Math.round(kellyFraction * bankroll));
+    // In low-vol, be more aggressive (1/3 Kelly instead of 1/4) since outcomes are more predictable
+    const isLowVol = best.regime === 'low';
+    const aggKellyBet = isLowVol
+      ? Math.max(0, Math.round((1/3) * (best.edge / 100) / Math.max(0.01, 1 - best.betPrice) * bankroll))
+      : kellyBet;
+    // Cap at cycle budget, floor at 1 contract
+    const MAX_BET_CENTS = Math.min(hardCapCents, Math.max(priceCents, aggKellyBet));
 
-    console.log(` Bet sizing: flat per-token limit=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
+    console.log(` Bet sizing: Kelly=${(kellyFraction*100).toFixed(1)}% bankroll=$${(bankroll/100).toFixed(2)} kellyBet=$${(aggKellyBet/100).toFixed(2)}${isLowVol ? ' (1/3 low-vol)' : ''} capped=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
 
     // Calculate contracts but cap total cost
     let count = Math.floor(MAX_BET_CENTS / priceCents);
@@ -5884,6 +5895,11 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     return { shouldBet: false, reasons: ['Missing required data'] };
   }
 
+  // Filter phantom markets: no real orders on one side
+  if (!parsed.yesAsk || parsed.yesAsk <= 0.01 || !parsed.noAsk || parsed.noAsk <= 0.01) {
+    return { shouldBet: false, reasons: ['No real orders (phantom market)'] };
+  }
+
   // Calculate distance from strike
   const pctFromStrike = ((currentPrice - strikePrice) / strikePrice) * 100;
   const absDistance = Math.abs(pctFromStrike);
@@ -6206,6 +6222,12 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       reasons.push(`Edge ${netEdge.toFixed(1)}% < ${effectiveMinEdge}%${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
     }
   } else {
+    // Unfavored bets at near-zero distance are coin flips — model has no signal
+    const coinFlipDist = getCoinFlipThreshold(token);
+    if (absDistance < coinFlipDist) {
+      reasons.push(`Unfavored at coin-flip distance: ${absDistance.toFixed(3)}% < ${coinFlipDist}% threshold`);
+    }
+
     // Unfavored bets: skip win rate filter (inherently <50%), require higher edge + cheap price
     const minUnfavoredEdge = rules.minUnfavoredEdge || 8;
     if (netEdge < minUnfavoredEdge) {
@@ -6214,8 +6236,8 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     if (marketPriceCents < 20) {
       reasons.push(`Unfavored price ${marketPriceCents}c < 20c min`);
     }
-    if (marketPriceCents > 35) {
-      reasons.push(`Unfavored price ${marketPriceCents}c > 35c max`);
+    if (marketPriceCents > 40) {
+      reasons.push(`Unfavored price ${marketPriceCents}c > 40c max`);
     }
     const maxUnfavoredPerHour = rules.maxUnfavoredPerHour || 1; // Tightened from 2: limit long-shot exposure
     if (getRecentUnfavoredBetCount() >= maxUnfavoredPerHour) {
@@ -6230,13 +6252,16 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     reasons.push(`Too early: ${timeRemaining.toFixed(1)}min remaining > ${maxTimeRemaining}min max`);
   }
 
-  if (!withinPriceWindow && isFavoredSideBet) {
-    reasons.push(`Price ${marketPriceCents}c outside optimal window [${entryWindows.priceMin}-${entryWindows.priceMax}c]`);
-  }
-
   // Apply soft penalties for distance/time instead of hard rejections
   let adjustedSignalStrength = signalStrength;
   let windowPenalties = [];
+
+  if (!withinPriceWindow && isFavoredSideBet) {
+    // Soft penalty instead of hard rejection — let edge calc decide
+    const pricePenalty = marketPriceCents < (entryWindows.priceMin || 40) ? -10 : -8;
+    adjustedSignalStrength += pricePenalty;
+    windowPenalties.push(`price-window ${pricePenalty}pts (${marketPriceCents}c outside [${entryWindows.priceMin || 40}-${entryWindows.priceMax || 95}c])`);
+  }
 
   if (!withinDistanceWindow) {
     const dMin = entryWindows.distanceMin || 0.1;
