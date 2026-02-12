@@ -3212,7 +3212,7 @@ async function fetchCryptoMarkets() {
       return isValid;
     });
 
-    console.log(` Fetched ${allMarkets.length} markets, ${cryptoMarkets.length} valid 15-minute BTC/ETH/SOL`);
+    console.log(` Fetched ${allMarkets.length} markets, ${cryptoMarkets.length} valid 15-minute ${Object.keys(TRACKED_TOKENS).join('/')}`);
 
     marketCache.data = cryptoMarkets;
     marketCache.lastFetch = now;
@@ -3506,11 +3506,7 @@ app.get('/api/opportunities/all', async (req, res) => {
         maxPerTokenPerCycle: getMaxPerTokenPerCycle(userConfig),
         byToken: getExposureByToken(req.userState),
         positionCount: (userPortfolio.positions || []).length,
-        rollingSpendByToken: {
-          BTC: getRollingSpendByToken(req.userId, 'BTC', CYCLE_WINDOW_MS),
-          ETH: getRollingSpendByToken(req.userId, 'ETH', CYCLE_WINDOW_MS),
-          SOL: getRollingSpendByToken(req.userId, 'SOL', CYCLE_WINDOW_MS)
-        },
+        rollingSpendByToken: Object.fromEntries(Object.keys(TRACKED_TOKENS).map(t => [t, getRollingSpendByToken(req.userId, t, CYCLE_WINDOW_MS)])),
         rollingTokenCap: getMaxPerTokenPerCycle(userConfig),
         maxTotalPerCycle: getMaxTotalPerCycle(userConfig),
         totalCycleSpend: getRollingTotalSpend(req.userId, CYCLE_WINDOW_MS),
@@ -4349,9 +4345,9 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     if (opportunities.length === 0) {
       return res.json({
         success: true,
-        message: 'Scanning 3 markets (BTC, ETH, SOL) - no auto-bet opportunities yet',
+        message: `Scanning ${Object.keys(TRACKED_TOKENS).length} markets (${Object.keys(TRACKED_TOKENS).join(', ')}) - no auto-bet opportunities yet`,
         bet: null,
-        scanned: 3 // Always 3 markets (BTC, ETH, SOL 15-min)
+        scanned: Object.keys(TRACKED_TOKENS).length
       });
     }
 
@@ -4655,10 +4651,22 @@ let lastScanStatus = {
   blockedReasons: [] // Track why bets weren't placed
 };
 
+// Track insufficient balance to avoid spamming Kalshi API
+let insufficientBalanceUntil = 0; // timestamp when we can try again
+
 async function runAutoBet(userId = null) {
   // Global kill switch check halts all betting immediately
   if (isKillSwitchActive()) {
     console.log(' KILL SWITCH: Skipping auto-bet cycle');
+    return;
+  }
+
+  // Insufficient balance backoff: don't spam Kalshi after balance error
+  if (Date.now() < insufficientBalanceUntil) {
+    const waitSec = Math.round((insufficientBalanceUntil - Date.now()) / 1000);
+    console.log(` BALANCE BACKOFF: Skipping scan, insufficient balance cooldown (${waitSec}s remaining)`);
+    lastScanStatus.status = 'error';
+    lastScanStatus.statusMessage = `Insufficient balance - waiting ${waitSec}s`;
     return;
   }
   try {
@@ -4745,12 +4753,8 @@ async function runAutoBet(userId = null) {
         }
       }
       // Show rolling spend per token (actual budget tracking)
-      const rollingSpend = {
-        BTC: getRollingSpendByToken(userId, 'BTC', CYCLE_WINDOW_MS),
-        ETH: getRollingSpendByToken(userId, 'ETH', CYCLE_WINDOW_MS),
-        SOL: getRollingSpendByToken(userId, 'SOL', CYCLE_WINDOW_MS)
-      };
-      const totalSpend = rollingSpend.BTC + rollingSpend.ETH + rollingSpend.SOL;
+      const rollingSpend = Object.fromEntries(Object.keys(TRACKED_TOKENS).map(t => [t, getRollingSpendByToken(userId, t, CYCLE_WINDOW_MS)]));
+      const totalSpend = Object.values(rollingSpend).reduce((sum, v) => sum + v, 0);
       const maxPerCycle = getMaxPerTokenPerCycle(userConfig);
       const maxTotal = getMaxTotalPerCycle(userConfig);
       console.log(`Pre-bet rolling spend (15min): ${JSON.stringify(
@@ -4782,7 +4786,7 @@ async function runAutoBet(userId = null) {
       }
     }
 
-    console.log(` Fetched: ${cryptoMarkets.length} crypto markets (BTC, ETH, SOL)`);
+    console.log(` Fetched: ${cryptoMarkets.length} crypto markets (${Object.keys(TRACKED_TOKENS).join(', ')})`);
     console.log(` Recent bets tracking: ${recentBets.size} markets`);
 
     // Subscribe to WebSocket updates for these markets
@@ -4974,7 +4978,7 @@ async function runAutoBet(userId = null) {
 
       // Update status with reason
       lastScanStatus.status = 'no_opportunities';
-      lastScanStatus.statusMessage = `Scanning 3 markets (BTC, ETH, SOL) - waiting for high-signal opportunity`;
+      lastScanStatus.statusMessage = `Scanning ${Object.keys(TRACKED_TOKENS).length} markets (${Object.keys(TRACKED_TOKENS).join(', ')}) - waiting for high-signal opportunity`;
       if (almostQualified.length > 0) {
         lastScanStatus.blockedReasons.push(`${almostQualified.length} markets with signal ${minSignal-15}-${minSignal-1} (need ${minSignal}+)`);
       }
@@ -5385,8 +5389,17 @@ async function runAutoBet(userId = null) {
     console.error(' Stack:', error.stack);
     console.log('========================================\n');
 
-    lastScanStatus.status = 'error';
-    lastScanStatus.statusMessage = `Error: ${error.message}`;
+    // Insufficient balance: back off for 5 minutes to avoid spamming Kalshi
+    if (error.message && error.message.includes('insufficient_balance')) {
+      const backoffMs = 5 * 60 * 1000; // 5 minutes
+      insufficientBalanceUntil = Date.now() + backoffMs;
+      console.log(` BALANCE BACKOFF: Pausing bets for 5 minutes due to insufficient balance`);
+      lastScanStatus.status = 'error';
+      lastScanStatus.statusMessage = 'Insufficient balance - paused for 5 min';
+    } else {
+      lastScanStatus.status = 'error';
+      lastScanStatus.statusMessage = `Error: ${error.message}`;
+    }
     lastScanStatus.blockedReasons.push(`Error: ${error.message}`);
   }
 }
@@ -6295,8 +6308,24 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       adjustedSignalStrength += bonus;
       windowPenalties.push(`late-game confirmed +${bonus}pts`);
     } else {
-      // Too early or no edge — penalty (softened: -10 instead of -15 for near-window markets)
-      const penalty = timeRemaining > 10 ? -25 : -10;
+      // Gradient time penalty based on how far outside the window we are
+      // timeMax is typically 7-8, so:
+      //   >13 min: -20pts (very early, minimal data)
+      //   11-13 min: -15pts (early but data accumulating)
+      //   9-11 min: -10pts (approaching window)
+      //   8-9 min (just outside): -5pts (nearly in window)
+      const tMax = entryWindows.timeMax || 8;
+      let penalty;
+      if (timeRemaining > tMax + 5) penalty = -20;
+      else if (timeRemaining > tMax + 3) penalty = -15;
+      else if (timeRemaining > tMax + 1) penalty = -10;
+      else penalty = -5;
+
+      // In low vol, prices are more stable — time matters less
+      if (regime.regime === 'low') {
+        penalty = Math.round(penalty * 0.6); // 40% reduction
+      }
+
       adjustedSignalStrength += penalty;
       windowPenalties.push(`time ${penalty}pts (${timeRemaining.toFixed(1)}min left)`);
     }
@@ -7559,7 +7588,7 @@ app.get('/api/historical/crypto-settlements', async (req, res) => {
 
     for (const market of allMarkets) {
       const ticker = market.ticker || '';
-      const token = ticker.includes('BTC') ? 'BTC' : ticker.includes('ETH') ? 'ETH' : ticker.includes('SOL') ? 'SOL' : 'UNKNOWN';
+      const token = getTokenFromTicker(ticker) || 'UNKNOWN';
 
       // Get strike price from floor_strike
       const strikePrice = market.floor_strike;
