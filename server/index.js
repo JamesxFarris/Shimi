@@ -6178,7 +6178,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
     // In low vol, outcomes are more predictable - smaller edge is acceptable but still need buffer
     const effectiveMinEdge = regime.regime === 'low'
-      ? Math.max(3.5, (rules.minEdgeAfterFees || 5) - 1.5)
+      ? Math.max(2.0, (rules.minEdgeAfterFees || 5) - 3)
       : (rules.minEdgeAfterFees || 5);
     if (netEdge < effectiveMinEdge) {
       reasons.push(`Edge ${netEdge.toFixed(1)}% < ${effectiveMinEdge}%${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
@@ -6203,7 +6203,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   // Hard block: no bets in the first 7 minutes of a 15-min market (>8 min remaining)
   // Tightened from 10min: only bet when sufficient price data has accumulated
-  const maxTimeRemaining = regime.regime === 'low' ? 9 : 8;
+  const maxTimeRemaining = regime.regime === 'low' ? 10 : 8;
   if (timeRemaining > maxTimeRemaining) {
     reasons.push(`Too early: ${timeRemaining.toFixed(1)}min remaining > ${maxTimeRemaining}min max`);
   }
