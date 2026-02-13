@@ -587,7 +587,8 @@ function recordPriceSnapshot(market, currentPrice, token) {
   const closeTime = new Date(market.closeTime || market.close_time).getTime();
   const timeToSettlement = (closeTime - now) / 60000; // minutes
 
-  if (timeToSettlement <= 0 || timeToSettlement > 15) return; // Only track 0-15 min windows
+  const maxTrackingWindow = isHourlyMarket(market.ticker) ? 60 : 15;
+  if (timeToSettlement <= 0 || timeToSettlement > maxTrackingWindow) return;
 
   const strikePrice = market.strikePrice || market.floor_strike;
   if (!strikePrice || !currentPrice) return;
@@ -1918,6 +1919,16 @@ function isHourlyMarket(ticker) {
   return ticker.includes('1H') || ticker.includes('-1H-');
 }
 
+// Get market duration in minutes from ticker (15 or 60)
+function getMarketDurationMinutes(ticker) {
+  return isHourlyMarket(ticker) ? 60 : 15;
+}
+
+// Scale a time threshold to the market's duration (e.g., 5min for 15M → 20min for 1H)
+function scaleTimeForMarket(minutes, ticker) {
+  return minutes * (getMarketDurationMinutes(ticker) / 15);
+}
+
 // Sync Kalshi positions to betHistory so exposure is tracked correctly after server restart
 // This creates synthetic bet records for positions that don't have matching local bets
 function syncKalshiPositionsToBetHistory(userState, positions, userId = null) {
@@ -2855,15 +2866,18 @@ function calculateSmartStopLoss(position, market, profitPercent, userConfig) {
   // Dynamic stop-loss based on recovery probability and time
   let stopLossThreshold = defaultStopLoss;
 
+  // Scale time thresholds for hourly markets
+  const dRatio = getMarketDurationMinutes(position.ticker) / 15;
+
   // Coin-flip territory: very close to strike with little time
   const coinFlipThreshold = learnedParams?.byToken?.[token]?.coinFlipThreshold || 0.1;
-  if (pctFromStrike < coinFlipThreshold && timeRemaining < 3) {
+  if (pctFromStrike < coinFlipThreshold && timeRemaining < 3 * dRatio) {
     // Exit anything unprofitable - it's a coin flip
     stopLossThreshold = Math.max(stopLossThreshold, -5);
     console.log(`[SmartStopLoss] ${position.ticker}: Coin-flip territory (${pctFromStrike.toFixed(3)}% from strike, ${timeRemaining.toFixed(1)}min left) threshold: ${stopLossThreshold}%`);
   }
   // Low recovery chance with limited time
-  else if (recoveryChance < 55 && timeRemaining < 5) {
+  else if (recoveryChance < 55 && timeRemaining < 5 * dRatio) {
     stopLossThreshold = Math.max(stopLossThreshold, -15);
     console.log(`[SmartStopLoss] ${position.ticker}: Low recovery (${recoveryChance.toFixed(0)}%) + limited time (${timeRemaining.toFixed(1)}min) threshold: ${stopLossThreshold}%`);
   }
@@ -2873,7 +2887,7 @@ function calculateSmartStopLoss(position, market, profitPercent, userConfig) {
     console.log(`[SmartStopLoss] ${position.ticker}: Very low recovery (${recoveryChance.toFixed(0)}%) threshold: ${stopLossThreshold}%`);
   }
   // Near expiry with any loss
-  else if (timeRemaining < 2 && profitPercent < -10) {
+  else if (timeRemaining < 2 * dRatio && profitPercent < -10) {
     stopLossThreshold = Math.max(stopLossThreshold, -8);
     console.log(`[SmartStopLoss] ${position.ticker}: Near expiry (${timeRemaining.toFixed(1)}min) at ${profitPercent.toFixed(1)}% threshold: ${stopLossThreshold}%`);
   }
@@ -2986,10 +3000,11 @@ async function evaluateTakeProfit(position, userConfig = null) {
     const timeCriticalThreshold = Math.max(stopLossThreshold / 2, -30); // At least -30%, but scales with user setting
     if (marketForStopLoss && profitPercent < timeCriticalThreshold) {
       const timeRemaining = marketForStopLoss.close_time ? new Date(marketForStopLoss.close_time).getTime() - Date.now() : null;
-      if (timeRemaining && timeRemaining < 3 * 60 * 1000) {
+      const timeCriticalWindow = scaleTimeForMarket(3, ticker) * 60 * 1000; // 3min for 15M, 12min for 1H
+      if (timeRemaining && timeRemaining < timeCriticalWindow) {
         return {
           shouldExit: true,
-          reason: ` TIME STOP-LOSS: ${profitPercent.toFixed(1)}% loss with <3min left - cutting losses (time-critical threshold: ${timeCriticalThreshold}%)`,
+          reason: ` TIME STOP-LOSS: ${profitPercent.toFixed(1)}% loss with <${(timeCriticalWindow/60000).toFixed(0)}min left - cutting losses (time-critical threshold: ${timeCriticalThreshold}%)`,
           urgencyScore: 90,
           urgencyReasons: [`Time-critical stop-loss: ${profitPercent.toFixed(1)}% loss, ${(timeRemaining/60000).toFixed(1)}min left`],
           analysis: { profitPercent, netProfit, currentBid, avgCost, totalSellFee, spreadCost, timeRemaining, stopLossTriggered: true }
@@ -3021,7 +3036,8 @@ async function evaluateTakeProfit(position, userConfig = null) {
         // Get learned threshold for this token (falls back to 0.15 if not learned)
         const coinFlipThreshold = getCoinFlipThreshold(token);
         const nearStrikeThreshold = learnedParams.thresholds.nearStrikeExit || 0.25;
-        const timeBuffer = learnedParams.thresholds.timeBuffer || 180000; // 3 minutes default
+        const baseTimeBuffer = learnedParams.thresholds.timeBuffer || 180000; // 3 minutes default
+        const timeBuffer = baseTimeBuffer * (getMarketDurationMinutes(ticker) / 15); // Scale for hourly
 
         // Log threshold being used (for debugging)
         if (pctFromStrike < nearStrikeThreshold && timeRemaining && timeRemaining < timeBuffer) {
@@ -3031,7 +3047,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
         // BUG FIX: Only exit losing positions OR positions very close to expiry (<1 min)
         // Profitable positions should ride unless we're about to expire
         const isLosing = profitPercent < 0;
-        const veryCloseToExpiry = timeRemaining && timeRemaining < 60 * 1000; // <1 min
+        const veryCloseToExpiry = timeRemaining && timeRemaining < scaleTimeForMarket(1, ticker) * 60 * 1000; // <1 min (scaled)
 
         // If within learned coin-flip threshold AND <3 min left - this is a coin flip
         if (pctFromStrike < coinFlipThreshold && timeRemaining && timeRemaining < timeBuffer) {
@@ -3040,7 +3056,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
             console.log(`[TakeProfit] ${ticker}: COIN-FLIP PREVENTION - price ${pctFromStrike.toFixed(3)}% from strike with ${(timeRemaining/60000).toFixed(1)}min left (threshold: ${coinFlipThreshold}%)`);
             return {
               shouldExit: true,
-              reason: ` COIN-FLIP EXIT: Price only ${pctFromStrike.toFixed(2)}% from strike with <3min left - avoiding gamble (learned threshold: ${coinFlipThreshold}%)`,
+              reason: ` COIN-FLIP EXIT: Price only ${pctFromStrike.toFixed(2)}% from strike with <${(timeBuffer/60000).toFixed(0)}min left - avoiding gamble (learned threshold: ${coinFlipThreshold}%)`,
               urgencyScore: 95,
               urgencyReasons: [`Coin-flip prevention: ${pctFromStrike.toFixed(2)}% from strike, ${(timeRemaining/60000).toFixed(1)}min left`],
               analysis: { profitPercent, netProfit, currentBid, avgCost, pctFromStrike, timeRemaining, coinFlipExit: true, learnedThreshold: coinFlipThreshold }
@@ -3051,13 +3067,14 @@ async function evaluateTakeProfit(position, userConfig = null) {
         }
 
         // Slightly wider threshold with less time - nearStrikeThreshold from strike AND <2 min
-        if (pctFromStrike < nearStrikeThreshold && timeRemaining && timeRemaining < 2 * 60 * 1000) {
+        const nearStrikeTimeBuffer = scaleTimeForMarket(2, ticker) * 60 * 1000; // 2min for 15M, 8min for 1H
+        if (pctFromStrike < nearStrikeThreshold && timeRemaining && timeRemaining < nearStrikeTimeBuffer) {
           // Only exit if losing OR very close to expiry
           if (isLosing || veryCloseToExpiry) {
             console.log(`[TakeProfit] ${ticker}: COIN-FLIP PREVENTION - price ${pctFromStrike.toFixed(3)}% from strike with ${(timeRemaining/60000).toFixed(1)}min left (near-strike threshold: ${nearStrikeThreshold}%)`);
             return {
               shouldExit: true,
-              reason: ` COIN-FLIP EXIT: Price ${pctFromStrike.toFixed(2)}% from strike with <2min left - too risky (near-strike threshold: ${nearStrikeThreshold}%)`,
+              reason: ` COIN-FLIP EXIT: Price ${pctFromStrike.toFixed(2)}% from strike with <${(nearStrikeTimeBuffer/60000).toFixed(0)}min left - too risky (near-strike threshold: ${nearStrikeThreshold}%)`,
               urgencyScore: 95,
               urgencyReasons: [`Coin-flip prevention: ${pctFromStrike.toFixed(2)}% from strike, ${(timeRemaining/60000).toFixed(1)}min left`],
               analysis: { profitPercent, netProfit, currentBid, avgCost, pctFromStrike, timeRemaining, coinFlipExit: true, learnedThreshold: nearStrikeThreshold }
@@ -3173,7 +3190,8 @@ async function evaluateTakeProfit(position, userConfig = null) {
     // Two modes:
     // A) Near expiry (<5 min): Take smaller profits (12%+) - time pressure justifies it
     // B) Early (>5 min): Need higher profit (18%+) to justify fees and opportunity cost
-    if (timeRemainingMin !== null && timeRemainingMin < 5 && profitPercent >= easyProfitThreshold) {
+    const easyProfitTimeWindow = scaleTimeForMarket(5, ticker); // 5min for 15M, 20min for 1H
+    if (timeRemainingMin !== null && timeRemainingMin < easyProfitTimeWindow && profitPercent >= easyProfitThreshold) {
       shouldExit = true;
       exitReason = `EASY PROFIT: High-confidence (${avgCost}c) at +${profitPercent.toFixed(1)}% with ${timeRemainingMin.toFixed(1)}min left - securing gains`;
     } else if (profitPercent >= easyProfitEarlyThreshold) {
@@ -3216,18 +3234,20 @@ async function evaluateTakeProfit(position, userConfig = null) {
   // BUT: If probability is high (>75%), let it ride to expiration - expected payout is better
   if (market && !shouldExit) {
     const timeRemaining = market.close_time ? new Date(market.close_time).getTime() - Date.now() : null;
-    if (timeRemaining && timeRemaining < 3 * 60 * 1000 && profitPercent >= 5) {
+    const timeCriticalMs = scaleTimeForMarket(3, ticker) * 60 * 1000; // 3min for 15M, 12min for 1H
+    const timeCriticalLabel = `${(timeCriticalMs/60000).toFixed(0)}min`;
+    if (timeRemaining && timeRemaining < timeCriticalMs && profitPercent >= 5) {
       // High probability? Let it ride - EV of holding to settlement is better
       if (probWin >= 0.75) {
         // Don't exit - expected value of holding is higher
-        console.log(`[TakeProfit] ${ticker}: High prob (${(probWin*100).toFixed(0)}%) with <3min left - letting it ride`);
+        console.log(`[TakeProfit] ${ticker}: High prob (${(probWin*100).toFixed(0)}%) with <${timeCriticalLabel} left - letting it ride`);
       } else if (probWin >= 0.60 && evHold > evExit * 1.5) {
         // Medium-high prob with much better EV hold - also let ride
         console.log(`[TakeProfit] ${ticker}: ${(probWin*100).toFixed(0)}% prob, EV hold (${evHold.toFixed(0)}c) >> EV exit (${evExit.toFixed(0)}c) - holding`);
       } else {
         // Lower probability or EV doesn't favor holding - take the profit
         shouldExit = true;
-        exitReason = `TIME CRITICAL: <3min left, ${(probWin*100).toFixed(0)}% prob, securing ${profitPercent.toFixed(1)}% profit`;
+        exitReason = `TIME CRITICAL: <${timeCriticalLabel} left, ${(probWin*100).toFixed(0)}% prob, securing ${profitPercent.toFixed(1)}% profit`;
       }
     }
   }
@@ -3324,7 +3344,7 @@ async function executeTakeProfitExit(position, analysis, userConfig = null, user
     // SAFETY: Refuse to sell at catastrophically low prices (e.g., empty orderbook 1c)
     // Exception: allow if < 1 minute to expiry (position genuinely expiring worthless)
     const minSellPrice = Math.max(1, Math.round(analysis.avgCost * 0.3));
-    const nearExpiry = analysis.timeRemaining != null && analysis.timeRemaining < 60 * 1000;
+    const nearExpiry = analysis.timeRemaining != null && analysis.timeRemaining < scaleTimeForMarket(1, ticker) * 60 * 1000;
     if (sellPrice < minSellPrice && !nearExpiry) {
       console.log(`\n [SELL GUARD] Refusing to sell ${ticker} at ${sellPrice}c below 30% of entry (${analysis.avgCost}c). Min sell: ${minSellPrice}c`);
       console.log(` This likely means the orderbook is empty/thin. Position may still be worth more.`);
@@ -3544,12 +3564,16 @@ async function fetchCryptoMarkets() {
   }
 
   try {
-    // ONLY fetch 15-minute BTC, ETH, SOL, XRP markets
+    // Fetch 15-minute AND hourly BTC, ETH, SOL, XRP markets
     const cryptoSeries = [
       'KXBTC15M', // Bitcoin 15-minute up/down
       'KXETH15M', // Ethereum 15-minute up/down
       'KXSOL15M', // Solana 15-minute up/down
       'KXXRP15M', // XRP 15-minute up/down
+      'KXBTC1H',  // Bitcoin 1-hour up/down
+      'KXETH1H',  // Ethereum 1-hour up/down
+      'KXSOL1H',  // Solana 1-hour up/down
+      'KXXRP1H',  // XRP 1-hour up/down
     ];
 
     const allMarkets = [];
@@ -3568,21 +3592,24 @@ async function fetchCryptoMarkets() {
     const results = await Promise.all(fetches);
     results.forEach(markets => allMarkets.push(...markets));
 
-    // Filter for valid 15-minute markets (15 min = 900000ms, allow up to 20 minutes for timing)
+    // Filter for valid 15-minute and hourly markets
     const cryptoMarkets = allMarkets.filter(m => {
       const ticker = (m.ticker || '').toUpperCase();
       const closeTime = m.close_time ? new Date(m.close_time).getTime() : null;
       const timeRemaining = closeTime ? closeTime - now : null;
 
-      // Only include 15-minute markets
-      if (!ticker.includes('15M')) return false;
+      // Only include 15-minute or hourly markets
+      if (!ticker.includes('15M') && !ticker.includes('1H')) return false;
 
-      // Ensure market is open and has reasonable time remaining (30s to 20min)
-      const isValid = timeRemaining && timeRemaining > 30000 && timeRemaining < 20 * 60 * 1000;
+      // Time window: 30s to 20min for 15M, 30s to 65min for 1H
+      const maxTime = isHourlyMarket(ticker) ? 65 * 60 * 1000 : 20 * 60 * 1000;
+      const isValid = timeRemaining && timeRemaining > 30000 && timeRemaining < maxTime;
       return isValid;
     });
 
-    console.log(` Fetched ${allMarkets.length} markets, ${cryptoMarkets.length} valid 15-minute ${Object.keys(TRACKED_TOKENS).join('/')}`);
+    const count15m = cryptoMarkets.filter(m => m.ticker?.includes('15M')).length;
+    const count1h = cryptoMarkets.filter(m => isHourlyMarket(m.ticker)).length;
+    console.log(` Fetched ${allMarkets.length} markets, ${cryptoMarkets.length} valid (${count15m} 15min + ${count1h} hourly) ${Object.keys(TRACKED_TOKENS).join('/')}`);
 
     marketCache.data = cryptoMarkets;
     marketCache.lastFetch = now;
@@ -3660,6 +3687,7 @@ function parseMarket(market) {
     closeTime: market.close_time,
     timeRemaining,
     timeRemainingMinutes,
+    marketDuration: getMarketDurationMinutes(market.ticker), // 15 or 60
     yesAsk,
     noAsk,
     yesBid,
@@ -6489,7 +6517,10 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const userRules = userConfig?.selectivityRules || {};
   const token = parsed.cryptoType;
   const strikePrice = parsed.strikePrice;
-  const timeRemaining = parsed.timeRemainingMinutes || 15;
+  const ticker = parsed.ticker || '';
+  const marketDuration = getMarketDurationMinutes(ticker); // 15 or 60
+  const durationRatio = marketDuration / 15; // 1.0 for 15M, 4.0 for 1H
+  const timeRemaining = parsed.timeRemainingMinutes || marketDuration;
 
   // Basic validation
   if (!token || !strikePrice || !currentPrice) {
@@ -6536,9 +6567,12 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // Check if within optimal entry window
   const withinDistanceWindow = absDistance >= (entryWindows.distanceMin || 0.5) &&
                                absDistance <= (entryWindows.distanceMax || 3.0);
-  const withinTimeWindow = timeRemaining >= (entryWindows.timeMin || 2) &&
-                           timeRemaining <= (entryWindows.timeMax || 10);
-  // Note: timeMax=10 means entry allowed when <=10min remain (i.e., 5+ min after market open)
+  // Scale time windows by market duration (4x for hourly markets)
+  const scaledTimeMin = (entryWindows.timeMin || 2) * durationRatio;
+  const scaledTimeMax = (entryWindows.timeMax || 10) * durationRatio;
+  const withinTimeWindow = timeRemaining >= scaledTimeMin &&
+                           timeRemaining <= scaledTimeMax;
+  // Note: For 15M: 2-10min window. For 1H: 8-40min window.
 
   // Determine bet side: evaluate BOTH sides and pick the one with better edge
   const isAboveStrike = currentPrice > strikePrice;
@@ -6611,7 +6645,8 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   // STALE MOMENTUM: Flag for soft penalty instead of hard block
   // Markets >90c with >5min left are likely priced in, but edge calc handles this naturally
-  const isStaleMomentum = marketPriceCents > 90 && timeRemaining > 5;
+  const staleMomentumThreshold = 5 * durationRatio; // 5min for 15M, 20min for 1H
+  const isStaleMomentum = marketPriceCents > 90 && timeRemaining > staleMomentumThreshold;
 
   // EDGE CALCULATION: Use distance-based empirical win rate vs market implied probability
   // Our win rate comes from how often the favored side wins at this distance from strike
@@ -6667,7 +6702,8 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
         const volRatio = currentVol / Math.max(typicalVol, 0.01);
 
         // Time bonus: near expiry, theoretical model is more reliable
-        const timeBonus = timeRemaining < 5 ? Math.max(0, (5 - timeRemaining) / 5) : 0;
+        const timeBonusThreshold = 5 * durationRatio; // 5min for 15M, 20min for 1H
+        const timeBonus = timeRemaining < timeBonusThreshold ? Math.max(0, (timeBonusThreshold - timeRemaining) / timeBonusThreshold) : 0;
 
         if (volRatio < 0.15) {
           // Ultra-low vol (< 15% of avg): z-score model is extremely reliable
@@ -6794,9 +6830,10 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // The theoretical model handles this in low-vol via z-scores, but in medium vol we need
   // a direct adjustment. Based on random walk: P(cross barrier) ~ sqrt(time/vol).
   // Conservative: boost up to 8% of the gap between current rate and 95% cap.
-  if (isFavoredSideBet && timeRemaining <= 5 && timeRemaining > 0 && adjustedWinRate < 93) {
+  const timeDecayThreshold = 5 * durationRatio; // 5min for 15M, 20min for 1H
+  if (isFavoredSideBet && timeRemaining <= timeDecayThreshold && timeRemaining > 0 && adjustedWinRate < 93) {
     const gapTo95 = 95 - adjustedWinRate;
-    const timeDecay = (5 - timeRemaining) / 5; // 0 at 5min, 1 at 0min
+    const timeDecay = (timeDecayThreshold - timeRemaining) / timeDecayThreshold; // 0 at threshold, 1 at 0min
     // Scale boost by distance: farther from strike = stronger time-decay advantage
     const distanceScale = Math.min(1, absDistance / 0.5); // full effect at 0.5%+
     const timeBoost = gapTo95 * 0.08 * timeDecay * distanceScale;
@@ -6893,11 +6930,12 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
   }
 
-  // Hard block: no bets in the first 7 minutes of a 15-min market (>8 min remaining)
-  // Tightened from 10min: only bet when sufficient price data has accumulated
-  const maxTimeRemaining = regime.regime === 'low' ? 10 : 8;
+  // Hard block: no bets too early in the market (need price data to accumulate)
+  // 15M: max 8min (or 10 in low vol). 1H: max 32min (or 40 in low vol).
+  const baseMaxTime = regime.regime === 'low' ? 10 : 8;
+  const maxTimeRemaining = baseMaxTime * durationRatio;
   if (timeRemaining > maxTimeRemaining) {
-    reasons.push(`Too early: ${timeRemaining.toFixed(1)}min remaining > ${maxTimeRemaining}min max`);
+    reasons.push(`Too early: ${timeRemaining.toFixed(1)}min remaining > ${maxTimeRemaining.toFixed(0)}min max`);
   }
 
   // Apply soft penalties for distance/time instead of hard rejections
@@ -6937,23 +6975,20 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   }
 
   if (!withinTimeWindow) {
-    if (timeRemaining < (entryWindows.timeMin || 2) && netEdge > 3) {
+    if (timeRemaining < scaledTimeMin && netEdge > 3) {
       // Near expiry with confirmed edge = BONUS, not penalty
       const bonus = Math.min(10, Math.round(netEdge));
       adjustedSignalStrength += bonus;
       windowPenalties.push(`late-game confirmed +${bonus}pts`);
     } else {
       // Gradient time penalty based on how far outside the window we are
-      // timeMax is typically 7-8, so:
-      //   >13 min: -20pts (very early, minimal data)
-      //   11-13 min: -15pts (early but data accumulating)
-      //   9-11 min: -10pts (approaching window)
-      //   8-9 min (just outside): -5pts (nearly in window)
-      const tMax = entryWindows.timeMax || 8;
+      // Scaled by duration: 15M uses 1/3/5 offsets, 1H uses 4/12/20
+      const tMax = scaledTimeMax;
+      const step = durationRatio; // 1 for 15M, 4 for 1H
       let penalty;
-      if (timeRemaining > tMax + 5) penalty = -20;
-      else if (timeRemaining > tMax + 3) penalty = -15;
-      else if (timeRemaining > tMax + 1) penalty = -10;
+      if (timeRemaining > tMax + 5 * step) penalty = -20;
+      else if (timeRemaining > tMax + 3 * step) penalty = -15;
+      else if (timeRemaining > tMax + 1 * step) penalty = -10;
       else penalty = -5;
 
       // In low vol, prices are more stable — time matters less
@@ -6966,11 +7001,12 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
   }
 
-  // Early-entry penalty: within time window but >6 min remaining (Fix 6)
-  // Moderate scaling: 8min=-8, 7min=-4, 6min=0 (normal vol)
-  if (withinTimeWindow && timeRemaining > 6) {
+  // Early-entry penalty: within time window but still far from optimal
+  // 15M: >6min penalized. 1H: >24min penalized.
+  const earlyEntryThreshold = 6 * durationRatio;
+  if (withinTimeWindow && timeRemaining > earlyEntryThreshold) {
     const earlyScale = regime.regime === 'low' ? 2 : 4;
-    const earlyPenalty = -Math.round(Math.min(12, (timeRemaining - 6) * earlyScale));
+    const earlyPenalty = -Math.round(Math.min(12, ((timeRemaining - earlyEntryThreshold) / durationRatio) * earlyScale));
     adjustedSignalStrength += earlyPenalty;
     windowPenalties.push(`early-entry ${earlyPenalty}pts`);
   }
@@ -7515,69 +7551,67 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 1000, userConfi
 
   for (const t of tokens) {
     console.log(` Fetching ${t} historical data...`);
-    const series = `KX${t}15M`;
-    let cursor = null;
-    let page = 0;
     let tokenSettlements = 0;
 
-    // IMPROVED: Use /markets endpoint directly with status=settled
-    // This is 10x more efficient: 1000/page vs 100/page events + individual market fetches
-    // API docs: https://docs.kalshi.com/api-reference/market/get-markets
-    while (page < maxPages) {
-      try {
-        const url = cursor
-          ? `/markets?limit=1000&series_ticker=${series}&status=settled&cursor=${cursor}`
-          : `/markets?limit=1000&series_ticker=${series}&status=settled`;
+    // Fetch both 15-minute and hourly settled markets
+    for (const series of [`KX${t}15M`, `KX${t}1H`]) {
+      let cursor = null;
+      let page = 0;
 
-        const response = await kalshiRequest('GET', url, null, cfg);
+      // IMPROVED: Use /markets endpoint directly with status=settled
+      // This is 10x more efficient: 1000/page vs 100/page events + individual market fetches
+      while (page < maxPages) {
+        try {
+          const url = cursor
+            ? `/markets?limit=1000&series_ticker=${series}&status=settled&cursor=${cursor}`
+            : `/markets?limit=1000&series_ticker=${series}&status=settled`;
 
-        if (response.markets && response.markets.length > 0) {
-          for (const market of response.markets) {
-            // Extract settlement data directly from market response
-            if (market.floor_strike !== undefined) {
-              // BUG FIX: Use expiration_value (actual asset price), NOT settlement_value_dollars (payout)
-              // settlement_value_dollars is 0 or 1, expiration_value is the BTC/ETH price at settlement
-              const settlementPrice = market.expiration_value !== undefined
-                ? parseFloat(market.expiration_value)
-                : null;
+          const response = await kalshiRequest('GET', url, null, cfg);
 
-              // Get the result (yes/no) from either field name
-              const result = market.result || market.market_result;
+          if (response.markets && response.markets.length > 0) {
+            for (const market of response.markets) {
+              if (market.floor_strike !== undefined) {
+                const settlementPrice = market.expiration_value !== undefined
+                  ? parseFloat(market.expiration_value)
+                  : null;
 
-              if (settlementPrice !== null && result) {
-                allSettlements.push({
-                  ticker: market.ticker,
-                  eventTicker: market.event_ticker,
-                  token: t,
-                  strikePrice: market.floor_strike,
-                  settlementPrice: settlementPrice,
-                  result: result,
-                  closeTime: market.close_time,
-                  settledTime: market.settlement_ts || market.settled_time,
-                  volume: market.volume || 0
-                });
-                tokenSettlements++;
+                const result = market.result || market.market_result;
+
+                if (settlementPrice !== null && result) {
+                  allSettlements.push({
+                    ticker: market.ticker,
+                    eventTicker: market.event_ticker,
+                    token: t,
+                    strikePrice: market.floor_strike,
+                    settlementPrice: settlementPrice,
+                    result: result,
+                    closeTime: market.close_time,
+                    settledTime: market.settlement_ts || market.settled_time,
+                    volume: market.volume || 0,
+                    marketType: isHourlyMarket(market.ticker) ? 'hourly' : '15min'
+                  });
+                  tokenSettlements++;
+                }
               }
             }
           }
+
+          cursor = response.cursor;
+          page++;
+
+          console.log(` ${series} page ${page}: ${tokenSettlements} ${t} settlements collected`);
+
+          if (!cursor || !response.markets || response.markets.length === 0) break;
+          await sleep(300); // Rate limit protection
+        } catch (err) {
+          console.error(` Error fetching page ${page} for ${series}:`, err.message);
+          if (err.message.includes('429')) {
+            console.log(` Rate limited, waiting 5s...`);
+            await sleep(5000);
+            continue;
+          }
+          break;
         }
-
-        cursor = response.cursor;
-        page++;
-
-        console.log(` Page ${page}: ${tokenSettlements} ${t} settlements collected`);
-
-        if (!cursor || !response.markets || response.markets.length === 0) break;
-        await sleep(300); // Rate limit protection
-      } catch (err) {
-        console.error(` Error fetching page ${page} for ${t}:`, err.message);
-        // If rate limited, back off and retry
-        if (err.message.includes('429')) {
-          console.log(` Rate limited, waiting 5s...`);
-          await sleep(5000);
-          continue; // Retry same page
-        }
-        break;
       }
     }
 
