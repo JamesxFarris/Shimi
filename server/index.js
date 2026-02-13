@@ -1154,6 +1154,15 @@ async function loadCredentialsFromEnv() {
 // Key: ticker, Value: { timestamp, side, probability, betCount }
 const recentBets = new Map();
 
+// Fix 2: Unfilled-order cooldown per market (exponential backoff)
+const unfilledCooldowns = new Map(); // betKey -> { timestamp, consecutiveUnfills, cooldownMs }
+const UNFILLED_BASE_COOLDOWN_MS = 2 * 60 * 1000;  // 2 min base
+const UNFILLED_MAX_COOLDOWN_MS = 10 * 60 * 1000;   // 10 min max
+
+// Fix 5: Track 429 rate limit pressure
+let recent429Count = 0;
+let last429ResetTime = Date.now();
+
 // Check if we should allow a scale-in bet on this market
 function shouldAllowScaleIn(ticker, currentProbability, currentSide, userConfig, userId) {
   const cfg = userConfig || config;
@@ -4359,11 +4368,16 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     const cryptoMarkets = await fetchCryptoMarkets();
     const now = Date.now();
 
-    // Clean up old bets from tracking (older than 30 min)
+    // Clean up old bets from tracking (shorter TTL for unfilled)
     for (const [ticker, bet] of recentBets.entries()) {
-      if (now - bet.timestamp > 30 * 60 * 1000) {
+      const maxAge = bet.unfilled ? 10 * 60 * 1000 : 30 * 60 * 1000;
+      if (now - bet.timestamp > maxAge) {
         recentBets.delete(ticker);
       }
+    }
+    // Clean up expired unfilled cooldowns
+    for (const [key, cd] of unfilledCooldowns.entries()) {
+      if (now - cd.timestamp > cd.cooldownMs) unfilledCooldowns.delete(key);
     }
 
     // Analyze crypto opportunities
@@ -4386,12 +4400,29 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
 
         // Check if we already bet on this market
         const betKey = `${req.userId ?? 'default'}:${m.ticker}`;
+
+        // Fix 2: Check unfilled cooldown before anything else
+        const cooldown = unfilledCooldowns.get(betKey);
+        if (cooldown && now - cooldown.timestamp < cooldown.cooldownMs) {
+          return false; // Still in cooldown from unfilled order
+        }
+
         if (recentBets.has(betKey)) {
-          // Allow scale-in if probability improved significantly AND same side
-          if (shouldAllowScaleIn(m.ticker, winProb, m.betSide, userConfig, req.userId)) {
-            m.isScaleIn = true; // Mark as scale-in opportunity
+          const existing = recentBets.get(betKey);
+          if (existing.unfilled) {
+            // Allow retry on same side, still block side flips
+            const currentSide = (m.betSide || m.side || '').toUpperCase();
+            if (existing.side && currentSide && existing.side.toUpperCase() !== currentSide) {
+              return false; // Side flip blocked even on unfilled
+            }
+            // Same side retry allowed — fall through
           } else {
-            return false; // Skip - already bet and not a valid scale-in
+            // Normal scale-in logic
+            if (shouldAllowScaleIn(m.ticker, winProb, m.betSide, userConfig, req.userId)) {
+              m.isScaleIn = true;
+            } else {
+              return false;
+            }
           }
         }
         return true;
@@ -4604,8 +4635,9 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
             console.log(`Could not cancel order ${order.order_id}:`, cancelErr.message);
           }
         }
-        // Remove from recent bets so we can try again
-        recentBets.delete(autoBetKey);
+        // Keep side tracking, just mark unfilled (Fix 1)
+        const unfilledEntry = recentBets.get(autoBetKey);
+        if (unfilledEntry) unfilledEntry.unfilled = true;
         return res.status(400).json({
           success: false,
           error: `Order not filled. Status: ${status}. No liquidity at current price.`
@@ -4657,6 +4689,9 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       // Save user state after successful bet
       if (req.userId) saveUserState(req.userId);
 
+      // Clear unfilled cooldown on successful fill (Fix 2)
+      unfilledCooldowns.delete(autoBetKey);
+
       res.json({
         success: true,
         filled: filledCount,
@@ -4684,8 +4719,8 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       });
     } catch (orderError) {
       console.error('Kalshi auto-bet order error:', orderError.message);
-      // Remove from recent bets on error so we can try again
-      recentBets.delete(autoBetKey);
+      const errEntry = recentBets.get(autoBetKey);
+      if (errEntry) errEntry.unfilled = true;
       res.status(400).json({ success: false, error: 'Order failed. Check your balance and try again.' });
     }
 
@@ -4872,12 +4907,26 @@ async function runAutoBet(userId = null) {
 
     const now = Date.now();
 
-    // Clean up old bets (remove bets older than 30 minutes)
+    // Clean up old bets (shorter TTL for unfilled)
     for (const [ticker, bet] of recentBets.entries()) {
-      if (now - bet.timestamp > 30 * 60 * 1000) {
+      const maxAge = bet.unfilled ? 10 * 60 * 1000 : 30 * 60 * 1000;
+      if (now - bet.timestamp > maxAge) {
         recentBets.delete(ticker);
       }
     }
+    // Clean up expired unfilled cooldowns
+    for (const [key, cd] of unfilledCooldowns.entries()) {
+      if (now - cd.timestamp > cd.cooldownMs) unfilledCooldowns.delete(key);
+    }
+
+    // Fix 4: Dynamic scan throttle — reduce frequency during low-liquidity hours
+    const utcHour = new Date().getUTCHours();
+    const isLowLiquidityHour = utcHour >= 0 && utcHour < 6; // midnight-6 AM UTC
+    if (isLowLiquidityHour) {
+      if (!runAutoBet._lastFullRun) runAutoBet._lastFullRun = 0;
+      if (now - runAutoBet._lastFullRun < 30000) return; // Max 1 scan per 30s overnight
+    }
+    runAutoBet._lastFullRun = now;
 
     console.log(` Fetched: ${cryptoMarkets.length} crypto markets (${Object.keys(TRACKED_TOKENS).join(', ')})`);
     console.log(` Recent bets tracking: ${recentBets.size} markets`);
@@ -5008,13 +5057,31 @@ async function runAutoBet(userId = null) {
 
         // Check if we already bet on this market
         const betKey = `${userId ?? 'default'}:${m.ticker}`;
+
+        // Fix 2: Check unfilled cooldown before anything else
+        const cooldown = unfilledCooldowns.get(betKey);
+        if (cooldown && now - cooldown.timestamp < cooldown.cooldownMs) {
+          return false; // Still in cooldown from unfilled order
+        }
+
         if (recentBets.has(betKey)) {
-          // Allow scale-in if win rate improved significantly AND same side
-          const currentWinRate = parseFloat(m.winProbability) || 0;
-          if (shouldAllowScaleIn(m.ticker, currentWinRate, m.betSide || m.side, userConfig, userId)) {
-            m.isScaleIn = true; // Mark as scale-in opportunity
+          const existing = recentBets.get(betKey);
+          if (existing.unfilled) {
+            // Allow retry on same side, still block side flips (Fix 1)
+            const currentSide = (m.betSide || m.side || '').toUpperCase();
+            if (existing.side && currentSide && existing.side.toUpperCase() !== currentSide) {
+              console.log(` SIDE FLIP BLOCKED (unfilled): ${m.ticker} attempted ${currentSide} but previous attempt was ${existing.side.toUpperCase()}`);
+              return false;
+            }
+            // Same side retry allowed — fall through
           } else {
-            return false; // Skip - already bet and not a valid scale-in
+            // Normal scale-in logic
+            const currentWinRate = parseFloat(m.winProbability) || 0;
+            if (shouldAllowScaleIn(m.ticker, currentWinRate, m.betSide || m.side, userConfig, userId)) {
+              m.isScaleIn = true;
+            } else {
+              return false;
+            }
           }
         }
         return true;
@@ -5332,6 +5399,17 @@ async function runAutoBet(userId = null) {
     const fillSlippage = userConfig.selectivityRules?.fillSlippageCents ?? 3;
     const fillPrice = Math.min(priceCents + fillSlippage, 99);
 
+    // Fix 1: Track the attempt BEFORE placing order so side-flip protection works even on unfilled orders
+    recentBets.set(runBetKey, {
+      timestamp: now,
+      side: best.betSide,
+      probability: parseFloat(best.winProbability),
+      signalStrength: best.signalStrength,
+      regime: best.regime,
+      betCount: newBetCount,
+      unfilled: true  // Will be cleared on successful fill
+    });
+
     console.log(`\n PLACING REAL BET...`);
     // Generate idempotency key to prevent duplicate orders on timeout/retry
     const clientOrderId = `shimi-${best.ticker}-${best.betSide}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
@@ -5358,7 +5436,9 @@ async function runAutoBet(userId = null) {
     let order = orderResponse.order;
     if (!order) {
       console.error(' No order in response');
-      recentBets.delete(runBetKey);
+      // Keep side tracking, just mark unfilled (Fix 1)
+      const noOrderEntry = recentBets.get(runBetKey);
+      if (noOrderEntry) noOrderEntry.unfilled = true;
       console.log('========================================\n');
       return;
     }
@@ -5402,7 +5482,21 @@ async function runAutoBet(userId = null) {
         }
       }
       console.error(`Order not filled after polling. Status: ${status}. No liquidity at ${fillPrice}c.`);
-      recentBets.delete(runBetKey);
+      // Keep side tracking, mark unfilled for cooldown (Fix 1)
+      const polledEntry = recentBets.get(runBetKey);
+      if (polledEntry) polledEntry.unfilled = true;
+
+      // Fix 2: Record unfilled cooldown with exponential backoff
+      const cdEntry = unfilledCooldowns.get(runBetKey) || { consecutiveUnfills: 0 };
+      cdEntry.consecutiveUnfills++;
+      cdEntry.timestamp = Date.now();
+      cdEntry.cooldownMs = Math.min(
+        UNFILLED_MAX_COOLDOWN_MS,
+        UNFILLED_BASE_COOLDOWN_MS * Math.pow(1.5, cdEntry.consecutiveUnfills - 1)
+      );
+      unfilledCooldowns.set(runBetKey, cdEntry);
+      console.log(` Unfilled cooldown: ${(cdEntry.cooldownMs/1000).toFixed(0)}s (${cdEntry.consecutiveUnfills} consecutive)`);
+
       console.log('========================================\n');
       return;
     }
@@ -5426,15 +5520,19 @@ async function runAutoBet(userId = null) {
     userBetHistory.unshift(betRecord);
     trackSpend(userId, betRecord.totalCost, getTokenFromTicker(best.ticker) || best.cryptoType || best.assetType);
 
-    // Mark recentBets AFTER successful order fill (not before, so API failures allow retry)
+    // Mark recentBets with unfilled: false on successful fill (Fix 1)
     recentBets.set(runBetKey, {
       timestamp: now,
       side: best.betSide,
       probability: parseFloat(best.winProbability),
       signalStrength: best.signalStrength,
       regime: best.regime,
-      betCount: newBetCount
+      betCount: newBetCount,
+      unfilled: false  // Successfully filled
     });
+
+    // Clear unfilled cooldown on successful fill (Fix 2)
+    unfilledCooldowns.delete(runBetKey);
 
     // Track for performance analysis
     trackBet({
@@ -5489,6 +5587,11 @@ async function runAutoBet(userId = null) {
     console.error(' Auto-bet error:', error.message);
     console.error(' Stack:', error.stack);
     console.log('========================================\n');
+
+    // Fix 5: Track 429 rate limit errors
+    if (error.message && error.message.includes('429')) {
+      recent429Count++;
+    }
 
     // Insufficient balance: back off for 5 minutes to avoid spamming Kalshi
     if (error.message && error.message.includes('insufficient_balance')) {
@@ -5869,6 +5972,22 @@ function shouldSitOut(tables, token = null) {
     reasons.push('Insufficient historical data for empirical betting');
   }
 
+  // Fix 5: Liquidity drought — too many unfilled orders recently
+  const recentUnfills = [...unfilledCooldowns.values()]
+    .filter(cd => Date.now() - cd.timestamp < 5 * 60 * 1000);
+  if (recentUnfills.length >= 4) {
+    reasons.push(`${recentUnfills.length} unfilled orders in 5min - liquidity drought`);
+  }
+
+  // Fix 5: Rate limit pressure
+  if (Date.now() - last429ResetTime > 5 * 60 * 1000) {
+    recent429Count = 0;
+    last429ResetTime = Date.now();
+  }
+  if (recent429Count > 5) {
+    reasons.push(`${recent429Count} rate-limit errors - backing off`);
+  }
+
   return {
     sitOut: reasons.length > 0,
     reasons
@@ -6044,6 +6163,14 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // Filter phantom markets: no real orders on one side
   if (!parsed.yesAsk || parsed.yesAsk <= 0.01 || !parsed.noAsk || parsed.noAsk <= 0.01) {
     return { shouldBet: false, reasons: ['No real orders (phantom market)'] };
+  }
+
+  // Fix 3: Minimum orderbook depth gate — prevent orders into empty books
+  if (orderbook) {
+    const totalDepth = (orderbook.yesTotalDepth || 0) + (orderbook.noTotalDepth || 0);
+    if (totalDepth < 5) {
+      return { shouldBet: false, reasons: [`Thin orderbook: ${totalDepth} contracts (min 5)`] };
+    }
   }
 
   // Calculate distance from strike
@@ -6499,11 +6626,11 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
   }
 
-  // Early-entry penalty: within time window but >5 min remaining
-  // Steeper scaling: 8min=-18, 7min=-12, 6min=-6, 5min=0
-  if (withinTimeWindow && timeRemaining > 5) {
-    const earlyScale = regime.regime === 'low' ? 3 : 6;
-    const earlyPenalty = -Math.round(Math.min(18, (timeRemaining - 5) * earlyScale));
+  // Early-entry penalty: within time window but >6 min remaining (Fix 6)
+  // Moderate scaling: 8min=-8, 7min=-4, 6min=0 (normal vol)
+  if (withinTimeWindow && timeRemaining > 6) {
+    const earlyScale = regime.regime === 'low' ? 2 : 4;
+    const earlyPenalty = -Math.round(Math.min(12, (timeRemaining - 6) * earlyScale));
     adjustedSignalStrength += earlyPenalty;
     windowPenalties.push(`early-entry ${earlyPenalty}pts`);
   }
@@ -6533,6 +6660,17 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
         adjustedSignalStrength += -5;
         windowPenalties.push(`wide spread -5pts (${spread}c)`);
       }
+    }
+  }
+
+  // Fix 3: Soft signal penalty for low orderbook depth on our side
+  if (orderbook) {
+    const sideDepth = betSide === 'YES'
+      ? (orderbook.yesTotalDepth || 0) : (orderbook.noTotalDepth || 0);
+    if (sideDepth < 10) {
+      const depthPenalty = sideDepth < 5 ? -8 : -4;
+      adjustedSignalStrength += depthPenalty;
+      windowPenalties.push(`low depth ${depthPenalty}pts (${sideDepth} contracts)`);
     }
   }
 
