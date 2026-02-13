@@ -1848,8 +1848,8 @@ function getMaxPerTokenPerCycle(userConfig = null) {
   const cfg = userConfig || config;
   const fixedLimit = cfg.riskLimits.maxPerTokenPerCycle || cfg.riskLimits.maxPerToken || 500;
   const bankroll = cfg.bankroll || 0;
-  // Don't risk more than 5% of bankroll per token per cycle (industry standard: 1-2%, we compromise at 5%)
-  const proportionalLimit = Math.round(bankroll * 0.05);
+  // Don't risk more than 12% of bankroll per token per cycle (aggressive but user-requested 2-3x sizing)
+  const proportionalLimit = Math.round(bankroll * 0.12);
   return Math.min(fixedLimit, Math.max(proportionalLimit, 50)); // Floor 50¢
 }
 
@@ -1858,8 +1858,8 @@ function getMaxTotalPerCycle(userConfig = null) {
   const cfg = userConfig || config;
   const fixedTotal = cfg.riskLimits?.maxTotalPerCycle || 1500;
   const bankroll = cfg.bankroll || 0;
-  // Don't risk more than 15% of bankroll total per cycle (matching 5% per-token × 3-4 tokens)
-  const proportionalTotal = Math.round(bankroll * 0.15);
+  // Don't risk more than 35% of bankroll total per cycle (matching 12% per-token × 3-4 tokens)
+  const proportionalTotal = Math.round(bankroll * 0.35);
   return Math.min(fixedTotal, Math.max(proportionalTotal, 100)); // Floor $1
 }
 
@@ -5195,10 +5195,10 @@ async function runAutoBet(userId = null) {
       return;
     }
 
-    // Quarter-Kelly sizing: balances growth vs. variance protection
+    // 3/8-Kelly sizing: slightly aggressive, user-requested 2-3x bigger bets
     const bankroll = userConfig.bankroll || 0;
     const kellyFraction = bankroll > 0
-      ? 0.25 * (best.edge / 100) / Math.max(0.01, 1 - best.betPrice)
+      ? 0.375 * (best.edge / 100) / Math.max(0.01, 1 - best.betPrice)
       : 0;
     // Confidence scaling: reduce bet size when data is sparse
     const sampleSize = best.sampleSize || 0;
@@ -5207,10 +5207,10 @@ async function runAutoBet(userId = null) {
                              sampleSize >= 50  ? 0.65 :
                              sampleSize >= 20  ? 0.45 : 0.25;
     const kellyBet = Math.max(0, Math.round(kellyFraction * bankroll * confidenceScale));
-    // In low-vol, be more aggressive (1/3 Kelly instead of 1/4) since outcomes are more predictable
+    // In low-vol, be more aggressive (1/2 Kelly instead of 3/8) since outcomes are more predictable
     const isLowVol = best.regime === 'low';
     const aggKellyBet = isLowVol
-      ? Math.max(0, Math.round((1/3) * (best.edge / 100) / Math.max(0.01, 1 - best.betPrice) * bankroll * confidenceScale))
+      ? Math.max(0, Math.round(0.5 * (best.edge / 100) / Math.max(0.01, 1 - best.betPrice) * bankroll * confidenceScale))
       : kellyBet;
     // Cap at cycle budget, floor at 1 contract
     const MAX_BET_CENTS = Math.min(hardCapCents, Math.max(priceCents, aggKellyBet));
