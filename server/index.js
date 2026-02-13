@@ -588,16 +588,13 @@ function recordPriceSnapshot(market, currentPrice, token) {
   const closeTime = new Date(market.closeTime || market.close_time).getTime();
   const timeToSettlement = (closeTime - now) / 60000; // minutes
 
-  const maxTrackingWindow = isHourlyMarket(market.ticker) ? 60 : 15;
-  if (timeToSettlement <= 0 || timeToSettlement > maxTrackingWindow) return;
+  if (timeToSettlement <= 0 || timeToSettlement > 15) return;
 
   const strikePrice = market.strikePrice || market.floor_strike;
   if (!strikePrice || !currentPrice) return;
 
   const pctFromStrike = ((currentPrice - strikePrice) / strikePrice) * 100;
 
-  // Enrich with duration and volatility for better empirical table building
-  const marketDuration = isHourlyMarket(market.ticker) ? 60 : 15;
   const vol5m = cryptoPrices[token]?.volatility ?? null;
 
   priceSnapshots.push({
@@ -745,14 +742,6 @@ async function getUserStateAsync(userId) {
           loadedConfig.riskLimits = {
             ...DEFAULT_CONFIG.riskLimits,
             ...row.config.riskLimits,
-            hourly: {
-              ...DEFAULT_CONFIG.riskLimits.hourly,
-              ...(row.config.riskLimits?.hourly || {})
-            },
-            other: {
-              ...DEFAULT_CONFIG.riskLimits.other,
-              ...(row.config.riskLimits?.other || {})
-            }
           };
         }
         if (row.config?.activeMonitoring) {
@@ -879,7 +868,7 @@ let performanceData = {
   },
   byToken: {}, // token -> { bets, wins, losses, profit }
   byProbBucket: {}, // "60-65" -> { bets, wins, actualRate }
-  byMarketType: {}, // "hourly" | "15min" | "daily" -> stats
+  byMarketType: {}, // "15min" | "daily" -> stats
   lastUpdated: null
 };
 
@@ -1010,8 +999,7 @@ function trackBet(betInfo) {
     strikePrice: betInfo.strikePrice,
     currentPriceAtBet: betInfo.currentPrice,
     expiryTime: betInfo.expiryTime,
-    marketType: betInfo.marketType || (isHourlyMarket(betInfo.ticker) ? 'hourly' :
-                                        betInfo.ticker?.includes('15M') ? '15min' : 'daily'),
+    marketType: betInfo.marketType || (betInfo.ticker?.includes('15M') ? '15min' : 'daily'),
     // Outcome tracking (filled in later)
     outcome: 'pending', // 'won' | 'lost' | 'pending'
     settlementPrice: null,
@@ -1230,8 +1218,6 @@ async function checkPendingSettlements() {
             const profit = won ? (bet.contracts * 100 - bet.totalCost) : 0;
             settleBet(bet.id, won ? 'won' : 'lost', market.market.settlement_value, profit);
             console.log(` Settled bet ${bet.id}: ${won ? 'WON' : 'LOST'} (${bet.side} on ${bet.ticker})`);
-            // Record for cross-timeframe signal (15M settlements inform hourly bets)
-            recordRecentSettlement(bet.token, result, bet.ticker);
           }
         } catch (e) {
           // Market might not exist or API error - try price-based settlement below
@@ -1259,9 +1245,6 @@ async function checkPendingSettlements() {
             const profit = won ? (bet.contracts * 100 - bet.totalCost) : 0;
             settleBet(bet.id, won ? 'won' : 'lost', currentPrice, profit);
             console.log(` Settled bet ${bet.id} via price: ${won ? 'WON' : 'LOST'} (${bet.side} ${bet.token} @ strike $${bet.strikePrice}, current $${currentPrice}, delay=${(settlementDelay/1000).toFixed(0)}s)`);
-            // Record for cross-timeframe signal
-            const priceResult = isAbove ? 'yes' : 'no';
-            recordRecentSettlement(bet.token, priceResult, bet.ticker);
           }
         }
       }
@@ -1816,8 +1799,8 @@ function recordAggTrade(token, quantity, isSell, timestamp) {
   const bucket = aggTradeVolume[token];
   if (!bucket) return;
   bucket.trades.push({ qty: quantity, isSell, ts: timestamp });
-  // Prune older than 30 min (extended for hourly market analysis)
-  const cutoff = timestamp - 30 * 60 * 1000;
+  // Prune older than 5 min
+  const cutoff = timestamp - 5 * 60 * 1000;
   while (bucket.trades.length > 0 && bucket.trades[0].ts < cutoff) {
     bucket.trades.shift();
   }
@@ -1897,110 +1880,7 @@ function initBinanceAggTradeWebSocket() {
 }
 initBinanceAggTradeWebSocket();
 
-// ============================================
-// CROSS-TIMEFRAME SIGNAL: recent 15M settlements inform hourly bets
-// ============================================
-// Tracks the last few 15M market settlements per token
-// If BTC 15M just settled YES, price was above strike → bullish signal for hourly
-const recentSettlements = {}; // token → [{ result: 'yes'|'no', timestamp, ticker }]
 
-function recordRecentSettlement(token, result, ticker) {
-  if (!token || !result) return;
-  // Only track 15M settlements (not hourly — no self-reference)
-  if (isHourlyMarket(ticker)) return;
-  if (!recentSettlements[token]) recentSettlements[token] = [];
-  recentSettlements[token].push({ result: result.toLowerCase(), timestamp: Date.now(), ticker });
-  // Keep last 4 settlements per token (~1 hour of 15M data)
-  if (recentSettlements[token].length > 4) recentSettlements[token].shift();
-}
-
-/**
- * Get cross-timeframe signal for hourly markets from recent 15M settlements
- * @param {string} token - Token (BTC, ETH, etc.)
- * @param {string} betSide - YES or NO
- * @returns {number} Signal adjustment points (-5 to +5)
- */
-function getCrossTimeframeSignal(token, betSide) {
-  const settlements = recentSettlements[token];
-  if (!settlements || settlements.length === 0) return 0;
-  // Only use settlements from the last 30 minutes
-  const cutoff = Date.now() - 30 * 60 * 1000;
-  const recent = settlements.filter(s => s.timestamp > cutoff);
-  if (recent.length === 0) return 0;
-  // Count direction: YES settlement = price was above strike = bullish
-  const yesCount = recent.filter(s => s.result === 'yes').length;
-  const noCount = recent.filter(s => s.result === 'no').length;
-  const direction = yesCount - noCount; // positive = bullish trend, negative = bearish
-  // Align with bet side: bullish trend helps YES bets, hurts NO bets
-  const aligned = (direction > 0 && betSide === 'YES') || (direction < 0 && betSide === 'NO');
-  const opposed = (direction > 0 && betSide === 'NO') || (direction < 0 && betSide === 'YES');
-  if (aligned) return Math.min(5, Math.abs(direction) * 2); // +2 per aligned settlement, max +5
-  if (opposed) return -Math.min(4, Math.abs(direction) * 2); // -2 per opposed, max -4
-  return 0;
-}
-
-// ============================================
-// PRICE TRAJECTORY SCORING (for hourly markets)
-// ============================================
-// Measures whether price is trending steadily toward/away from strike (high score)
-// or whipsawing around it (low score). Trending = more predictable = safer bets.
-
-/**
- * Calculate price trajectory relative to a strike price
- * @param {string} token - Token symbol
- * @param {number} strikePrice - Strike price to measure against
- * @param {number} windowMinutes - How far back to look (default 15 for hourly context)
- * @returns {{ score: number, direction: string, consistency: number }}
- *   score: -1 to +1 where |1| = perfectly consistent trend, 0 = random/choppy
- *   direction: 'toward' | 'away' | 'neutral' (relative to strike)
- *   consistency: 0-1 how consistent the direction of movement is
- */
-function getPriceTrajectory(token, strikePrice, windowMinutes = 15) {
-  const history = priceHistoryExtended[token];
-  if (!history || history.length < 5 || !strikePrice) {
-    return { score: 0, direction: 'neutral', consistency: 0 };
-  }
-
-  const cutoff = Date.now() - windowMinutes * 60 * 1000;
-  const recent = history.filter(h => h.time > cutoff);
-  if (recent.length < 5) return { score: 0, direction: 'neutral', consistency: 0 };
-
-  // Compute distance-from-strike at each tick
-  const distances = recent.map(h => ((h.price - strikePrice) / strikePrice) * 100);
-
-  // Measure consistency: are consecutive distance changes in the same direction?
-  let sameDir = 0, totalChanges = 0;
-  let movingToward = 0, movingAway = 0;
-  for (let i = 1; i < distances.length; i++) {
-    const delta = distances[i] - distances[i - 1];
-    if (Math.abs(delta) < 0.001) continue; // ignore noise
-    totalChanges++;
-    // Is price moving toward or away from strike?
-    const closerNow = Math.abs(distances[i]) < Math.abs(distances[i - 1]);
-    if (closerNow) movingToward++;
-    else movingAway++;
-    // Consecutive same-direction?
-    if (i >= 2) {
-      const prevDelta = distances[i - 1] - distances[i - 2];
-      if ((delta > 0 && prevDelta > 0) || (delta < 0 && prevDelta < 0)) sameDir++;
-    }
-  }
-
-  if (totalChanges < 3) return { score: 0, direction: 'neutral', consistency: 0 };
-
-  // Consistency: what fraction of consecutive moves are in the same direction (0-1)
-  const consistency = sameDir / Math.max(1, totalChanges - 1);
-
-  // Net direction relative to strike
-  const netDirection = movingToward > movingAway ? 'toward' : movingAway > movingToward ? 'away' : 'neutral';
-  const directionStrength = Math.abs(movingToward - movingAway) / totalChanges;
-
-  // Score: positive = trending (predictable), negative = choppy (unpredictable)
-  // Combine consistency and direction strength
-  const score = consistency * directionStrength * (netDirection === 'toward' ? 1 : -1);
-
-  return { score: parseFloat(score.toFixed(3)), direction: netDirection, consistency: parseFloat(consistency.toFixed(3)) };
-}
 
 // ============================================
 // FUNDING RATE via OKX (US-accessible, no auth)
@@ -2040,24 +1920,6 @@ setInterval(fetchFundingRates, 60000);
 // RISK MANAGEMENT
 // ============================================
 
-// Determine if a ticker is an hourly (directional) market
-// Kalshi hourly series use 'D' suffix: KXBTCD, KXETHD, KXSOLD, KXXRPD
-function isHourlyMarket(ticker) {
-  if (!ticker) return false;
-  const upper = ticker.toUpperCase();
-  return upper.startsWith('KXBTCD') || upper.startsWith('KXETHD') ||
-         upper.startsWith('KXSOLD') || upper.startsWith('KXXRPD');
-}
-
-// Get market duration in minutes from ticker (15 or 60)
-function getMarketDurationMinutes(ticker) {
-  return isHourlyMarket(ticker) ? 60 : 15;
-}
-
-// Scale a time threshold to the market's duration (e.g., 5min for 15M → 20min for 1H)
-function scaleTimeForMarket(minutes, ticker) {
-  return minutes * (getMarketDurationMinutes(ticker) / 15);
-}
 
 // Sync Kalshi positions to betHistory so exposure is tracked correctly after server restart
 // This creates synthetic bet records for positions that don't have matching local bets
@@ -2157,11 +2019,10 @@ function syncKalshiPositionsToBetHistory(userState, positions, userId = null) {
   }
 }
 
-// Get risk breakdown by market type
+// Get total risk across all positions
 // Now accepts optional userState for per-user tracking
 function getRiskByType(userState = null) {
-  let hourlyRisk = 0;
-  let otherRisk = 0;
+  let totalRisk = 0;
 
   const userBetHistory = userState?.betHistory || betHistory;
   const userPortfolio = userState?.portfolio || portfolio;
@@ -2172,16 +2033,10 @@ function getRiskByType(userState = null) {
   // 1) Count from betHistory - most reliable since we set totalCost ourselves
   for (const bet of userBetHistory) {
     if (!bet.ticker) continue;
-    if (isTickerExpired(bet.ticker)) continue; // Market settled not active
+    if (isTickerExpired(bet.ticker)) continue;
     if (bet.status === 'settled' || bet.status === 'closed') continue;
-
     countedTickers.add(bet.ticker);
-    const betRisk = bet.totalCost || (bet.count * bet.price) || 0;
-    if (isHourlyMarket(bet.ticker)) {
-      hourlyRisk += betRisk;
-    } else {
-      otherRisk += betRisk;
-    }
+    totalRisk += bet.totalCost || (bet.count * bet.price) || 0;
   }
 
   // 2) Count Kalshi positions we don't already have in betHistory
@@ -2192,23 +2047,16 @@ function getRiskByType(userState = null) {
       const contracts = Math.abs(pos.position || 0);
       if (contracts <= 0) continue;
 
-      // Normalize Kalshi values that might be decimals (0-1) instead of cents
       let exposure = pos.market_exposure || 0;
       if (exposure > 0 && exposure <= 1) exposure = Math.round(exposure * 100);
       let avgPrice = pos.average_price || 0;
       if (avgPrice > 0 && avgPrice <= 1) avgPrice = Math.round(avgPrice * 100);
 
-      const posRisk = exposure > 0 ? exposure : (avgPrice > 0 ? contracts * avgPrice : contracts * 75);
-
-      if (isHourlyMarket(pos.ticker)) {
-        hourlyRisk += posRisk;
-      } else {
-        otherRisk += posRisk;
-      }
+      totalRisk += exposure > 0 ? exposure : (avgPrice > 0 ? contracts * avgPrice : contracts * 75);
     }
   }
 
-  return { hourly: hourlyRisk, other: otherRisk, total: hourlyRisk + otherRisk };
+  return { total: totalRisk };
 }
 
 function getCurrentRiskFromPortfolio(userState = null) {
@@ -2220,7 +2068,7 @@ function getCurrentRiskFromPortfolio(userState = null) {
 function getTokenFromTicker(ticker) {
   if (!ticker) return null;
   const upper = ticker.toUpperCase();
-  // Check known tokens first (handles KXBTCD, KXBTC15M, etc.)
+  // Check known tokens first (handles KXBTC15M, etc.)
   for (const token of Object.keys(TRACKED_TOKENS)) {
     if (upper.includes(`KX${token}`)) return token;
   }
@@ -3037,10 +2885,7 @@ function calculateSmartStopLoss(position, market, profitPercent, userConfig) {
 
   const pctFromStrike = Math.abs(currentPrice - strikePrice) / strikePrice * 100;
 
-  // Get empirical data (scale distance for hourly markets - see evaluateOpportunityEmpirical)
-  const hourlyDRatio = getMarketDurationMinutes(position.ticker) / 15;
-  const lookupDist = hourlyDRatio > 1 ? pctFromStrike / Math.sqrt(hourlyDRatio) : pctFromStrike;
-  const empirical = lookupEmpiricalWinRate(lookupDist);
+  const empirical = lookupEmpiricalWinRate(pctFromStrike);
   const regime = detectVolatilityRegime(token);
 
   // CRITICAL: Determine if our position is favored or underdog
@@ -3067,18 +2912,15 @@ function calculateSmartStopLoss(position, market, profitPercent, userConfig) {
   // Dynamic stop-loss based on recovery probability and time
   let stopLossThreshold = defaultStopLoss;
 
-  // Scale time thresholds for hourly markets
-  const dRatio = getMarketDurationMinutes(position.ticker) / 15;
-
   // Coin-flip territory: very close to strike with little time
   const coinFlipThreshold = learnedParams?.byToken?.[token]?.coinFlipThreshold || 0.1;
-  if (pctFromStrike < coinFlipThreshold && timeRemaining < 3 * dRatio) {
+  if (pctFromStrike < coinFlipThreshold && timeRemaining < 3) {
     // Exit anything unprofitable - it's a coin flip
     stopLossThreshold = Math.max(stopLossThreshold, -5);
     console.log(`[SmartStopLoss] ${position.ticker}: Coin-flip territory (${pctFromStrike.toFixed(3)}% from strike, ${timeRemaining.toFixed(1)}min left) threshold: ${stopLossThreshold}%`);
   }
   // Low recovery chance with limited time
-  else if (recoveryChance < 55 && timeRemaining < 5 * dRatio) {
+  else if (recoveryChance < 55 && timeRemaining < 5) {
     stopLossThreshold = Math.max(stopLossThreshold, -15);
     console.log(`[SmartStopLoss] ${position.ticker}: Low recovery (${recoveryChance.toFixed(0)}%) + limited time (${timeRemaining.toFixed(1)}min) threshold: ${stopLossThreshold}%`);
   }
@@ -3201,7 +3043,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
     const timeCriticalThreshold = Math.max(stopLossThreshold / 2, -30); // At least -30%, but scales with user setting
     if (marketForStopLoss && profitPercent < timeCriticalThreshold) {
       const timeRemaining = marketForStopLoss.close_time ? new Date(marketForStopLoss.close_time).getTime() - Date.now() : null;
-      const timeCriticalWindow = scaleTimeForMarket(3, ticker) * 60 * 1000; // 3min for 15M, 12min for 1H
+      const timeCriticalWindow = 3 * 60 * 1000; // 3min
       if (timeRemaining && timeRemaining < timeCriticalWindow) {
         return {
           shouldExit: true,
@@ -3237,8 +3079,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
         // Get learned threshold for this token (falls back to 0.15 if not learned)
         const coinFlipThreshold = getCoinFlipThreshold(token);
         const nearStrikeThreshold = learnedParams.thresholds.nearStrikeExit || 0.25;
-        const baseTimeBuffer = learnedParams.thresholds.timeBuffer || 180000; // 3 minutes default
-        const timeBuffer = baseTimeBuffer * (getMarketDurationMinutes(ticker) / 15); // Scale for hourly
+        const timeBuffer = learnedParams.thresholds.timeBuffer || 180000; // 3 minutes default
 
         // Log threshold being used (for debugging)
         if (pctFromStrike < nearStrikeThreshold && timeRemaining && timeRemaining < timeBuffer) {
@@ -3248,7 +3089,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
         // BUG FIX: Only exit losing positions OR positions very close to expiry (<1 min)
         // Profitable positions should ride unless we're about to expire
         const isLosing = profitPercent < 0;
-        const veryCloseToExpiry = timeRemaining && timeRemaining < scaleTimeForMarket(1, ticker) * 60 * 1000; // <1 min (scaled)
+        const veryCloseToExpiry = timeRemaining && timeRemaining < 1 * 60 * 1000; // <1 min
 
         // If within learned coin-flip threshold AND <3 min left - this is a coin flip
         if (pctFromStrike < coinFlipThreshold && timeRemaining && timeRemaining < timeBuffer) {
@@ -3268,7 +3109,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
         }
 
         // Slightly wider threshold with less time - nearStrikeThreshold from strike AND <2 min
-        const nearStrikeTimeBuffer = scaleTimeForMarket(2, ticker) * 60 * 1000; // 2min for 15M, 8min for 1H
+        const nearStrikeTimeBuffer = 2 * 60 * 1000; // 2min
         if (pctFromStrike < nearStrikeThreshold && timeRemaining && timeRemaining < nearStrikeTimeBuffer) {
           // Only exit if losing OR very close to expiry
           if (isLosing || veryCloseToExpiry) {
@@ -3391,7 +3232,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
     // Two modes:
     // A) Near expiry (<5 min): Take smaller profits (12%+) - time pressure justifies it
     // B) Early (>5 min): Need higher profit (18%+) to justify fees and opportunity cost
-    const easyProfitTimeWindow = scaleTimeForMarket(5, ticker); // 5min for 15M, 20min for 1H
+    const easyProfitTimeWindow = 5; // 5min
     if (timeRemainingMin !== null && timeRemainingMin < easyProfitTimeWindow && profitPercent >= easyProfitThreshold) {
       shouldExit = true;
       exitReason = `EASY PROFIT: High-confidence (${avgCost}c) at +${profitPercent.toFixed(1)}% with ${timeRemainingMin.toFixed(1)}min left - securing gains`;
@@ -3435,7 +3276,7 @@ async function evaluateTakeProfit(position, userConfig = null) {
   // BUT: If probability is high (>75%), let it ride to expiration - expected payout is better
   if (market && !shouldExit) {
     const timeRemaining = market.close_time ? new Date(market.close_time).getTime() - Date.now() : null;
-    const timeCriticalMs = scaleTimeForMarket(3, ticker) * 60 * 1000; // 3min for 15M, 12min for 1H
+    const timeCriticalMs = 3 * 60 * 1000; // 3min
     const timeCriticalLabel = `${(timeCriticalMs/60000).toFixed(0)}min`;
     if (timeRemaining && timeRemaining < timeCriticalMs && profitPercent >= 5) {
       // High probability? Let it ride - EV of holding to settlement is better
@@ -3545,7 +3386,7 @@ async function executeTakeProfitExit(position, analysis, userConfig = null, user
     // SAFETY: Refuse to sell at catastrophically low prices (e.g., empty orderbook 1c)
     // Exception: allow if < 1 minute to expiry (position genuinely expiring worthless)
     const minSellPrice = Math.max(1, Math.round(analysis.avgCost * 0.3));
-    const nearExpiry = analysis.timeRemaining != null && analysis.timeRemaining < scaleTimeForMarket(1, ticker) * 60 * 1000;
+    const nearExpiry = analysis.timeRemaining != null && analysis.timeRemaining < 1 * 60 * 1000;
     if (sellPrice < minSellPrice && !nearExpiry) {
       console.log(`\n [SELL GUARD] Refusing to sell ${ticker} at ${sellPrice}c below 30% of entry (${analysis.avgCost}c). Min sell: ${minSellPrice}c`);
       console.log(` This likely means the orderbook is empty/thin. Position may still be worth more.`);
@@ -3764,19 +3605,13 @@ async function fetchCryptoMarkets() {
     return marketCache.data;
   }
 
-  fetchCryptoMarkets._loggedReject = false; // Reset debug log flag for fresh fetch
-
   try {
-    // Fetch 15-minute AND hourly (directional) BTC, ETH, SOL, XRP markets
+    // Fetch 15-minute BTC, ETH, SOL, XRP markets
     const cryptoSeries = [
       'KXBTC15M', // Bitcoin 15-minute up/down
       'KXETH15M', // Ethereum 15-minute up/down
       'KXSOL15M', // Solana 15-minute up/down
       'KXXRP15M', // XRP 15-minute up/down
-      'KXBTCD',   // Bitcoin hourly directional (above/below)
-      'KXETHD',   // Ethereum hourly directional (above/below)
-      'KXSOLD',   // Solana hourly directional (above/below)
-      'KXXRPD',   // XRP hourly directional (above/below)
     ];
 
     const allMarkets = [];
@@ -3795,80 +3630,21 @@ async function fetchCryptoMarkets() {
     const results = await Promise.all(fetches);
     results.forEach(markets => allMarkets.push(...markets));
 
-    // Log hourly market counts before filtering
-    const hourlyRaw = allMarkets.filter(m => isHourlyMarket(m.ticker));
-    const hourlyInTime = hourlyRaw.filter(m => {
-      const ct = m.close_time ? new Date(m.close_time).getTime() : null;
-      const tr = ct ? ct - now : null;
-      return tr && tr > 30000 && tr < 65 * 60 * 1000;
-    });
-    if (hourlyRaw.length > 0) {
-      console.log(` Hourly markets: ${hourlyRaw.length} total, ${hourlyInTime.length} in time window`);
-      // Log a sample title to debug directional filter
-      if (hourlyInTime.length > 0) {
-        const sample = hourlyInTime[0];
-        console.log(` Sample hourly: "${sample.title}" [${sample.ticker}] floor=${sample.floor_strike} cap=${sample.cap_strike}`);
-      }
-    }
-
-    // Filter for valid 15-minute and hourly markets
+    // Filter for valid 15-minute markets
     const cryptoMarkets = allMarkets.filter(m => {
       const ticker = (m.ticker || '').toUpperCase();
+      if (!ticker.includes('15M')) return false;
+
       const closeTime = m.close_time ? new Date(m.close_time).getTime() : null;
       const timeRemaining = closeTime ? closeTime - now : null;
 
-      // Only include 15-minute or hourly directional markets
-      const is15M = ticker.includes('15M');
-      const isHourly = isHourlyMarket(ticker);
-      if (!is15M && !isHourly) return false;
-
-      // Time window: 30s to 20min for 15M, 30s to 65min for hourly
-      const maxTime = isHourly ? 65 * 60 * 1000 : 20 * 60 * 1000;
-      if (!timeRemaining || timeRemaining <= 30000 || timeRemaining >= maxTime) return false;
-
-      // For hourly markets: filter aggressively to reduce API calls
-      if (isHourly) {
-        const title = (m.title || '').toLowerCase();
-
-        // Skip range/bracket markets ("between X and Y") — we can only model directional (above/below)
-        if (title.includes('between') || title.includes('range')) return false;
-
-        // Must be directional: check title OR fall back to floor_strike (single-strike = directional)
-        // Kalshi hourly titles vary: "above $X", "at or above", "$X or more", "Will BTC be $X+ today at 3pm?"
-        const isDirectional = title.includes('above') || title.includes('below') ||
-          title.includes('higher') || title.includes('lower') || title.includes('or more') ||
-          title.includes('or less') || title.includes(' up') || title.includes(' down') ||
-          title.includes('over') || title.includes('under') || title.includes('>=') || title.includes('<=') ||
-          title.includes('at least') || title.includes('or higher') || title.includes('or lower') ||
-          (m.floor_strike !== undefined && m.cap_strike === undefined); // single-strike = directional
-        if (!isDirectional) {
-          // Log first rejected title per cache cycle to debug filter issues
-          if (!fetchCryptoMarkets._loggedReject) {
-            console.log(` Hourly market rejected (not directional): "${m.title}" [${m.ticker}]`);
-            fetchCryptoMarkets._loggedReject = true;
-          }
-          return false;
-        }
-
-        // Only keep strikes within 3% of current price
-        // (KXBTCD has 50+ strikes per expiry; most are extreme 2c/98c bets we'd never take)
-        if (m.floor_strike) {
-          const parsed = parseMarket(m);
-          const token = parsed?.cryptoType;
-          const currentPrice = token && cryptoPrices[token]?.price;
-          if (currentPrice && currentPrice > 0) {
-            const distPct = Math.abs(currentPrice - m.floor_strike) / m.floor_strike * 100;
-            if (distPct > 3) return false;
-          }
-        }
-      }
+      // Time window: 30s to 20min
+      if (!timeRemaining || timeRemaining <= 30000 || timeRemaining >= 20 * 60 * 1000) return false;
 
       return true;
     });
 
-    const count15m = cryptoMarkets.filter(m => m.ticker?.includes('15M')).length;
-    const count1h = cryptoMarkets.filter(m => isHourlyMarket(m.ticker)).length;
-    console.log(` Fetched ${allMarkets.length} markets, ${cryptoMarkets.length} valid (${count15m} 15min + ${count1h} hourly) ${Object.keys(TRACKED_TOKENS).join('/')}`);
+    console.log(` Fetched ${allMarkets.length} markets, ${cryptoMarkets.length} valid 15min ${Object.keys(TRACKED_TOKENS).join('/')}`);
 
     marketCache.data = cryptoMarkets;
     marketCache.lastFetch = now;
@@ -3927,12 +3703,7 @@ function parseMarket(market) {
     marketType = 'between';
   }
 
-  // Fallback: single-strike markets (floor_strike only, no cap_strike) are directional "above"
-  // Kalshi hourly markets (KXBTCD) often have generic titles like "Bitcoin price on Feb 13, 2026?"
-  // but are actually YES = price >= floor_strike at expiry
-  if (!marketType && market.floor_strike !== undefined && market.cap_strike === undefined) {
-    marketType = 'above';
-  }
+
 
   // Time remaining
   const closeTime = market.close_time ? new Date(market.close_time).getTime() : null;
@@ -3955,7 +3726,7 @@ function parseMarket(market) {
     closeTime: market.close_time,
     timeRemaining,
     timeRemainingMinutes,
-    marketDuration: getMarketDurationMinutes(market.ticker), // 15 or 60
+    marketDuration: 15,
     yesAsk,
     noAsk,
     yesBid,
@@ -4063,11 +3834,11 @@ app.get('/api/opportunities/all', async (req, res) => {
   try {
     const showAll = req.query.showAll === 'true';
 
-    // Fetch 15-minute and hourly crypto markets (BTC, ETH, SOL, XRP)
+    // Fetch 15-minute crypto markets (BTC, ETH, SOL, XRP)
     const cryptoMarkets = await fetchCryptoMarkets();
     const userConfig = req.userState?.config || config;
 
-    // Analyze crypto opportunities (both 15M and hourly)
+    // Analyze crypto opportunities
     const allAnalyzed = cryptoMarkets
       .map(m => {
         const parsed = parseMarket(m);
@@ -4076,25 +3847,20 @@ app.get('/api/opportunities/all', async (req, res) => {
         if (!priceData?.price) return null;
         const result = evaluateOpportunityEmpirical(parsed, priceData.price, learnedParams, null, userConfig);
         if (!result) return null;
-        const hourly = isHourlyMarket(m.ticker);
-        return { ...parsed, ...result, marketCategory: 'crypto', marketTimeframe: hourly ? 'hourly' : '15min',
+        return { ...parsed, ...result, marketCategory: 'crypto', marketTimeframe: '15min',
           betSide: result.side, betPrice: result.marketPrice, betPriceCents: result.marketPriceCents };
       })
       .filter(m => m !== null);
 
-    // Show SEPARATE cards for 15M and hourly per token
-    // Best 15M + best hourly for each token (up to 8 cards)
+    // Best card per token (4 cards total)
     const tokenSlots = [];
     for (const token of Object.keys(TRACKED_TOKENS)) {
       const tokenOpps = allAnalyzed.filter(m => m.assetType === token || m.cryptoType === token);
-      const opps15m = tokenOpps.filter(m => m.marketTimeframe === '15min');
-      const oppsHourly = tokenOpps.filter(m => m.marketTimeframe === 'hourly');
 
-      // Best 15M card for this token
-      if (opps15m.length > 0) {
-        opps15m.sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
-        opps15m[0].hasActiveMarket = true;
-        tokenSlots.push(opps15m[0]);
+      if (tokenOpps.length > 0) {
+        tokenOpps.sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
+        tokenOpps[0].hasActiveMarket = true;
+        tokenSlots.push(tokenOpps[0]);
       } else {
         const currentPrice = cryptoPrices[token]?.price || 0;
         tokenSlots.push({
@@ -4102,21 +3868,6 @@ app.get('/api/opportunities/all', async (req, res) => {
           isRecommended: false, filterReason: 'Waiting for next market', currentPrice,
           title: `${token} 15-Minute Up/Down`, winProbability: '--', edge: 0,
           betSide: '--', betPrice: 0, betPriceCents: 0, marketCategory: 'crypto', marketTimeframe: '15min'
-        });
-      }
-
-      // Best hourly card for this token
-      if (oppsHourly.length > 0) {
-        oppsHourly.sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
-        oppsHourly[0].hasActiveMarket = true;
-        tokenSlots.push(oppsHourly[0]);
-      } else {
-        const currentPrice = cryptoPrices[token]?.price || 0;
-        tokenSlots.push({
-          assetType: token, cryptoType: token, hasActiveMarket: false, isPlaceholder: true,
-          isRecommended: false, filterReason: 'Waiting for next hourly market', currentPrice,
-          title: `${token} Hourly Above/Below`, winProbability: '--', edge: 0,
-          betSide: '--', betPrice: 0, betPriceCents: 0, marketCategory: 'crypto', marketTimeframe: 'hourly'
         });
       }
     }
@@ -4714,7 +4465,7 @@ app.post('/api/bet', async (req, res) => {
         strikePrice: market.strikePrice,
         currentPrice: market.currentPrice,
         expiryTime: market.expiry || market.close_time,
-        marketType: isHourlyMarket(ticker) ? 'hourly' : ticker?.includes('15M') ? '15min' : 'daily'
+        marketType: ticker?.includes('15M') ? '15min' : 'daily'
       });
 
       // Save user state
@@ -4830,7 +4581,7 @@ app.post('/api/bet', async (req, res) => {
         strikePrice: market.strikePrice,
         currentPrice: market.currentPrice,
         expiryTime: market.expiry || market.close_time,
-        marketType: isHourlyMarket(ticker) ? 'hourly' : ticker?.includes('15M') ? '15min' : 'daily'
+        marketType: ticker?.includes('15M') ? '15min' : 'daily'
       });
 
       // NOTE: Limit orders removed - Kalshi doesn't support them for crypto markets
@@ -5164,7 +4915,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
         token: best.assetType || best.cryptoType || getTokenFromTicker(best.ticker),
         predictedProb: parseFloat(best.winProbability),
         marketPrice: priceCents,
-        marketType: isHourlyMarket(best.ticker) ? 'hourly' : best.ticker?.includes('15M') ? '15min' : 'daily',
+        marketType: best.ticker?.includes('15M') ? '15min' : 'daily',
         expiryTime: best.expiry || best.close_time
       });
 
@@ -5267,7 +5018,7 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
         token: best.assetType || best.cryptoType || getTokenFromTicker(best.ticker),
         predictedProb: parseFloat(best.winProbability),
         marketPrice: betRecord.avgPrice,
-        marketType: isHourlyMarket(best.ticker) ? 'hourly' : best.ticker?.includes('15M') ? '15min' : 'daily',
+        marketType: best.ticker?.includes('15M') ? '15min' : 'daily',
         expiryTime: best.expiry || best.close_time
       });
 
@@ -5972,7 +5723,7 @@ async function runAutoBet(userId = null) {
         marketPrice: priceCents,
         strikePrice: best.strikePrice,
         currentPrice: best.currentPrice,
-        marketType: isHourlyMarket(best.ticker) ? 'hourly' : best.ticker?.includes('15M') ? '15min' : 'daily',
+        marketType: best.ticker?.includes('15M') ? '15min' : 'daily',
         expiryTime: best.expiry || best.close_time
       });
 
@@ -6164,7 +5915,7 @@ async function runAutoBet(userId = null) {
       marketPrice: betRecord.avgPrice,
       strikePrice: best.strikePrice,
       currentPrice: best.currentPrice,
-      marketType: isHourlyMarket(best.ticker) ? 'hourly' : best.ticker?.includes('15M') ? '15min' : 'daily',
+      marketType: best.ticker?.includes('15M') ? '15min' : 'daily',
       expiryTime: best.expiry || best.close_time
     });
 
@@ -6805,9 +6556,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const token = parsed.cryptoType;
   const strikePrice = parsed.strikePrice;
   const ticker = parsed.ticker || '';
-  const marketDuration = getMarketDurationMinutes(ticker); // 15 or 60
-  const durationRatio = marketDuration / 15; // 1.0 for 15M, 4.0 for 1H
-  const timeRemaining = parsed.timeRemainingMinutes || marketDuration;
+  const timeRemaining = parsed.timeRemainingMinutes || 15;
 
   // Helper: all early exits must include UI display fields so the dashboard never shows "undefined @ NaN"
   function earlyExit(reason) {
@@ -6866,10 +6615,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   }
 
   // Look up empirical win rate
-  // For hourly markets: scale distance down by sqrt(durationRatio) to normalize against 15M tables
-  // Random walk theory: price movement scales with sqrt(time), so a 0.5% distance in 1H
-  // is equivalent to ~0.25% in 15M (sqrt(4) = 2). Without this, hourly win rates are inflated.
-  const lookupDistance = durationRatio > 1 ? absDistance / Math.sqrt(durationRatio) : absDistance;
+  const lookupDistance = absDistance;
   const empirical = lookupEmpiricalWinRate(lookupDistance);
 
   // Get token-specific optimal entry windows
@@ -6879,12 +6625,10 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // Check if within optimal entry window
   const withinDistanceWindow = absDistance >= (entryWindows.distanceMin || 0.5) &&
                                absDistance <= (entryWindows.distanceMax || 3.0);
-  // Scale time windows by market duration (4x for hourly markets)
-  const scaledTimeMin = (entryWindows.timeMin || 2) * durationRatio;
-  const scaledTimeMax = (entryWindows.timeMax || 10) * durationRatio;
+  const scaledTimeMin = entryWindows.timeMin || 2;
+  const scaledTimeMax = entryWindows.timeMax || 10;
   const withinTimeWindow = timeRemaining >= scaledTimeMin &&
                            timeRemaining <= scaledTimeMax;
-  // Note: For 15M: 2-10min window. For 1H: 8-40min window.
 
   // Determine bet side: evaluate BOTH sides and pick the one with better edge
   const isAboveStrike = currentPrice > strikePrice;
@@ -6957,7 +6701,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   // STALE MOMENTUM: Flag for soft penalty instead of hard block
   // Markets >90c with >5min left are likely priced in, but edge calc handles this naturally
-  const staleMomentumThreshold = 5 * durationRatio; // 5min for 15M, 20min for 1H
+  const staleMomentumThreshold = 5; // 5min
   const isStaleMomentum = marketPriceCents > 90 && timeRemaining > staleMomentumThreshold;
 
   // EDGE CALCULATION: Use distance-based empirical win rate vs market implied probability
@@ -7014,7 +6758,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
         const volRatio = currentVol / Math.max(typicalVol, 0.01);
 
         // Time bonus: near expiry, theoretical model is more reliable
-        const timeBonusThreshold = 5 * durationRatio; // 5min for 15M, 20min for 1H
+        const timeBonusThreshold = 5; // 5min
         const timeBonus = timeRemaining < timeBonusThreshold ? Math.max(0, (timeBonusThreshold - timeRemaining) / timeBonusThreshold) : 0;
 
         if (volRatio < 0.15) {
@@ -7098,8 +6842,6 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
 
     const buyPressure = getBuyPressure(token);
-    const trajectory = durationRatio > 1 ? getPriceTrajectory(token, strikePrice, 15) : { score: 0 };
-    const crossSignal = durationRatio > 1 ? getCrossTimeframeSignal(token, betSide) : 0;
     const features = extractMLFeatures({
       absDistance,
       timeRemaining,
@@ -7116,12 +6858,11 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       buyPressure1m: buyPressure.pressure1m,
       buyPressure5m: buyPressure.pressure5m,
       fundingRate: getFundingRate(token),
-      // v3.2: hourly market features
-      durationRatio,
+      durationRatio: 1,
       buyPressure15m: buyPressure.pressure15m,
       buyPressure30m: buyPressure.pressure30m,
-      trajectoryScore: trajectory.score,
-      crossTimeframeSignal: crossSignal,
+      trajectoryScore: 0,
+      crossTimeframeSignal: 0,
     });
 
     mlPrediction = mlPredict(features);
@@ -7150,7 +6891,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // The theoretical model handles this in low-vol via z-scores, but in medium vol we need
   // a direct adjustment. Based on random walk: P(cross barrier) ~ sqrt(time/vol).
   // Conservative: boost up to 8% of the gap between current rate and 95% cap.
-  const timeDecayThreshold = 5 * durationRatio; // 5min for 15M, 20min for 1H
+  const timeDecayThreshold = 5; // 5min
   if (isFavoredSideBet && timeRemaining <= timeDecayThreshold && timeRemaining > 0 && adjustedWinRate < 93) {
     const gapTo95 = 95 - adjustedWinRate;
     const timeDecay = (timeDecayThreshold - timeRemaining) / timeDecayThreshold; // 0 at threshold, 1 at 0min
@@ -7253,7 +6994,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // Hard block: no bets too early in the market (need price data to accumulate)
   // 15M: max 8min (or 10 in low vol). 1H: max 32min (or 40 in low vol).
   const baseMaxTime = regime.regime === 'low' ? 10 : 8;
-  const maxTimeRemaining = baseMaxTime * durationRatio;
+  const maxTimeRemaining = baseMaxTime;
   if (timeRemaining > maxTimeRemaining) {
     reasons.push(`Too early: ${timeRemaining.toFixed(1)}min remaining > ${maxTimeRemaining.toFixed(0)}min max`);
   }
@@ -7302,13 +7043,11 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       windowPenalties.push(`late-game confirmed +${bonus}pts`);
     } else {
       // Gradient time penalty based on how far outside the window we are
-      // Scaled by duration: 15M uses 1/3/5 offsets, 1H uses 4/12/20
       const tMax = scaledTimeMax;
-      const step = durationRatio; // 1 for 15M, 4 for 1H
       let penalty;
-      if (timeRemaining > tMax + 5 * step) penalty = -20;
-      else if (timeRemaining > tMax + 3 * step) penalty = -15;
-      else if (timeRemaining > tMax + 1 * step) penalty = -10;
+      if (timeRemaining > tMax + 5) penalty = -20;
+      else if (timeRemaining > tMax + 3) penalty = -15;
+      else if (timeRemaining > tMax + 1) penalty = -10;
       else penalty = -5;
 
       // In low vol, prices are more stable — time matters less
@@ -7321,12 +7060,11 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
   }
 
-  // Early-entry penalty: within time window but still far from optimal
-  // 15M: >6min penalized. 1H: >24min penalized.
-  const earlyEntryThreshold = 6 * durationRatio;
+  // Early-entry penalty: within time window but still far from optimal (>6min penalized)
+  const earlyEntryThreshold = 6;
   if (withinTimeWindow && timeRemaining > earlyEntryThreshold) {
     const earlyScale = regime.regime === 'low' ? 2 : 4;
-    const earlyPenalty = -Math.round(Math.min(12, ((timeRemaining - earlyEntryThreshold) / durationRatio) * earlyScale));
+    const earlyPenalty = -Math.round(Math.min(12, (timeRemaining - earlyEntryThreshold) * earlyScale));
     adjustedSignalStrength += earlyPenalty;
     windowPenalties.push(`early-entry ${earlyPenalty}pts`);
   }
@@ -7379,32 +7117,6 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     const fundAdj = contrarian ? 3 : -3;
     adjustedSignalStrength += fundAdj;
     windowPenalties.push(`funding ${fundAdj > 0 ? '+' : ''}${fundAdj}pts (rate=${(fundRate * 100).toFixed(4)}%)`);
-  }
-
-  // Cross-timeframe signal: recent 15M settlements inform hourly market direction
-  // If recent 15M markets settled YES (price above strike), bullish momentum for hourly
-  if (durationRatio > 1) {
-    const crossSignal = getCrossTimeframeSignal(token, betSide);
-    if (crossSignal !== 0) {
-      adjustedSignalStrength += crossSignal;
-      windowPenalties.push(`15M cross-timeframe ${crossSignal > 0 ? '+' : ''}${crossSignal}pts`);
-    }
-
-    // Price trajectory: trending = predictable (boost), choppy = risky (penalize)
-    const trajectory = getPriceTrajectory(token, strikePrice, 15);
-    if (trajectory.consistency > 0.5) {
-      // Price is moving consistently — if moving toward strike (in our favor for favored bets),
-      // that's a strong confirmation signal
-      const isFavorable = (trajectory.direction === 'toward' && isFavoredSideBet) ||
-                          (trajectory.direction === 'away' && !isFavoredSideBet);
-      const trajBonus = isFavorable
-        ? Math.round(trajectory.consistency * 5) // up to +5
-        : -Math.round(trajectory.consistency * 3); // up to -3 if against us
-      if (trajBonus !== 0) {
-        adjustedSignalStrength += trajBonus;
-        windowPenalties.push(`trajectory ${trajBonus > 0 ? '+' : ''}${trajBonus}pts (${trajectory.direction}, consistency=${trajectory.consistency})`);
-      }
-    }
   }
 
   // YES/NO bias adjustment: learned data shows NO wins more often across all tokens
@@ -7564,12 +7276,7 @@ function buildEmpiricalLookupTables(settlements) {
       ? Math.abs(s.bettingTimePct)
       : Math.abs((s.settlementPrice - s.strikePrice) / s.strikePrice * 100);
 
-    // Normalize hourly distances to 15M-equivalent using random walk scaling
-    // Price movement ~ sqrt(time), so 1H distances are ~2x larger for the same predictive power
-    // Dividing by sqrt(60/15)=2 makes hourly data comparable to 15M in the same distance buckets
-    if (s.marketType === 'hourly') {
-      pctFromStrike = pctFromStrike / Math.sqrt(4); // sqrt(60/15) = 2
-    }
+
 
     // For determining "favored side", use betting-time direction if available
     const wasAboveStrike = usesBettingTime
@@ -7906,8 +7613,8 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 1000, userConfi
     console.log(` Fetching ${t} historical data...`);
     let tokenSettlements = 0;
 
-    // Fetch both 15-minute and hourly (directional) settled markets
-    for (const series of [`KX${t}15M`, `KX${t}D`]) {
+    // Fetch 15-minute settled markets
+    for (const series of [`KX${t}15M`]) {
       let cursor = null;
       let page = 0;
 
@@ -7941,7 +7648,7 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 1000, userConfi
                     closeTime: market.close_time,
                     settledTime: market.settlement_ts || market.settled_time,
                     volume: market.volume || 0,
-                    marketType: isHourlyMarket(market.ticker) ? 'hourly' : '15min'
+                    marketType: '15min'
                   });
                   tokenSettlements++;
                 }
@@ -8432,7 +8139,7 @@ async function updateLearnedParameters(userConfig = null) {
           result: snap.settledResult,
           closeTime: snap.timestamp,
           bettingTimePct: snap.pctFromStrike, // Key: this is the distance when observed, not at settlement
-          marketType: isHourlyMarket(snap.ticker) ? 'hourly' : '15min'
+          marketType: '15min'
         });
         snapshotSettlements++;
       }
