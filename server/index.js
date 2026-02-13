@@ -1817,7 +1817,7 @@ let binanceAggReconnectDelay = 1000;
 
 function initBinanceAggTradeWebSocket() {
   const streams = Object.keys(BINANCE_AGG_SYMBOLS).map(s => `${s.toLowerCase()}@aggTrade`).join('/');
-  const url = `wss://stream.binance.com:9443/stream?streams=${streams}`;
+  const url = `wss://stream.binance.us:9443/stream?streams=${streams}`;
   try {
     binanceAggWs = new WebSocket(url);
     binanceAggWs.on('open', () => {
@@ -1856,27 +1856,28 @@ function initBinanceAggTradeWebSocket() {
 initBinanceAggTradeWebSocket();
 
 // ============================================
-// BINANCE FUNDING RATE — contrarian signal
+// FUNDING RATE via Bybit (US-accessible, no auth)
 // ============================================
 const FUNDING_SYMBOLS = { BTCUSDT: 'BTC', ETHUSDT: 'ETH', SOLUSDT: 'SOL' };
 const fundingRates = {};
 
 async function fetchFundingRates() {
   try {
-    const resp = await fetch('https://fapi.binance.com/fapi/v1/premiumIndex', { timeout: 8000 });
+    const resp = await fetch('https://api.bybit.com/v5/market/tickers?category=linear', { timeout: 8000 });
     if (!resp.ok) return;
     const data = await resp.json();
-    for (const item of data) {
+    if (data.retCode !== 0 || !data.result?.list) return;
+    for (const item of data.result.list) {
       const token = FUNDING_SYMBOLS[item.symbol];
       if (token) {
         fundingRates[token] = {
-          rate: parseFloat(item.lastFundingRate) || 0,
+          rate: parseFloat(item.fundingRate) || 0,
           timestamp: Date.now(),
         };
       }
     }
     const summary = Object.entries(fundingRates).map(([t, d]) => `${t}=${(d.rate * 100).toFixed(4)}%`).join(', ');
-    console.log(` Funding rates: ${summary}`);
+    console.log(` Funding rates (Bybit): ${summary}`);
   } catch (err) {
     console.log(' Funding rate fetch error:', err.message);
   }
