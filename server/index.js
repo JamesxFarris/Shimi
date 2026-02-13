@@ -2838,8 +2838,10 @@ function calculateSmartStopLoss(position, market, profitPercent, userConfig) {
 
   const pctFromStrike = Math.abs(currentPrice - strikePrice) / strikePrice * 100;
 
-  // Get empirical data
-  const empirical = lookupEmpiricalWinRate(pctFromStrike);
+  // Get empirical data (scale distance for hourly markets - see evaluateOpportunityEmpirical)
+  const hourlyDRatio = getMarketDurationMinutes(position.ticker) / 15;
+  const lookupDist = hourlyDRatio > 1 ? pctFromStrike / Math.sqrt(hourlyDRatio) : pctFromStrike;
+  const empirical = lookupEmpiricalWinRate(lookupDist);
   const regime = detectVolatilityRegime(token);
 
   // CRITICAL: Determine if our position is favored or underdog
@@ -6558,7 +6560,11 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   }
 
   // Look up empirical win rate
-  const empirical = lookupEmpiricalWinRate(absDistance);
+  // For hourly markets: scale distance down by sqrt(durationRatio) to normalize against 15M tables
+  // Random walk theory: price movement scales with sqrt(time), so a 0.5% distance in 1H
+  // is equivalent to ~0.25% in 15M (sqrt(4) = 2). Without this, hourly win rates are inflated.
+  const lookupDistance = durationRatio > 1 ? absDistance / Math.sqrt(durationRatio) : absDistance;
+  const empirical = lookupEmpiricalWinRate(lookupDistance);
 
   // Get token-specific optimal entry windows
   const tokenData = empiricalTables.byToken?.[token] || DEFAULT_EMPIRICAL_TABLES.byToken[token];
@@ -7214,9 +7220,16 @@ function buildEmpiricalLookupTables(settlements) {
     // Prefer betting-time distance if available (from candlestick enrichment)
     // This is the "correct" way to measure - distance when betting, not at settlement
     const usesBettingTime = s.bettingTimePct !== undefined;
-    const pctFromStrike = usesBettingTime
+    let pctFromStrike = usesBettingTime
       ? Math.abs(s.bettingTimePct)
       : Math.abs((s.settlementPrice - s.strikePrice) / s.strikePrice * 100);
+
+    // Normalize hourly distances to 15M-equivalent using random walk scaling
+    // Price movement ~ sqrt(time), so 1H distances are ~2x larger for the same predictive power
+    // Dividing by sqrt(60/15)=2 makes hourly data comparable to 15M in the same distance buckets
+    if (s.marketType === 'hourly') {
+      pctFromStrike = pctFromStrike / Math.sqrt(4); // sqrt(60/15) = 2
+    }
 
     // For determining "favored side", use betting-time direction if available
     const wasAboveStrike = usesBettingTime
