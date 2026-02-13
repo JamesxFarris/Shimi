@@ -381,6 +381,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
     minEdgeAfterFees: 8, // 8% minimum edge after fees (Kalshi Brier ~0.05, small edges are noise)
     minUnfavoredEdge: 8, // 8% minimum net edge for unfavored-side bets (raised from 5: long shots need bigger edge)
     maxBetsPerToken: 3, // Per-token concentration limit
+    maxBetsPerHour: 15, // Maximum bets placed in a rolling 1-hour window
     requireRegimeCheck: true // Must pass volatility regime check
   },
 
@@ -595,6 +596,10 @@ function recordPriceSnapshot(market, currentPrice, token) {
 
   const pctFromStrike = ((currentPrice - strikePrice) / strikePrice) * 100;
 
+  // Enrich with duration and volatility for better empirical table building
+  const marketDuration = isHourlyMarket(market.ticker) ? 60 : 15;
+  const vol5m = cryptoPrices[token]?.volatility ?? null;
+
   priceSnapshots.push({
     ticker: market.ticker,
     token,
@@ -603,6 +608,8 @@ function recordPriceSnapshot(market, currentPrice, token) {
     strikePrice,
     pctFromStrike: parseFloat(pctFromStrike.toFixed(4)),
     timeToSettlement: parseFloat(timeToSettlement.toFixed(2)),
+    marketDuration, // 15 or 60 minutes — enables duration-aware table building
+    vol5m: vol5m !== null ? parseFloat(vol5m.toFixed(6)) : null, // Volatility at snapshot time
     settledResult: null // Will be filled when market settles
   });
 }
@@ -1223,6 +1230,8 @@ async function checkPendingSettlements() {
             const profit = won ? (bet.contracts * 100 - bet.totalCost) : 0;
             settleBet(bet.id, won ? 'won' : 'lost', market.market.settlement_value, profit);
             console.log(` Settled bet ${bet.id}: ${won ? 'WON' : 'LOST'} (${bet.side} on ${bet.ticker})`);
+            // Record for cross-timeframe signal (15M settlements inform hourly bets)
+            recordRecentSettlement(bet.token, result, bet.ticker);
           }
         } catch (e) {
           // Market might not exist or API error - try price-based settlement below
@@ -1250,6 +1259,9 @@ async function checkPendingSettlements() {
             const profit = won ? (bet.contracts * 100 - bet.totalCost) : 0;
             settleBet(bet.id, won ? 'won' : 'lost', currentPrice, profit);
             console.log(` Settled bet ${bet.id} via price: ${won ? 'WON' : 'LOST'} (${bet.side} ${bet.token} @ strike $${bet.strikePrice}, current $${currentPrice}, delay=${(settlementDelay/1000).toFixed(0)}s)`);
+            // Record for cross-timeframe signal
+            const priceResult = isAbove ? 'yes' : 'no';
+            recordRecentSettlement(bet.token, priceResult, bet.ticker);
           }
         }
       }
@@ -1804,8 +1816,8 @@ function recordAggTrade(token, quantity, isSell, timestamp) {
   const bucket = aggTradeVolume[token];
   if (!bucket) return;
   bucket.trades.push({ qty: quantity, isSell, ts: timestamp });
-  // Prune older than 5 min
-  const cutoff = timestamp - 5 * 60 * 1000;
+  // Prune older than 30 min (extended for hourly market analysis)
+  const cutoff = timestamp - 30 * 60 * 1000;
   while (bucket.trades.length > 0 && bucket.trades[0].ts < cutoff) {
     bucket.trades.shift();
   }
@@ -1813,20 +1825,31 @@ function recordAggTrade(token, quantity, isSell, timestamp) {
 
 function getBuyPressure(token) {
   const bucket = aggTradeVolume[token];
-  if (!bucket || bucket.trades.length === 0) return { pressure1m: 0, pressure5m: 0 };
+  if (!bucket || bucket.trades.length === 0) return { pressure1m: 0, pressure5m: 0, pressure15m: 0, pressure30m: 0 };
   const now = Date.now();
-  let buy1 = 0, sell1 = 0, buy5 = 0, sell5 = 0;
+  let buy1 = 0, sell1 = 0, buy5 = 0, sell5 = 0, buy15 = 0, sell15 = 0, buy30 = 0, sell30 = 0;
   for (const t of bucket.trades) {
-    if (t.isSell) { sell5 += t.qty; } else { buy5 += t.qty; }
-    if (now - t.ts <= 60000) {
+    const age = now - t.ts;
+    if (t.isSell) { sell30 += t.qty; } else { buy30 += t.qty; }
+    if (age <= 15 * 60000) {
+      if (t.isSell) { sell15 += t.qty; } else { buy15 += t.qty; }
+    }
+    if (age <= 5 * 60000) {
+      if (t.isSell) { sell5 += t.qty; } else { buy5 += t.qty; }
+    }
+    if (age <= 60000) {
       if (t.isSell) { sell1 += t.qty; } else { buy1 += t.qty; }
     }
   }
   const total1 = buy1 + sell1;
   const total5 = buy5 + sell5;
+  const total15 = buy15 + sell15;
+  const total30 = buy30 + sell30;
   return {
     pressure1m: total1 > 0 ? (buy1 - sell1) / total1 : 0,
     pressure5m: total5 > 0 ? (buy5 - sell5) / total5 : 0,
+    pressure15m: total15 > 0 ? (buy15 - sell15) / total15 : 0,
+    pressure30m: total30 > 0 ? (buy30 - sell30) / total30 : 0,
   };
 }
 
@@ -1873,6 +1896,111 @@ function initBinanceAggTradeWebSocket() {
   }
 }
 initBinanceAggTradeWebSocket();
+
+// ============================================
+// CROSS-TIMEFRAME SIGNAL: recent 15M settlements inform hourly bets
+// ============================================
+// Tracks the last few 15M market settlements per token
+// If BTC 15M just settled YES, price was above strike → bullish signal for hourly
+const recentSettlements = {}; // token → [{ result: 'yes'|'no', timestamp, ticker }]
+
+function recordRecentSettlement(token, result, ticker) {
+  if (!token || !result) return;
+  // Only track 15M settlements (not hourly — no self-reference)
+  if (isHourlyMarket(ticker)) return;
+  if (!recentSettlements[token]) recentSettlements[token] = [];
+  recentSettlements[token].push({ result: result.toLowerCase(), timestamp: Date.now(), ticker });
+  // Keep last 4 settlements per token (~1 hour of 15M data)
+  if (recentSettlements[token].length > 4) recentSettlements[token].shift();
+}
+
+/**
+ * Get cross-timeframe signal for hourly markets from recent 15M settlements
+ * @param {string} token - Token (BTC, ETH, etc.)
+ * @param {string} betSide - YES or NO
+ * @returns {number} Signal adjustment points (-5 to +5)
+ */
+function getCrossTimeframeSignal(token, betSide) {
+  const settlements = recentSettlements[token];
+  if (!settlements || settlements.length === 0) return 0;
+  // Only use settlements from the last 30 minutes
+  const cutoff = Date.now() - 30 * 60 * 1000;
+  const recent = settlements.filter(s => s.timestamp > cutoff);
+  if (recent.length === 0) return 0;
+  // Count direction: YES settlement = price was above strike = bullish
+  const yesCount = recent.filter(s => s.result === 'yes').length;
+  const noCount = recent.filter(s => s.result === 'no').length;
+  const direction = yesCount - noCount; // positive = bullish trend, negative = bearish
+  // Align with bet side: bullish trend helps YES bets, hurts NO bets
+  const aligned = (direction > 0 && betSide === 'YES') || (direction < 0 && betSide === 'NO');
+  const opposed = (direction > 0 && betSide === 'NO') || (direction < 0 && betSide === 'YES');
+  if (aligned) return Math.min(5, Math.abs(direction) * 2); // +2 per aligned settlement, max +5
+  if (opposed) return -Math.min(4, Math.abs(direction) * 2); // -2 per opposed, max -4
+  return 0;
+}
+
+// ============================================
+// PRICE TRAJECTORY SCORING (for hourly markets)
+// ============================================
+// Measures whether price is trending steadily toward/away from strike (high score)
+// or whipsawing around it (low score). Trending = more predictable = safer bets.
+
+/**
+ * Calculate price trajectory relative to a strike price
+ * @param {string} token - Token symbol
+ * @param {number} strikePrice - Strike price to measure against
+ * @param {number} windowMinutes - How far back to look (default 15 for hourly context)
+ * @returns {{ score: number, direction: string, consistency: number }}
+ *   score: -1 to +1 where |1| = perfectly consistent trend, 0 = random/choppy
+ *   direction: 'toward' | 'away' | 'neutral' (relative to strike)
+ *   consistency: 0-1 how consistent the direction of movement is
+ */
+function getPriceTrajectory(token, strikePrice, windowMinutes = 15) {
+  const history = priceHistoryExtended[token];
+  if (!history || history.length < 5 || !strikePrice) {
+    return { score: 0, direction: 'neutral', consistency: 0 };
+  }
+
+  const cutoff = Date.now() - windowMinutes * 60 * 1000;
+  const recent = history.filter(h => h.time > cutoff);
+  if (recent.length < 5) return { score: 0, direction: 'neutral', consistency: 0 };
+
+  // Compute distance-from-strike at each tick
+  const distances = recent.map(h => ((h.price - strikePrice) / strikePrice) * 100);
+
+  // Measure consistency: are consecutive distance changes in the same direction?
+  let sameDir = 0, totalChanges = 0;
+  let movingToward = 0, movingAway = 0;
+  for (let i = 1; i < distances.length; i++) {
+    const delta = distances[i] - distances[i - 1];
+    if (Math.abs(delta) < 0.001) continue; // ignore noise
+    totalChanges++;
+    // Is price moving toward or away from strike?
+    const closerNow = Math.abs(distances[i]) < Math.abs(distances[i - 1]);
+    if (closerNow) movingToward++;
+    else movingAway++;
+    // Consecutive same-direction?
+    if (i >= 2) {
+      const prevDelta = distances[i - 1] - distances[i - 2];
+      if ((delta > 0 && prevDelta > 0) || (delta < 0 && prevDelta < 0)) sameDir++;
+    }
+  }
+
+  if (totalChanges < 3) return { score: 0, direction: 'neutral', consistency: 0 };
+
+  // Consistency: what fraction of consecutive moves are in the same direction (0-1)
+  const consistency = sameDir / Math.max(1, totalChanges - 1);
+
+  // Net direction relative to strike
+  const netDirection = movingToward > movingAway ? 'toward' : movingAway > movingToward ? 'away' : 'neutral';
+  const directionStrength = Math.abs(movingToward - movingAway) / totalChanges;
+
+  // Score: positive = trending (predictable), negative = choppy (unpredictable)
+  // Combine consistency and direction strength
+  const score = consistency * directionStrength * (netDirection === 'toward' ? 1 : -1);
+
+  return { score: parseFloat(score.toFixed(3)), direction: netDirection, consistency: parseFloat(consistency.toFixed(3)) };
+}
 
 // ============================================
 // FUNDING RATE via OKX (US-accessible, no auth)
@@ -3616,15 +3744,28 @@ async function fetchCryptoMarkets() {
       const maxTime = isHourly ? 65 * 60 * 1000 : 20 * 60 * 1000;
       if (!timeRemaining || timeRemaining <= 30000 || timeRemaining >= maxTime) return false;
 
-      // For hourly markets: only keep strikes within 3% of current price
-      // (KXBTCD has 50+ strikes per expiry; most are extreme 2c/98c bets we'd never take)
-      if (isHourly && m.floor_strike) {
-        const parsed = parseMarket(m);
-        const token = parsed?.cryptoType;
-        const currentPrice = token && cryptoPrices[token]?.price;
-        if (currentPrice && currentPrice > 0) {
-          const distPct = Math.abs(currentPrice - m.floor_strike) / m.floor_strike * 100;
-          if (distPct > 3) return false; // Skip strikes >3% away
+      // For hourly markets: filter aggressively to reduce API calls
+      if (isHourly) {
+        // Skip range/bracket markets ("between X and Y") — we can only model directional (above/below)
+        const title = (m.title || '').toLowerCase();
+        if (title.includes('between') || title.includes('range')) return false;
+        // Must be directional: title should contain above/below/higher/lower/up/down/or more/or less
+        const isDirectional = title.includes('above') || title.includes('below') ||
+          title.includes('higher') || title.includes('lower') || title.includes('or more') ||
+          title.includes('or less') || title.includes(' up') || title.includes(' down') ||
+          title.includes('over') || title.includes('under') || title.includes('>=') || title.includes('<=');
+        if (!isDirectional) return false;
+
+        // Only keep strikes within 3% of current price
+        // (KXBTCD has 50+ strikes per expiry; most are extreme 2c/98c bets we'd never take)
+        if (m.floor_strike) {
+          const parsed = parseMarket(m);
+          const token = parsed?.cryptoType;
+          const currentPrice = token && cryptoPrices[token]?.price;
+          if (currentPrice && currentPrice > 0) {
+            const distPct = Math.abs(currentPrice - m.floor_strike) / m.floor_strike * 100;
+            if (distPct > 3) return false;
+          }
         }
       }
 
@@ -3779,7 +3920,8 @@ app.get('/api/crypto/opportunities', async (req, res) => {
         if (!priceData?.price) return null;
         const result = evaluateOpportunityEmpirical(parsed, priceData.price, learnedParams, null, null);
         if (!result) return null;
-        return { ...parsed, ...result, marketCategory: 'crypto' };
+        return { ...parsed, ...result, marketCategory: 'crypto',
+          betSide: result.side, betPrice: result.marketPrice, betPriceCents: result.marketPriceCents };
       })
       .filter(m => {
         if (m === null) return false;
@@ -3832,7 +3974,8 @@ app.get('/api/opportunities/all', async (req, res) => {
         const result = evaluateOpportunityEmpirical(parsed, priceData.price, learnedParams, null, userConfig);
         if (!result) return null;
         const hourly = isHourlyMarket(m.ticker);
-        return { ...parsed, ...result, marketCategory: 'crypto', marketTimeframe: hourly ? 'hourly' : '15min' };
+        return { ...parsed, ...result, marketCategory: 'crypto', marketTimeframe: hourly ? 'hourly' : '15min',
+          betSide: result.side, betPrice: result.marketPrice, betPriceCents: result.marketPriceCents };
       })
       .filter(m => m !== null);
 
@@ -5385,7 +5528,7 @@ async function runAutoBet(userId = null) {
     console.log(` Analyzed: ${allOpps.length} valid | ${withEdgeCount} with edge | ${recommendedCount} recommended`);
 
     // Update scan status
-    lastScanStatus.marketsScanned = 3;
+    lastScanStatus.marketsScanned = cryptoMarkets.length;
     lastScanStatus.activeMarkets = allOpps.length;
     lastScanStatus.marketsWithEdge = withEdgeCount;
 
@@ -6382,6 +6525,17 @@ function shouldSitOut(tables, token = null) {
     reasons.push(`Economic event: ${activeEvent.name} (sit out ${activeEvent.sitOutMinutes}min window)`);
   }
 
+  // maxBetsPerHour — prevent overtrading in choppy markets
+  const maxPerHour = config?.selectivityRules?.maxBetsPerHour ?? 15;
+  const oneHourAgo = Date.now() - 3600000;
+  const recentBetCount = (performanceData.bets || []).filter(b => {
+    const ts = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+    return ts > oneHourAgo;
+  }).length;
+  if (recentBetCount >= maxPerHour) {
+    reasons.push(`${recentBetCount} bets in last hour (max ${maxPerHour})`);
+  }
+
   return {
     sitOut: reasons.length > 0,
     reasons
@@ -6555,6 +6709,17 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // Basic validation
   if (!token || !strikePrice || !currentPrice) {
     return { shouldBet: false, reasons: ['Missing required data'] };
+  }
+
+  // Price staleness gate — stale prices lead to incorrect distance calculations
+  const priceAge = Date.now() - (cryptoPrices[token]?.lastUpdate || 0);
+  if (priceAge > 60000) {
+    return { shouldBet: false, reasons: [`Stale price (${Math.round(priceAge / 1000)}s old)`] };
+  }
+
+  // Reject non-directional markets (between/range) — we can only model above/below
+  if (!parsed.marketType || parsed.marketType === 'between') {
+    return { shouldBet: false, reasons: [`Unsupported market type: ${parsed.marketType || 'unknown'}`] };
   }
 
   // Filter phantom markets: no real orders on one side
@@ -6820,6 +6985,8 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
 
     const buyPressure = getBuyPressure(token);
+    const trajectory = durationRatio > 1 ? getPriceTrajectory(token, strikePrice, 15) : { score: 0 };
+    const crossSignal = durationRatio > 1 ? getCrossTimeframeSignal(token, betSide) : 0;
     const features = extractMLFeatures({
       absDistance,
       timeRemaining,
@@ -6836,6 +7003,12 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       buyPressure1m: buyPressure.pressure1m,
       buyPressure5m: buyPressure.pressure5m,
       fundingRate: getFundingRate(token),
+      // v3.2: hourly market features
+      durationRatio,
+      buyPressure15m: buyPressure.pressure15m,
+      buyPressure30m: buyPressure.pressure30m,
+      trajectoryScore: trajectory.score,
+      crossTimeframeSignal: crossSignal,
     });
 
     mlPrediction = mlPredict(features);
@@ -7093,6 +7266,32 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     const fundAdj = contrarian ? 3 : -3;
     adjustedSignalStrength += fundAdj;
     windowPenalties.push(`funding ${fundAdj > 0 ? '+' : ''}${fundAdj}pts (rate=${(fundRate * 100).toFixed(4)}%)`);
+  }
+
+  // Cross-timeframe signal: recent 15M settlements inform hourly market direction
+  // If recent 15M markets settled YES (price above strike), bullish momentum for hourly
+  if (durationRatio > 1) {
+    const crossSignal = getCrossTimeframeSignal(token, betSide);
+    if (crossSignal !== 0) {
+      adjustedSignalStrength += crossSignal;
+      windowPenalties.push(`15M cross-timeframe ${crossSignal > 0 ? '+' : ''}${crossSignal}pts`);
+    }
+
+    // Price trajectory: trending = predictable (boost), choppy = risky (penalize)
+    const trajectory = getPriceTrajectory(token, strikePrice, 15);
+    if (trajectory.consistency > 0.5) {
+      // Price is moving consistently — if moving toward strike (in our favor for favored bets),
+      // that's a strong confirmation signal
+      const isFavorable = (trajectory.direction === 'toward' && isFavoredSideBet) ||
+                          (trajectory.direction === 'away' && !isFavoredSideBet);
+      const trajBonus = isFavorable
+        ? Math.round(trajectory.consistency * 5) // up to +5
+        : -Math.round(trajectory.consistency * 3); // up to -3 if against us
+      if (trajBonus !== 0) {
+        adjustedSignalStrength += trajBonus;
+        windowPenalties.push(`trajectory ${trajBonus > 0 ? '+' : ''}${trajBonus}pts (${trajectory.direction}, consistency=${trajectory.consistency})`);
+      }
+    }
   }
 
   // YES/NO bias adjustment: learned data shows NO wins more often across all tokens
@@ -8106,6 +8305,27 @@ async function updateLearnedParameters(userConfig = null) {
     // for settled markets, so this burns ~100 API calls on startup for zero data.
     // Prospective snapshots (price_snapshots.json) provide betting-time data instead.
 
+    // Merge settled price snapshots into settlements — these have betting-time distances
+    // which fix the settlement-time bias (market settling 0.5% away may have been 2% at bet time)
+    const settledSnapshots = priceSnapshots.filter(s => s.settledResult !== null);
+    if (settledSnapshots.length > 0) {
+      let snapshotSettlements = 0;
+      for (const snap of settledSnapshots) {
+        settlements.push({
+          ticker: snap.ticker,
+          token: snap.token,
+          strikePrice: snap.strikePrice,
+          settlementPrice: snap.currentPrice, // Price at snapshot time
+          result: snap.settledResult,
+          closeTime: snap.timestamp,
+          bettingTimePct: snap.pctFromStrike, // Key: this is the distance when observed, not at settlement
+          marketType: isHourlyMarket(snap.ticker) ? 'hourly' : '15min'
+        });
+        snapshotSettlements++;
+      }
+      console.log(` Merged ${snapshotSettlements} settled snapshots with betting-time distances`);
+    }
+
     // Build comprehensive empirical tables using the new function
     const empiricalTables = buildEmpiricalLookupTables(settlements);
 
@@ -8691,7 +8911,7 @@ app.post('/api/model/selectivity', (req, res) => {
   const updates = req.body;
 
   // Validate and merge updates
-  const validFields = ['minSignalStrength', 'minEmpiricalWinRate', 'minEdgeAfterFees', 'maxBetsPerToken'];
+  const validFields = ['minSignalStrength', 'minEmpiricalWinRate', 'minEdgeAfterFees', 'maxBetsPerToken', 'maxBetsPerHour'];
   const current = userConfig.selectivityRules || { ...learnedParams.selectivityRules };
 
   for (const field of validFields) {
@@ -8705,6 +8925,9 @@ app.post('/api/model/selectivity', (req, res) => {
       }
       if (field === 'minEmpiricalWinRate' && (updates[field] < 50 || updates[field] > 90)) {
         return res.status(400).json({ success: false, error: 'minEmpiricalWinRate must be between 50 and 90' });
+      }
+      if (field === 'maxBetsPerHour' && (updates[field] < 1 || updates[field] > 100)) {
+        return res.status(400).json({ success: false, error: 'maxBetsPerHour must be between 1 and 100' });
       }
       current[field] = updates[field];
     }
@@ -10187,6 +10410,23 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
       }
     }
   }, 60 * 60 * 1000); // Check every hour
+
+  // Auto-retrain empirical tables when enough new snapshot data accumulates
+  let lastAutoRetrain = Date.now();
+  setInterval(async () => {
+    const hoursSinceRetrain = (Date.now() - lastAutoRetrain) / 3600000;
+    const snapshotCount = priceSnapshots?.length || 0;
+    if (hoursSinceRetrain >= 6 && snapshotCount >= 50) {
+      console.log(` Auto-retrain: ${snapshotCount} snapshots, ${hoursSinceRetrain.toFixed(1)}h since last`);
+      try {
+        // Fetch fresh settlements and rebuild tables
+        await updateLearnedParameters();
+        lastAutoRetrain = Date.now();
+      } catch (err) {
+        console.log(` Auto-retrain failed: ${err.message}`);
+      }
+    }
+  }, 600000); // Check every 10 min
 
   server.on('error', (err) => {
     console.error('Server error:', err.message);
