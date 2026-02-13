@@ -382,7 +382,13 @@ const DEFAULT_EMPIRICAL_TABLES = {
     minUnfavoredEdge: 8, // 8% minimum net edge for unfavored-side bets (raised from 5: long shots need bigger edge)
     maxBetsPerToken: 3, // Per-token concentration limit
     maxBetsPerHour: 15, // Maximum bets placed in a rolling 1-hour window
-    requireRegimeCheck: true // Must pass volatility regime check
+    requireRegimeCheck: true, // Must pass volatility regime check
+    strongSignalMinSignal: 70, // Signal threshold for "too early" bypass
+    strongSignalMinEdge: 6, // Edge threshold for "too early" bypass
+    edgeOverrideThresholds: [ // High edge overrides min win rate floor
+      { minEdge: 15, minWinRate: 52 },
+      { minEdge: 10, minWinRate: 55 },
+    ],
   },
 
   // Performance tracking for adaptive adjustment
@@ -6296,20 +6302,25 @@ function _detectVolatilityRegimeInner(token, priceHistory = null) {
     return { regime: 'medium', reason: 'Limited recent data', multiplier: 1.0 };
   }
 
-  // Calculate volatility as std dev of returns
-  const returns = [];
-  for (let i = 1; i < windowPrices.length; i++) {
-    const ret = (windowPrices[i].price - windowPrices[i-1].price) / windowPrices[i-1].price;
-    returns.push(ret);
-  }
+  // Realized displacement+range — comparable to avgSettlementDistance units
+  const firstPrice = windowPrices[0].price;
+  const lastPrice = windowPrices[windowPrices.length - 1].price;
+  const prices = windowPrices.map(p => p.price);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
 
-  const meanRet = returns.reduce((a, b) => a + b, 0) / returns.length;
-  const variance = returns.reduce((a, b) => a + Math.pow(b - meanRet, 2), 0) / returns.length;
-  const volatility = Math.sqrt(variance) * 100; // As percentage
+  // Displacement: same unit as settlement distance (|end-start|/start %)
+  const displacement = Math.abs(lastPrice - firstPrice) / firstPrice * 100;
+  // Range: captures vol even during round-trips
+  const range = (maxPrice - minPrice) / firstPrice * 100;
+  // Average of both for robustness
+  const volatility = (displacement + range) / 2;
 
   // Get token-specific volatility thresholds from learned data
   const tokenData = learnedParams.byToken[token];
   const avgVol = tokenData?.avgSettlementDistance || DEFAULT_EMPIRICAL_TABLES.byToken[token]?.avgSettlementDistance || 0.3;
+
+  console.log(` Vol regime: ${token} disp=${displacement.toFixed(4)}% range=${range.toFixed(4)}% vol=${volatility.toFixed(4)}% vs avg=${avgVol.toFixed(4)}% → ${volatility < avgVol * 0.7 ? 'low' : volatility > avgVol * 1.5 ? 'high' : 'medium'}`);
 
   // Classify regime based on current vs historical volatility
   if (volatility < avgVol * 0.7) {
@@ -6998,9 +7009,24 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   if (isFavoredSideBet) {
     // Favored bets: standard win rate and edge thresholds
-    const effectiveMinWinRate = regime.regime === 'low'
-      ? Math.max(60, (rules.minEmpiricalWinRate || 62) - 4)
-      : (rules.minEmpiricalWinRate || 62);
+    let effectiveMinWinRate = regime.regime === 'low'
+      ? Math.max(60, (rules.minEmpiricalWinRate || 64) - 4)
+      : (rules.minEmpiricalWinRate || 64);
+
+    // Strong edge override: high edge compensates for borderline win rate
+    // Kelly sizes these bets small automatically, limiting downside
+    const edgeOverrides = rules.edgeOverrideThresholds || [
+      { minEdge: 15, minWinRate: 52 },
+      { minEdge: 10, minWinRate: 55 },
+    ];
+    for (const ov of edgeOverrides) {
+      if (netEdge >= ov.minEdge && effectiveMinWinRate > ov.minWinRate) {
+        console.log(` EDGE OVERRIDE: edge=${netEdge.toFixed(1)}% >= ${ov.minEdge}% → winRate floor ${effectiveMinWinRate}% → ${ov.minWinRate}%`);
+        effectiveMinWinRate = ov.minWinRate;
+        break;
+      }
+    }
+
     if (adjustedWinRate < effectiveMinWinRate) {
       reasons.push(`Win rate ${adjustedWinRate.toFixed(1)}% < ${effectiveMinWinRate}%${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
     }
@@ -7046,11 +7072,16 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   }
 
   // Hard block: no bets too early in the market (need price data to accumulate)
-  // 15M: max 8min (or 10 in low vol). 1H: max 32min (or 40 in low vol).
+  // 15M: max 8min (or 12 in low vol). Strong signals get +2min extension.
   const baseMaxTime = regime.regime === 'low' ? 12 : 8;
-  const maxTimeRemaining = baseMaxTime;
+  const strongSignalBypass = (signalStrength >= (rules.strongSignalMinSignal || 70)) &&
+                             (netEdge >= (rules.strongSignalMinEdge || 6));
+  const maxTimeRemaining = strongSignalBypass ? baseMaxTime + 2 : baseMaxTime;
   if (timeRemaining > maxTimeRemaining) {
     reasons.push(`Too early: ${timeRemaining.toFixed(1)}min remaining > ${maxTimeRemaining.toFixed(0)}min max`);
+  }
+  if (strongSignalBypass && timeRemaining <= maxTimeRemaining && timeRemaining > baseMaxTime) {
+    console.log(` STRONG SIGNAL BYPASS: ${timeRemaining.toFixed(1)}min > base ${baseMaxTime}min, signal=${signalStrength} edge=${netEdge.toFixed(1)}%`);
   }
 
   // Apply soft penalties for distance/time instead of hard rejections
