@@ -9,7 +9,7 @@ const KALSHI_API_BASE = 'https://api.elections.kalshi.com/trade-api/v2';
 // Kalshi API rate limiter sliding window, max 8 requests/second
 const kalshiRateLimiter = {
   timestamps: [],
-  maxPerSecond: 8,
+  maxPerSecond: 5,
   async wait() {
     const now = Date.now();
     // Remove timestamps older than 1 second
