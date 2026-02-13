@@ -261,19 +261,23 @@ export class KalshiWebSocket {
 
     if (!ticker) return;
 
-    // Parse orderbook data
+    // Kalshi WS sends: { yes: [[price, qty], ...], no: [[price, qty], ...] }
+    // Binary market: yes = YES bids, no = NO bids (sorted highest-first)
+    const yesBids = data.yes || [];
+    const noBids = data.no || [];
+
     const update = {
       ticker,
-      yesOrders: data.yes || [],
-      noOrders: data.no || [],
+      yesOrders: yesBids,
+      noOrders: noBids,
       timestamp: Date.now()
     };
 
-    // Calculate derived values
-    update.bestYesBid = this.getBestPrice(update.yesOrders, 'bid');
-    update.bestYesAsk = this.getBestPrice(update.yesOrders, 'ask');
-    update.bestNoBid = this.getBestPrice(update.noOrders, 'bid');
-    update.bestNoAsk = this.getBestPrice(update.noOrders, 'ask');
+    // Derived prices (binary market reciprocal: NO bid at X = YES ask at 100-X)
+    update.bestYesBid = this.getBestPrice(yesBids);
+    update.bestYesAsk = noBids.length > 0 ? (100 - this.getEntryPrice(noBids[0])) : null;
+    update.bestNoBid = this.getBestPrice(noBids);
+    update.bestNoAsk = yesBids.length > 0 ? (100 - this.getEntryPrice(yesBids[0])) : null;
 
     // Calculate spreads
     update.yesSpread = update.bestYesAsk && update.bestYesBid
@@ -284,12 +288,12 @@ export class KalshiWebSocket {
       : null;
 
     // Calculate liquidity at best prices
-    update.yesLiquidityAtBest = this.getLiquidityAtBest(update.yesOrders, 'ask');
-    update.noLiquidityAtBest = this.getLiquidityAtBest(update.noOrders, 'ask');
+    update.yesLiquidityAtBest = this.getLiquidityAtBest(yesBids);
+    update.noLiquidityAtBest = this.getLiquidityAtBest(noBids);
 
     // Calculate total depth
-    update.yesTotalDepth = this.getTotalDepth(update.yesOrders);
-    update.noTotalDepth = this.getTotalDepth(update.noOrders);
+    update.yesTotalDepth = this.getTotalDepth(yesBids);
+    update.noTotalDepth = this.getTotalDepth(noBids);
 
     this.orderbookCache.set(ticker, update);
     this.lastOrderbookUpdate = Date.now();
@@ -317,39 +321,42 @@ export class KalshiWebSocket {
   /**
    * Get best bid or ask price from orders
    */
+  /**
+   * Extract price from an order entry (handles both [price, qty] tuples and {price} objects)
+   */
+  getEntryPrice(entry) {
+    if (Array.isArray(entry)) return entry[0] || 0;
+    return entry?.price || 0;
+  }
+
+  /**
+   * Extract quantity from an order entry (handles both [price, qty] tuples and {count/quantity} objects)
+   */
+  getEntryQty(entry) {
+    if (Array.isArray(entry)) return entry[1] || 0;
+    return entry?.count || entry?.quantity || 0;
+  }
+
   getBestPrice(orders, side) {
     if (!orders || !Array.isArray(orders) || orders.length === 0) return null;
 
-    // Orders are usually already sorted, but let's be safe
-    const sortedOrders = [...orders].sort((a, b) => {
-      if (side === 'bid') return b.price - a.price; // Highest bid
-      return a.price - b.price; // Lowest ask
-    });
-
-    // Find first order matching the side
-    for (const order of sortedOrders) {
-      if (side === 'bid' && order.side === 'bid') return order.price;
-      if (side === 'ask' && order.side === 'ask') return order.price;
-      // If side not specified in order, use first one
-      if (!order.side) return order.price;
-    }
-
-    return sortedOrders[0]?.price || null;
+    // Kalshi sends bids sorted highest-first; just return first entry's price
+    return this.getEntryPrice(orders[0]);
   }
 
   /**
    * Get liquidity (number of contracts) at best price
    */
-  getLiquidityAtBest(orders, side) {
+  getLiquidityAtBest(orders) {
     if (!orders || !Array.isArray(orders) || orders.length === 0) return 0;
 
-    const bestPrice = this.getBestPrice(orders, side);
+    const bestPrice = this.getEntryPrice(orders[0]);
     if (!bestPrice) return 0;
 
     // Sum all contracts at the best price
     return orders
-      .filter(o => o.price === bestPrice)
-      .reduce((sum, o) => sum + (o.count || o.quantity || 0), 0);
+      .filter(o => this.getEntryPrice(o) === bestPrice)
+      .reduce((sum, o) => sum + this.getEntryQty(o), 0);
   }
 
   /**
@@ -357,7 +364,7 @@ export class KalshiWebSocket {
    */
   getTotalDepth(orders) {
     if (!orders || !Array.isArray(orders)) return 0;
-    return orders.reduce((sum, o) => sum + (o.count || o.quantity || 0), 0);
+    return orders.reduce((sum, o) => sum + this.getEntryQty(o), 0);
   }
 
   /**
