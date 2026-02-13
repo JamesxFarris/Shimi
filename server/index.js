@@ -3764,6 +3764,8 @@ async function fetchCryptoMarkets() {
     return marketCache.data;
   }
 
+  fetchCryptoMarkets._loggedReject = false; // Reset debug log flag for fresh fetch
+
   try {
     // Fetch 15-minute AND hourly (directional) BTC, ETH, SOL, XRP markets
     const cryptoSeries = [
@@ -3793,6 +3795,22 @@ async function fetchCryptoMarkets() {
     const results = await Promise.all(fetches);
     results.forEach(markets => allMarkets.push(...markets));
 
+    // Log hourly market counts before filtering
+    const hourlyRaw = allMarkets.filter(m => isHourlyMarket(m.ticker));
+    const hourlyInTime = hourlyRaw.filter(m => {
+      const ct = m.close_time ? new Date(m.close_time).getTime() : null;
+      const tr = ct ? ct - now : null;
+      return tr && tr > 30000 && tr < 65 * 60 * 1000;
+    });
+    if (hourlyRaw.length > 0) {
+      console.log(` Hourly markets: ${hourlyRaw.length} total, ${hourlyInTime.length} in time window`);
+      // Log a sample title to debug directional filter
+      if (hourlyInTime.length > 0) {
+        const sample = hourlyInTime[0];
+        console.log(` Sample hourly: "${sample.title}" [${sample.ticker}] floor=${sample.floor_strike} cap=${sample.cap_strike}`);
+      }
+    }
+
     // Filter for valid 15-minute and hourly markets
     const cryptoMarkets = allMarkets.filter(m => {
       const ticker = (m.ticker || '').toUpperCase();
@@ -3810,15 +3828,27 @@ async function fetchCryptoMarkets() {
 
       // For hourly markets: filter aggressively to reduce API calls
       if (isHourly) {
-        // Skip range/bracket markets ("between X and Y") — we can only model directional (above/below)
         const title = (m.title || '').toLowerCase();
+
+        // Skip range/bracket markets ("between X and Y") — we can only model directional (above/below)
         if (title.includes('between') || title.includes('range')) return false;
-        // Must be directional: title should contain above/below/higher/lower/up/down/or more/or less
+
+        // Must be directional: check title OR fall back to floor_strike (single-strike = directional)
+        // Kalshi hourly titles vary: "above $X", "at or above", "$X or more", "Will BTC be $X+ today at 3pm?"
         const isDirectional = title.includes('above') || title.includes('below') ||
           title.includes('higher') || title.includes('lower') || title.includes('or more') ||
           title.includes('or less') || title.includes(' up') || title.includes(' down') ||
-          title.includes('over') || title.includes('under') || title.includes('>=') || title.includes('<=');
-        if (!isDirectional) return false;
+          title.includes('over') || title.includes('under') || title.includes('>=') || title.includes('<=') ||
+          title.includes('at least') || title.includes('or higher') || title.includes('or lower') ||
+          (m.floor_strike !== undefined && m.cap_strike === undefined); // single-strike = directional
+        if (!isDirectional) {
+          // Log first rejected title per cache cycle to debug filter issues
+          if (!fetchCryptoMarkets._loggedReject) {
+            console.log(` Hourly market rejected (not directional): "${m.title}" [${m.ticker}]`);
+            fetchCryptoMarkets._loggedReject = true;
+          }
+          return false;
+        }
 
         // Only keep strikes within 3% of current price
         // (KXBTCD has 50+ strikes per expiry; most are extreme 2c/98c bets we'd never take)
@@ -6780,7 +6810,8 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       filterReason: reason, filterReasons: [reason],
       signalStrength: 0, edge: 0, winRate: 0, winProbability: '0',
       token, timeRemaining, currentPrice,
-      assetType: token
+      assetType: token,
+      timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining)
     };
   }
 
