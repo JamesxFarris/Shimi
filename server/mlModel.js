@@ -1,6 +1,8 @@
-// ML MODEL - Logistic Regression
-// Proper ML model trained on settlement data
-// Blends with empirical tables at max 30% weight
+// ML MODEL - Gradient Boosted Decision Trees (GBDT)
+// Pure JS implementation — no external dependencies
+// Replaces logistic regression with ensemble of shallow decision trees
+// Handles non-linear feature interactions and regime changes natively
+// Walk-forward validation prevents overfitting
 
 import fs from 'fs';
 import path from 'path';
@@ -9,45 +11,51 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const ML_MODEL_FILE = path.join(__dirname, 'ml_model.json');
+
+// Expanded feature set: original 19 + 4 new cross-token/vol features
 const ML_FEATURE_NAMES = [
   'distance', 'distanceSquared', 'timeRemaining', 'timeUrgency',
   'momentum1m', 'momentum5m', 'volatility', 'volToDistance',
   'marketImpliedProb', 'priceDeviation', 'spread',
   'tokenBTC', 'tokenETH', 'tokenSOL',
   'hourMorning', 'hourAfternoon', 'hourEvening', 'hourNight',
-  'sideYes'
+  'sideYes',
+  // New features (v3)
+  'btcMomentum1m',      // BTC momentum as leading indicator for alts
+  'volOfVol',           // Volatility of volatility (regime stability)
+  'orderImbalance',     // Buy/sell pressure ratio from orderbook
 ];
 
 let mlModel = {
-  version: 2,
+  version: 3,
+  modelType: 'gbdt',
   trainedOn: 0,
   lastUpdated: null,
-  weights: {},
-  bias: 0,
-  featureStats: {}, // { featureName: { mean, std } } for z-score normalization
-  learningRate: 0.01,
-  regularization: 0.001, // L2 regularization strength
+  trees: [],            // Array of decision trees
+  learningRate: 0.1,    // Shrinkage factor per tree
+  basePrediction: 0,    // Initial prediction (log-odds of base rate)
+  featureImportance: {},
   performance: {
     accuracy: 0,
     trainAccuracy: 0,
     valAccuracy: 0,
     logLoss: Infinity,
-    confusionMatrix: { tp: 0, fp: 0, tn: 0, fn: 0 }
-  }
+    confusionMatrix: { tp: 0, fp: 0, tn: 0, fn: 0 },
+    walkForwardScores: [] // Per-fold validation scores
+  },
+  // Backward compat: keep these so old code paths don't crash
+  weights: {},
+  bias: 0,
+  featureStats: {},
 };
-
-// Initialize weights to zero
-for (const name of ML_FEATURE_NAMES) {
-  mlModel.weights[name] = 0;
-}
 
 // Load existing ML model
 try {
   if (fs.existsSync(ML_MODEL_FILE)) {
     const data = JSON.parse(fs.readFileSync(ML_MODEL_FILE, 'utf8'));
     if (data.version >= 2) {
-      mlModel = data;
-      console.log(` Loaded ML model: ${mlModel.trainedOn} samples, accuracy ${(mlModel.performance?.accuracy * 100).toFixed(1)}%`);
+      mlModel = { ...mlModel, ...data };
+      console.log(` Loaded ML model v${mlModel.version} (${mlModel.modelType || 'logistic'}): ${mlModel.trainedOn} samples, accuracy ${(mlModel.performance?.accuracy * 100).toFixed(1)}%`);
     } else {
       console.log(` Skipping old ML model v${data.version}, will retrain`);
     }
@@ -71,16 +79,24 @@ function sigmoid(z) {
   return 1 / (1 + Math.exp(-z));
 }
 
+// ============================================
+// FEATURE EXTRACTION
+// ============================================
+
 /**
  * Extract features from a market opportunity for ML prediction
- * @param {object} params - { absDistance, timeRemaining, token, side, momentum, volatility, marketImpliedProb, spread }
+ * @param {object} params - Market params + optional cross-token data
  * @returns {object} Feature vector keyed by feature name
  */
 function extractMLFeatures(params) {
   const {
     absDistance = 0, timeRemaining = 15, token = 'BTC', side = 'YES',
     momentum1m = 0, momentum5m = 0, volatility = 0.02,
-    marketImpliedProb = 50, spread = 0
+    marketImpliedProb = 50, spread = 0,
+    // New params (optional — gracefully default)
+    btcMomentum1m = 0,     // BTC's 1-min momentum (for alt predictions)
+    volOfVol = 0,          // Volatility of recent volatility readings
+    orderImbalance = 0,    // (bidSize - askSize) / (bidSize + askSize) from orderbook
   } = params;
 
   const hour = new Date().getUTCHours();
@@ -92,24 +108,28 @@ function extractMLFeatures(params) {
     timeUrgency: timeRemaining > 0 ? 1 / timeRemaining : 1,
     momentum1m,
     momentum5m,
-    volatility: volatility * 100, // convert to %
+    volatility: volatility * 100,
     volToDistance: absDistance > 0 ? (volatility * 100) / absDistance : 0,
-    marketImpliedProb: marketImpliedProb / 100, // normalize to 0-1
-    priceDeviation: (marketImpliedProb - 50) / 50, // how far from 50/50
+    marketImpliedProb: marketImpliedProb / 100,
+    priceDeviation: (marketImpliedProb - 50) / 50,
     spread,
     tokenBTC: token === 'BTC' ? 1 : 0,
     tokenETH: token === 'ETH' ? 1 : 0,
     tokenSOL: token === 'SOL' ? 1 : 0,
-    hourMorning: (hour >= 6 && hour < 12) ? 1 : 0, // 6am-12pm UTC
-    hourAfternoon: (hour >= 12 && hour < 18) ? 1 : 0, // 12pm-6pm UTC
-    hourEvening: (hour >= 18 && hour < 24) ? 1 : 0, // 6pm-12am UTC
-    hourNight: (hour >= 0 && hour < 6) ? 1 : 0, // 12am-6am UTC
-    sideYes: side?.toUpperCase() === 'YES' ? 1 : 0
+    hourMorning: (hour >= 6 && hour < 12) ? 1 : 0,
+    hourAfternoon: (hour >= 12 && hour < 18) ? 1 : 0,
+    hourEvening: (hour >= 18 && hour < 24) ? 1 : 0,
+    hourNight: (hour >= 0 && hour < 6) ? 1 : 0,
+    sideYes: side?.toUpperCase() === 'YES' ? 1 : 0,
+    // New features
+    btcMomentum1m: token === 'BTC' ? 0 : btcMomentum1m, // Only for alts (BTC leading indicator)
+    volOfVol,
+    orderImbalance,
   };
 }
 
 /**
- * Normalize features using z-score (mean=0, std=1)
+ * Normalize features using z-score — kept for backward compat with v2 logistic models
  */
 function normalizeFeatures(features, stats) {
   const normalized = {};
@@ -118,29 +138,165 @@ function normalizeFeatures(features, stats) {
     if (s && s.std > 0) {
       normalized[name] = (value - s.mean) / s.std;
     } else {
-      normalized[name] = value; // No normalization if no stats
+      normalized[name] = value;
     }
   }
   return normalized;
 }
 
+// ============================================
+// GRADIENT BOOSTED DECISION TREE IMPLEMENTATION
+// ============================================
+
 /**
- * Predict win probability using logistic regression
+ * A single decision tree node (binary split)
+ * Trees are stored as plain objects for JSON serialization
+ */
+function createLeafNode(value) {
+  return { leaf: true, value };
+}
+
+function createSplitNode(feature, threshold, left, right) {
+  return { leaf: false, feature, threshold, left, right };
+}
+
+/**
+ * Predict from a single tree
+ */
+function treePredictOne(tree, features) {
+  if (tree.leaf) return tree.value;
+  const val = features[tree.feature] ?? 0;
+  return val <= tree.threshold
+    ? treePredictOne(tree.left, features)
+    : treePredictOne(tree.right, features);
+}
+
+/**
+ * Find the best split for a set of data points
+ * Uses gradient/hessian formulation for binary classification (log-loss)
+ */
+function findBestSplit(indices, gradients, hessians, allFeatures, featureNames, minSamplesLeaf, lambda) {
+  let bestGain = 0;
+  let bestFeature = null;
+  let bestThreshold = null;
+  let bestLeftIdx = null;
+  let bestRightIdx = null;
+
+  const totalGrad = indices.reduce((s, i) => s + gradients[i], 0);
+  const totalHess = indices.reduce((s, i) => s + hessians[i], 0);
+
+  for (const feat of featureNames) {
+    // Get unique sorted values for this feature
+    const vals = indices.map(i => ({ idx: i, val: allFeatures[i][feat] ?? 0 }));
+    vals.sort((a, b) => a.val - b.val);
+
+    let leftGrad = 0, leftHess = 0;
+
+    for (let j = 0; j < vals.length - 1; j++) {
+      leftGrad += gradients[vals[j].idx];
+      leftHess += hessians[vals[j].idx];
+
+      // Skip if same value as next (no split point here)
+      if (vals[j].val === vals[j + 1].val) continue;
+
+      const rightGrad = totalGrad - leftGrad;
+      const rightHess = totalHess - leftHess;
+
+      // Min samples check
+      if (j + 1 < minSamplesLeaf || vals.length - j - 1 < minSamplesLeaf) continue;
+
+      // Gain = 0.5 * [G_L^2/(H_L+λ) + G_R^2/(H_R+λ) - (G_L+G_R)^2/(H_L+H_R+λ)]
+      const gain = 0.5 * (
+        (leftGrad * leftGrad) / (leftHess + lambda) +
+        (rightGrad * rightGrad) / (rightHess + lambda) -
+        (totalGrad * totalGrad) / (totalHess + lambda)
+      );
+
+      if (gain > bestGain) {
+        bestGain = gain;
+        bestFeature = feat;
+        bestThreshold = (vals[j].val + vals[j + 1].val) / 2;
+        bestLeftIdx = vals.slice(0, j + 1).map(v => v.idx);
+        bestRightIdx = vals.slice(j + 1).map(v => v.idx);
+      }
+    }
+  }
+
+  return { gain: bestGain, feature: bestFeature, threshold: bestThreshold, leftIdx: bestLeftIdx, rightIdx: bestRightIdx };
+}
+
+/**
+ * Build a single decision tree (depth-limited)
+ */
+function buildTree(indices, gradients, hessians, allFeatures, featureNames, depth, maxDepth, minSamplesLeaf, lambda) {
+  // Leaf value = -sum(gradients) / (sum(hessians) + lambda)
+  const sumGrad = indices.reduce((s, i) => s + gradients[i], 0);
+  const sumHess = indices.reduce((s, i) => s + hessians[i], 0);
+  const leafValue = -sumGrad / (sumHess + lambda);
+
+  if (depth >= maxDepth || indices.length < minSamplesLeaf * 2) {
+    return createLeafNode(leafValue);
+  }
+
+  const split = findBestSplit(indices, gradients, hessians, allFeatures, featureNames, minSamplesLeaf, lambda);
+
+  if (!split.feature || split.gain <= 0) {
+    return createLeafNode(leafValue);
+  }
+
+  const left = buildTree(split.leftIdx, gradients, hessians, allFeatures, featureNames, depth + 1, maxDepth, minSamplesLeaf, lambda);
+  const right = buildTree(split.rightIdx, gradients, hessians, allFeatures, featureNames, depth + 1, maxDepth, minSamplesLeaf, lambda);
+
+  return createSplitNode(split.feature, split.threshold, left, right);
+}
+
+/**
+ * Count feature usage across all trees (for importance)
+ */
+function countFeatureUsage(tree, counts = {}) {
+  if (tree.leaf) return counts;
+  counts[tree.feature] = (counts[tree.feature] || 0) + 1;
+  countFeatureUsage(tree.left, counts);
+  countFeatureUsage(tree.right, counts);
+  return counts;
+}
+
+// ============================================
+// PREDICTION
+// ============================================
+
+/**
+ * Predict win probability using GBDT ensemble (or fallback to logistic if v2 model loaded)
  */
 function mlPredict(features) {
   if (!mlModel.trainedOn || mlModel.trainedOn < 200) return null;
   if (!mlModel.performance || mlModel.performance.accuracy < 0.55) return null;
 
-  const normalized = normalizeFeatures(features, mlModel.featureStats);
-  let z = mlModel.bias || 0;
-  for (const [name, value] of Object.entries(normalized)) {
-    z += (mlModel.weights[name] || 0) * value;
+  // GBDT prediction (v3)
+  if (mlModel.modelType === 'gbdt' && mlModel.trees && mlModel.trees.length > 0) {
+    let logOdds = mlModel.basePrediction || 0;
+    const lr = mlModel.learningRate || 0.1;
+    for (const tree of mlModel.trees) {
+      logOdds += lr * treePredictOne(tree, features);
+    }
+    return sigmoid(logOdds);
   }
-  return sigmoid(z);
+
+  // Fallback: logistic regression (v2 backward compat)
+  if (mlModel.weights && mlModel.featureStats) {
+    const normalized = normalizeFeatures(features, mlModel.featureStats);
+    let z = mlModel.bias || 0;
+    for (const [name, value] of Object.entries(normalized)) {
+      z += (mlModel.weights[name] || 0) * value;
+    }
+    return sigmoid(z);
+  }
+
+  return null;
 }
 
 /**
- * Compute feature statistics (mean, std) for normalization
+ * Compute feature statistics (mean, std) for normalization — kept for backward compat
  */
 function computeFeatureStats(dataPoints) {
   const stats = {};
@@ -155,8 +311,107 @@ function computeFeatureStats(dataPoints) {
   return stats;
 }
 
+// ============================================
+// TRAINING WITH WALK-FORWARD VALIDATION
+// ============================================
+
 /**
- * Train logistic regression model using gradient descent
+ * Evaluate a trained GBDT ensemble on a dataset
+ */
+function evaluateEnsemble(trees, basePrediction, lr, dataPoints) {
+  let correct = 0;
+  let logLossSum = 0;
+  const cm = { tp: 0, fp: 0, tn: 0, fn: 0 };
+
+  for (const dp of dataPoints) {
+    let logOdds = basePrediction;
+    for (const tree of trees) {
+      logOdds += lr * treePredictOne(tree, dp.features);
+    }
+    const pred = sigmoid(logOdds);
+    const predBinary = pred >= 0.5 ? 1 : 0;
+    if (predBinary === dp.outcome) correct++;
+
+    const clipped = Math.max(0.001, Math.min(0.999, pred));
+    logLossSum -= dp.outcome * Math.log(clipped) + (1 - dp.outcome) * Math.log(1 - clipped);
+
+    if (predBinary === 1 && dp.outcome === 1) cm.tp++;
+    else if (predBinary === 1 && dp.outcome === 0) cm.fp++;
+    else if (predBinary === 0 && dp.outcome === 0) cm.tn++;
+    else cm.fn++;
+  }
+
+  return {
+    accuracy: correct / dataPoints.length,
+    logLoss: logLossSum / dataPoints.length,
+    confusionMatrix: cm
+  };
+}
+
+/**
+ * Train a GBDT ensemble on a training set
+ */
+function trainGBDTOnData(trainData, featureNames, params = {}) {
+  const {
+    nTrees = 50,
+    maxDepth = 4,         // Shallow trees — prevent overfitting on our small data
+    minSamplesLeaf = 10,
+    learningRate = 0.1,
+    lambda = 1.0,         // L2 regularization on leaf weights
+    subsampleRate = 0.8,  // Row subsampling per tree
+  } = params;
+
+  // Base prediction: log(p / (1-p)) where p = positive rate
+  const posRate = trainData.filter(d => d.outcome === 1).length / trainData.length;
+  const basePrediction = Math.log(Math.max(0.01, posRate) / Math.max(0.01, 1 - posRate));
+
+  // Extract all features into array for fast access
+  const allFeatures = trainData.map(d => d.features);
+  const outcomes = trainData.map(d => d.outcome);
+  const n = trainData.length;
+
+  // Current predictions (log-odds space)
+  const predictions = new Float64Array(n).fill(basePrediction);
+  const trees = [];
+
+  for (let t = 0; t < nTrees; t++) {
+    // Compute gradients and hessians for log-loss
+    const gradients = new Float64Array(n);
+    const hessians = new Float64Array(n);
+
+    for (let i = 0; i < n; i++) {
+      const pred = sigmoid(predictions[i]);
+      gradients[i] = pred - outcomes[i];         // First derivative of log-loss
+      hessians[i] = pred * (1 - pred);           // Second derivative
+    }
+
+    // Row subsampling
+    let indices;
+    if (subsampleRate < 1.0) {
+      const shuffled = Array.from({ length: n }, (_, i) => i).sort(() => Math.random() - 0.5);
+      indices = shuffled.slice(0, Math.floor(n * subsampleRate));
+    } else {
+      indices = Array.from({ length: n }, (_, i) => i);
+    }
+
+    // Build tree
+    const tree = buildTree(indices, gradients, hessians, allFeatures, featureNames, 0, maxDepth, minSamplesLeaf, lambda);
+    trees.push(tree);
+
+    // Update predictions
+    for (let i = 0; i < n; i++) {
+      predictions[i] += learningRate * treePredictOne(tree, allFeatures[i]);
+    }
+  }
+
+  return { trees, basePrediction, learningRate };
+}
+
+/**
+ * Train GBDT with walk-forward validation
+ * Splits data chronologically into rolling windows, trains on each, validates on next
+ * Only deploys the model if out-of-sample performance is adequate
+ *
  * @param {Array} dataPoints - Array of { features: {}, outcome: 0|1 }
  * @returns {object} Training results
  */
@@ -166,187 +421,152 @@ function trainMLModel(dataPoints) {
     return { success: false, reason: 'Insufficient data' };
   }
 
-  console.log(` ML: Training on ${dataPoints.length} samples...`);
+  console.log(` ML GBDT: Training on ${dataPoints.length} samples with walk-forward validation...`);
 
-  // Shuffle data
-  const shuffled = [...dataPoints].sort(() => Math.random() - 0.5);
+  // Active feature names: only include features that exist in data
+  const sampleFeatures = dataPoints[0]?.features || {};
+  const activeFeatures = ML_FEATURE_NAMES.filter(f => f in sampleFeatures);
+  console.log(` ML: Using ${activeFeatures.length} features: ${activeFeatures.join(', ')}`);
 
-  // 80/20 train/val split
-  const splitIdx = Math.floor(shuffled.length * 0.8);
-  const trainData = shuffled.slice(0, splitIdx);
-  const valData = shuffled.slice(splitIdx);
+  // Walk-forward validation: 3 folds
+  // Split data into 4 chunks: train on 1-2-3, validate on 2-3-4
+  const nFolds = 3;
+  const foldSize = Math.floor(dataPoints.length / (nFolds + 1));
+  const walkForwardScores = [];
 
-  // Compute feature stats from training data only
-  const featureStats = computeFeatureStats(trainData);
+  console.log(` ML: Walk-forward: ${nFolds} folds, ~${foldSize} samples each`);
 
-  // Initialize weights
-  const weights = {};
-  for (const name of ML_FEATURE_NAMES) {
-    weights[name] = 0;
-  }
-  let bias = 0;
+  for (let fold = 0; fold < nFolds; fold++) {
+    const trainEnd = (fold + 1) * foldSize;
+    const valEnd = Math.min((fold + 2) * foldSize, dataPoints.length);
+    const trainSlice = dataPoints.slice(0, trainEnd);
+    const valSlice = dataPoints.slice(trainEnd, valEnd);
 
-  const lr = 0.01;
-  const lambda = 0.001; // L2 regularization
-  const epochs = 100;
-  const batchSize = Math.min(64, Math.floor(trainData.length / 4));
+    if (trainSlice.length < 100 || valSlice.length < 30) continue;
 
-  let bestValAccuracy = 0;
-  let bestWeights = { ...weights };
-  let bestBias = bias;
-  let epochsSinceImprovement = 0;
+    const { trees, basePrediction, learningRate: lr } = trainGBDTOnData(trainSlice, activeFeatures, {
+      nTrees: 40,
+      maxDepth: 4,
+      minSamplesLeaf: Math.max(5, Math.floor(trainSlice.length * 0.02)),
+      learningRate: 0.1,
+      lambda: 1.0,
+      subsampleRate: 0.8
+    });
 
-  for (let epoch = 0; epoch < epochs; epoch++) {
-    // Shuffle training data each epoch
-    trainData.sort(() => Math.random() - 0.5);
+    const valResult = evaluateEnsemble(trees, basePrediction, lr, valSlice);
+    walkForwardScores.push({
+      fold,
+      trainSize: trainSlice.length,
+      valSize: valSlice.length,
+      valAccuracy: valResult.accuracy,
+      valLogLoss: valResult.logLoss
+    });
 
-    // Mini-batch gradient descent
-    for (let i = 0; i < trainData.length; i += batchSize) {
-      const batch = trainData.slice(i, i + batchSize);
-
-      // Accumulate gradients
-      const gradients = {};
-      for (const name of ML_FEATURE_NAMES) {
-        gradients[name] = 0;
-      }
-      let biasGrad = 0;
-
-      for (const dp of batch) {
-        const normalized = normalizeFeatures(dp.features, featureStats);
-        let z = bias;
-        for (const [name, value] of Object.entries(normalized)) {
-          z += (weights[name] || 0) * value;
-        }
-        const pred = sigmoid(z);
-        const error = pred - dp.outcome; // gradient of log-loss
-
-        biasGrad += error;
-        for (const [name, value] of Object.entries(normalized)) {
-          gradients[name] = (gradients[name] || 0) + error * value;
-        }
-      }
-
-      // Update weights with L2 regularization
-      const scale = lr / batch.length;
-      bias -= scale * biasGrad;
-      for (const name of ML_FEATURE_NAMES) {
-        weights[name] -= scale * (gradients[name] + lambda * weights[name]);
-      }
-    }
-
-    // Evaluate on validation set every 10 epochs
-    if ((epoch + 1) % 10 === 0) {
-      let correct = 0;
-      for (const dp of valData) {
-        const normalized = normalizeFeatures(dp.features, featureStats);
-        let z = bias;
-        for (const [name, value] of Object.entries(normalized)) {
-          z += (weights[name] || 0) * value;
-        }
-        const pred = sigmoid(z) >= 0.5 ? 1 : 0;
-        if (pred === dp.outcome) correct++;
-      }
-      const valAcc = correct / valData.length;
-
-      if (valAcc > bestValAccuracy) {
-        bestValAccuracy = valAcc;
-        bestWeights = { ...weights };
-        bestBias = bias;
-        epochsSinceImprovement = 0;
-      } else {
-        epochsSinceImprovement += 10;
-      }
-
-      // Early stopping
-      if (epochsSinceImprovement >= 30) {
-        console.log(` ML: Early stopping at epoch ${epoch + 1} (val accuracy: ${(bestValAccuracy * 100).toFixed(1)}%)`);
-        break;
-      }
-    }
+    console.log(` Fold ${fold + 1}: train=${trainSlice.length} val=${valSlice.length} accuracy=${(valResult.accuracy * 100).toFixed(1)}% logLoss=${valResult.logLoss.toFixed(4)}`);
   }
 
-  // Evaluate final model on both sets
-  let trainCorrect = 0;
-  const confusionMatrix = { tp: 0, fp: 0, tn: 0, fn: 0 };
+  // Average walk-forward accuracy
+  const avgWFAccuracy = walkForwardScores.length > 0
+    ? walkForwardScores.reduce((s, f) => s + f.valAccuracy, 0) / walkForwardScores.length
+    : 0;
 
-  for (const dp of trainData) {
-    const normalized = normalizeFeatures(dp.features, featureStats);
-    let z = bestBias;
-    for (const [name, value] of Object.entries(normalized)) {
-      z += (bestWeights[name] || 0) * value;
-    }
-    if ((sigmoid(z) >= 0.5 ? 1 : 0) === dp.outcome) trainCorrect++;
+  console.log(` ML: Walk-forward avg accuracy: ${(avgWFAccuracy * 100).toFixed(1)}%`);
+
+  // Train final model on 80% of data, validate on last 20% (time-ordered, no shuffle)
+  const splitIdx = Math.floor(dataPoints.length * 0.8);
+  const trainData = dataPoints.slice(0, splitIdx);
+  const valData = dataPoints.slice(splitIdx);
+
+  const params = {
+    nTrees: 50,
+    maxDepth: 4,
+    minSamplesLeaf: Math.max(5, Math.floor(trainData.length * 0.02)),
+    learningRate: 0.1,
+    lambda: 1.0,
+    subsampleRate: 0.8
+  };
+
+  const { trees, basePrediction, learningRate: lr } = trainGBDTOnData(trainData, activeFeatures, params);
+
+  // Evaluate on both sets
+  const trainResult = evaluateEnsemble(trees, basePrediction, lr, trainData);
+  const valResult = evaluateEnsemble(trees, basePrediction, lr, valData);
+
+  // Compute feature importance
+  const featureCounts = {};
+  for (const tree of trees) {
+    countFeatureUsage(tree, featureCounts);
+  }
+  const totalSplits = Object.values(featureCounts).reduce((s, v) => s + v, 0) || 1;
+  const featureImportance = {};
+  for (const [feat, count] of Object.entries(featureCounts)) {
+    featureImportance[feat] = parseFloat((count / totalSplits).toFixed(4));
   }
 
-  let valCorrect = 0;
-  let logLossSum = 0;
-  for (const dp of valData) {
-    const normalized = normalizeFeatures(dp.features, featureStats);
-    let z = bestBias;
-    for (const [name, value] of Object.entries(normalized)) {
-      z += (bestWeights[name] || 0) * value;
-    }
-    const pred = sigmoid(z);
-    const predBinary = pred >= 0.5 ? 1 : 0;
-    if (predBinary === dp.outcome) valCorrect++;
+  // Only deploy if walk-forward accuracy is reasonable
+  const deployable = avgWFAccuracy >= 0.53; // Lower bar than 0.55 since GBDT is better calibrated
 
-    // Log loss
-    const clipped = Math.max(0.001, Math.min(0.999, pred));
-    logLossSum -= dp.outcome * Math.log(clipped) + (1 - dp.outcome) * Math.log(1 - clipped);
-
-    // Confusion matrix
-    if (predBinary === 1 && dp.outcome === 1) confusionMatrix.tp++;
-    else if (predBinary === 1 && dp.outcome === 0) confusionMatrix.fp++;
-    else if (predBinary === 0 && dp.outcome === 0) confusionMatrix.tn++;
-    else confusionMatrix.fn++;
+  if (!deployable) {
+    console.log(` ML: Walk-forward accuracy ${(avgWFAccuracy * 100).toFixed(1)}% < 53% — model NOT deployed (keeping previous)`);
+    return {
+      success: false,
+      reason: `Walk-forward accuracy too low: ${(avgWFAccuracy * 100).toFixed(1)}%`,
+      trainAccuracy: trainResult.accuracy,
+      valAccuracy: valResult.accuracy,
+      walkForwardScores
+    };
   }
-
-  const trainAccuracy = trainCorrect / trainData.length;
-  const valAccuracy = valCorrect / valData.length;
-  const logLoss = logLossSum / valData.length;
 
   // Update model
   mlModel = {
-    version: 2,
+    version: 3,
+    modelType: 'gbdt',
     trainedOn: dataPoints.length,
     lastUpdated: new Date().toISOString(),
-    weights: bestWeights,
-    bias: bestBias,
-    featureStats,
+    trees,
+    basePrediction,
     learningRate: lr,
-    regularization: lambda,
+    featureImportance,
     performance: {
-      accuracy: valAccuracy,
-      trainAccuracy,
-      valAccuracy,
-      logLoss,
-      confusionMatrix,
+      accuracy: valResult.accuracy,
+      trainAccuracy: trainResult.accuracy,
+      valAccuracy: valResult.accuracy,
+      logLoss: valResult.logLoss,
+      confusionMatrix: valResult.confusionMatrix,
       trainSize: trainData.length,
-      valSize: valData.length
-    }
+      valSize: valData.length,
+      walkForwardScores,
+      avgWalkForwardAccuracy: avgWFAccuracy
+    },
+    // Backward compat fields
+    weights: {},
+    bias: 0,
+    featureStats: computeFeatureStats(trainData),
   };
 
   saveMLModel();
 
-  console.log(` ML: Training complete!`);
-  console.log(` Train accuracy: ${(trainAccuracy * 100).toFixed(1)}% | Val accuracy: ${(valAccuracy * 100).toFixed(1)}%`);
-  console.log(` Log loss: ${logLoss.toFixed(4)}`);
-  console.log(` Confusion matrix: TP=${confusionMatrix.tp} FP=${confusionMatrix.fp} TN=${confusionMatrix.tn} FN=${confusionMatrix.fn}`);
+  console.log(` ML GBDT: Training complete!`);
+  console.log(` ${trees.length} trees, max depth ${params.maxDepth}`);
+  console.log(` Train accuracy: ${(trainResult.accuracy * 100).toFixed(1)}% | Val accuracy: ${(valResult.accuracy * 100).toFixed(1)}%`);
+  console.log(` Walk-forward accuracy: ${(avgWFAccuracy * 100).toFixed(1)}%`);
+  console.log(` Log loss: ${valResult.logLoss.toFixed(4)}`);
+  console.log(` Confusion matrix: TP=${valResult.confusionMatrix.tp} FP=${valResult.confusionMatrix.fp} TN=${valResult.confusionMatrix.tn} FN=${valResult.confusionMatrix.fn}`);
 
-  // Log top features by absolute weight
-  const sortedFeatures = Object.entries(bestWeights)
-    .map(([name, weight]) => ({ name, weight, absWeight: Math.abs(weight) }))
-    .sort((a, b) => b.absWeight - a.absWeight)
-    .slice(0, 5);
-  console.log(` Top features: ${sortedFeatures.map(f => `${f.name}=${f.weight.toFixed(3)}`).join(', ')}`);
+  // Log top features
+  const sortedFeatures = Object.entries(featureImportance)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 7);
+  console.log(` Top features: ${sortedFeatures.map(([name, imp]) => `${name}=${(imp * 100).toFixed(1)}%`).join(', ')}`);
 
   return {
     success: true,
-    trainAccuracy,
-    valAccuracy,
-    logLoss,
-    confusionMatrix,
-    topFeatures: sortedFeatures
+    trainAccuracy: trainResult.accuracy,
+    valAccuracy: valResult.accuracy,
+    logLoss: valResult.logLoss,
+    confusionMatrix: valResult.confusionMatrix,
+    topFeatures: sortedFeatures.map(([name, imp]) => ({ name, weight: imp, absWeight: imp })),
+    walkForwardScores
   };
 }
 
@@ -361,25 +581,20 @@ function buildMLTrainingData(settlements) {
   for (const s of settlements) {
     if (!s.token || !s.strikePrice || !s.result) continue;
 
-    // Skip samples without betting-time data using settlement price causes data leakage
+    // Skip samples without betting-time data — using settlement price causes data leakage
     if (s.bettingTimePct === undefined) continue;
 
-    // Calculate distance
     const absDistance = Math.abs(s.bettingTimePct);
+    if (absDistance > 10) continue;
 
-    if (absDistance > 10) continue; // Skip outliers
-
-    // Determine the favored side at betting time
     const wasAboveStrike = s.bettingTimePct > 0;
-
     const token = s.token;
-    const side = wasAboveStrike ? 'YES' : 'NO'; // Favored side
+    const side = wasAboveStrike ? 'YES' : 'NO';
     const yesWon = s.result === 'yes';
     const favoredWon = (wasAboveStrike && yesWon) || (!wasAboveStrike && !yesWon);
 
-    // Extract time info from close time
-    let hour = 12; // default
-    let timeRemaining = 7.5; // default mid-point
+    let hour = 12;
+    let timeRemaining = 7.5;
     try {
       if (s.closeTime) {
         const closeDate = new Date(s.closeTime);
@@ -389,17 +604,20 @@ function buildMLTrainingData(settlements) {
 
     const features = extractMLFeatures({
       absDistance,
-      timeRemaining, // We don't know exact time remaining from settlements
+      timeRemaining,
       token,
       side,
-      momentum1m: 0, // Not available from historical data
+      momentum1m: 0,
       momentum5m: 0,
-      volatility: 0.02, // Default
-      marketImpliedProb: 50 + absDistance * 5, // Rough estimate
-      spread: 0
+      volatility: 0.02,
+      marketImpliedProb: 50 + absDistance * 5,
+      spread: 0,
+      // New features default to 0 for historical data (not available)
+      btcMomentum1m: 0,
+      volOfVol: 0,
+      orderImbalance: 0,
     });
 
-    // Override hour features based on actual close time
     features.hourMorning = (hour >= 6 && hour < 12) ? 1 : 0;
     features.hourAfternoon = (hour >= 12 && hour < 18) ? 1 : 0;
     features.hourEvening = (hour >= 18 && hour < 24) ? 1 : 0;
