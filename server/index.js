@@ -58,6 +58,38 @@ function isKillSwitchActive() {
   return false;
 }
 
+// Session drawdown circuit breaker — pause betting if bankroll drops 15% from session peak
+// Tracks the high watermark since auto-bet was enabled or server started
+let sessionHighWatermark = 0;
+let drawdownBreaker = false; // true = trading halted due to drawdown
+const DRAWDOWN_LIMIT_PCT = 15; // Halt if down 15% from session peak
+
+function updateSessionHighWatermark(bankrollCents) {
+  if (bankrollCents > sessionHighWatermark) {
+    sessionHighWatermark = bankrollCents;
+  }
+}
+
+function checkDrawdownBreaker(bankrollCents) {
+  if (sessionHighWatermark <= 0) return false;
+  const drawdownPct = ((sessionHighWatermark - bankrollCents) / sessionHighWatermark) * 100;
+  if (drawdownPct >= DRAWDOWN_LIMIT_PCT) {
+    if (!drawdownBreaker) {
+      console.error(` DRAWDOWN BREAKER: Bankroll $${(bankrollCents/100).toFixed(2)} is ${drawdownPct.toFixed(1)}% below session peak $${(sessionHighWatermark/100).toFixed(2)} — halting auto-bet`);
+    }
+    drawdownBreaker = true;
+    return true;
+  }
+  drawdownBreaker = false;
+  return false;
+}
+
+function resetDrawdownBreaker() {
+  drawdownBreaker = false;
+  sessionHighWatermark = 0;
+  console.log(' Drawdown breaker reset');
+}
+
 // ============================================
 // CONFIGURATION - Default template for new users
 // ============================================
@@ -72,6 +104,7 @@ const DEFAULT_CONFIG = {
   autoBetEnabled: false,
   // Safety: bankroll floor
   minBankrollCents: 200, // Never auto-bet if bankroll drops below $2.00
+  maxOpenPositions: 8, // Max simultaneous open positions (limits exposure, not frequency)
   // Risk management settings (in cents) - per-token-per-cycle is the primary limit
   riskLimits: {
     maxPerTokenPerCycle: 500, // $5.00 max per token per 15-min cycle
@@ -282,7 +315,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
   selectivityRules: {
     minSignalStrength: 58, // 0-100 score required to bet (raised from 50: only clear signals)
     minEmpiricalWinRate: 64, // Minimum win rate from lookup tables (lowered from 68: allow borderline high-edge bets)
-    minEdgeAfterFees: 5, // 5% minimum edge after all fees (raised from 3: real buffer after friction)
+    minEdgeAfterFees: 8, // 8% minimum edge after fees (Kalshi Brier ~0.05, small edges are noise)
     minUnfavoredEdge: 8, // 8% minimum net edge for unfavored-side bets (raised from 5: long shots need bigger edge)
     maxBetsPerToken: 3, // Per-token concentration limit
     requireRegimeCheck: true // Must pass volatility regime check
@@ -1031,6 +1064,24 @@ async function checkPendingSettlements() {
             const profit = won ? (bet.contracts * 100 - bet.totalCost) : 0;
             settleBet(bet.id, won ? 'won' : 'lost', currentPrice, profit);
             console.log(` Settled bet ${bet.id} via price: ${won ? 'WON' : 'LOST'} (${bet.side} ${bet.token} @ strike $${bet.strikePrice}, current $${currentPrice}, delay=${(settlementDelay/1000).toFixed(0)}s)`);
+          }
+        }
+      }
+      // Cross-update betHistory when a performanceData bet settles
+      if (bet.outcome !== 'pending' && bet.userId) {
+        const userState = getUserState(bet.userId);
+        const ubh = userState?.betHistory;
+        if (ubh) {
+          const match = ubh.find(b =>
+            b.ticker === bet.ticker &&
+            (b.side || '').toLowerCase() === (bet.side || '').toLowerCase() &&
+            b.outcome !== 'won' && b.outcome !== 'lost'
+          );
+          if (match) {
+            match.outcome = bet.outcome;
+            match.profit = bet.actualProfit || 0;
+            match.status = 'settled';
+            saveUserState(bet.userId);
           }
         }
       }
@@ -1792,16 +1843,24 @@ function getExposureByToken(userState = null) {
   return tokenExposure;
 }
 
-// Get max allowed per token per 15-min cycle (configurable)
+// Get max allowed per token per 15-min cycle (configurable, bankroll-proportional)
 function getMaxPerTokenPerCycle(userConfig = null) {
   const cfg = userConfig || config;
-  return cfg.riskLimits.maxPerTokenPerCycle || cfg.riskLimits.maxPerToken || 500; // Default $5.00
+  const fixedLimit = cfg.riskLimits.maxPerTokenPerCycle || cfg.riskLimits.maxPerToken || 500;
+  const bankroll = cfg.bankroll || 0;
+  // Don't risk more than 5% of bankroll per token per cycle (industry standard: 1-2%, we compromise at 5%)
+  const proportionalLimit = Math.round(bankroll * 0.05);
+  return Math.min(fixedLimit, Math.max(proportionalLimit, 50)); // Floor 50¢
 }
 
-// Get max total spend across ALL tokens per 15-min cycle
+// Get max total spend across ALL tokens per 15-min cycle (bankroll-proportional)
 function getMaxTotalPerCycle(userConfig = null) {
   const cfg = userConfig || config;
-  return cfg.riskLimits?.maxTotalPerCycle || 1500; // Default $15.00
+  const fixedTotal = cfg.riskLimits?.maxTotalPerCycle || 1500;
+  const bankroll = cfg.bankroll || 0;
+  // Don't risk more than 15% of bankroll total per cycle (matching 5% per-token × 3-4 tokens)
+  const proportionalTotal = Math.round(bankroll * 0.15);
+  return Math.min(fixedTotal, Math.max(proportionalTotal, 100)); // Floor $1
 }
 
 // Get total rolling spend across ALL tokens in the cycle window
@@ -4706,6 +4765,21 @@ async function runAutoBet(userId = null) {
       return;
     }
 
+    // SAFETY CHECK 1b: Session drawdown circuit breaker
+    const currentBankroll = userConfig.bankroll || 0;
+    updateSessionHighWatermark(currentBankroll);
+    if (checkDrawdownBreaker(currentBankroll)) {
+      lastScanStatus = {
+        ...lastScanStatus,
+        timestamp: new Date().toISOString(),
+        status: 'drawdown_breaker',
+        statusMessage: `Drawdown breaker: $${(currentBankroll/100).toFixed(2)} is ${(((sessionHighWatermark - currentBankroll) / sessionHighWatermark) * 100).toFixed(1)}% below peak $${(sessionHighWatermark/100).toFixed(2)}`,
+        blockedReasons: [`Session drawdown >${DRAWDOWN_LIMIT_PCT}%`]
+      };
+      console.log('========================================\n');
+      return;
+    }
+
     // Reset scan status
     lastScanStatus = {
       timestamp: new Date().toISOString(),
@@ -4777,6 +4851,25 @@ async function runAutoBet(userId = null) {
         }
       }
     }
+
+    // SAFETY CHECK 2: Max open positions — limit exposure, not frequency
+    // Check AFTER positions are refreshed from Kalshi for accuracy
+    const openPositions = (userPortfolio.positions || [])
+      .filter(p => Math.abs(p.position || 0) > 0).length;
+    const maxOpenPositions = userConfig.maxOpenPositions || 8;
+    if (openPositions >= maxOpenPositions) {
+      console.log(` POSITION CAP: ${openPositions}/${maxOpenPositions} positions open, waiting for exits`);
+      lastScanStatus = {
+        ...lastScanStatus,
+        timestamp: new Date().toISOString(),
+        status: 'position_cap',
+        statusMessage: `${openPositions} open positions (max ${maxOpenPositions})`,
+        blockedReasons: [`${openPositions}/${maxOpenPositions} positions open`]
+      };
+      console.log('========================================\n');
+      return;
+    }
+
     const now = Date.now();
 
     // Clean up old bets (remove bets older than 30 minutes)
@@ -5091,11 +5184,13 @@ async function runAutoBet(userId = null) {
 
     const priceCents = Math.round(best.betPrice * 100);
 
-    // Guard against extreme prices
-    if (priceCents <= 1 || priceCents >= 99) {
-      console.log(` Skipping extreme price ${priceCents}c`);
+    // Guard against extreme prices — penny bets (<15¢) bleed bankroll fast
+    const HARD_PRICE_FLOOR = 15; // Never buy below 15¢ — implies <15% win probability
+    const HARD_PRICE_CEILING = 95; // Never buy above 95¢ — risk/reward too poor
+    if (priceCents < HARD_PRICE_FLOOR || priceCents > HARD_PRICE_CEILING) {
+      console.log(` Skipping extreme price ${priceCents}c (floor=${HARD_PRICE_FLOOR}c, ceiling=${HARD_PRICE_CEILING}c)`);
       lastScanStatus.status = 'price_extreme';
-      lastScanStatus.statusMessage = `Price ${priceCents}c too extreme`;
+      lastScanStatus.statusMessage = `Price ${priceCents}c outside ${HARD_PRICE_FLOOR}-${HARD_PRICE_CEILING}c range`;
       console.log('========================================\n');
       return;
     }
@@ -5105,16 +5200,22 @@ async function runAutoBet(userId = null) {
     const kellyFraction = bankroll > 0
       ? 0.25 * (best.edge / 100) / Math.max(0.01, 1 - best.betPrice)
       : 0;
-    const kellyBet = Math.max(0, Math.round(kellyFraction * bankroll));
+    // Confidence scaling: reduce bet size when data is sparse
+    const sampleSize = best.sampleSize || 0;
+    const confidenceScale = sampleSize >= 200 ? 1.0 :
+                             sampleSize >= 100 ? 0.85 :
+                             sampleSize >= 50  ? 0.65 :
+                             sampleSize >= 20  ? 0.45 : 0.25;
+    const kellyBet = Math.max(0, Math.round(kellyFraction * bankroll * confidenceScale));
     // In low-vol, be more aggressive (1/3 Kelly instead of 1/4) since outcomes are more predictable
     const isLowVol = best.regime === 'low';
     const aggKellyBet = isLowVol
-      ? Math.max(0, Math.round((1/3) * (best.edge / 100) / Math.max(0.01, 1 - best.betPrice) * bankroll))
+      ? Math.max(0, Math.round((1/3) * (best.edge / 100) / Math.max(0.01, 1 - best.betPrice) * bankroll * confidenceScale))
       : kellyBet;
     // Cap at cycle budget, floor at 1 contract
     const MAX_BET_CENTS = Math.min(hardCapCents, Math.max(priceCents, aggKellyBet));
 
-    console.log(` Bet sizing: Kelly=${(kellyFraction*100).toFixed(1)}% bankroll=$${(bankroll/100).toFixed(2)} kellyBet=$${(aggKellyBet/100).toFixed(2)}${isLowVol ? ' (1/3 low-vol)' : ''} capped=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
+    console.log(` Bet sizing: Kelly=${(kellyFraction*100).toFixed(1)}% bankroll=$${(bankroll/100).toFixed(2)} kellyBet=$${(aggKellyBet/100).toFixed(2)}${isLowVol ? ' (1/3 low-vol)' : ''} confidence=${(confidenceScale*100).toFixed(0)}% (${sampleSize} samples) capped=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
 
     // Calculate contracts but cap total cost
     let count = Math.floor(MAX_BET_CENTS / priceCents);
@@ -5887,6 +5988,38 @@ function lookupEmpiricalWinRate(pctFromStrike, token = null) {
 }
 
 /**
+ * Performance-based win rate calibration: compare predicted vs actual outcomes
+ * to correct overconfident/underconfident predictions using real bet results.
+ * @param {number} predictedProb - Predicted win probability (0-100)
+ * @param {string} token - Token (BTC, ETH, SOL, XRP)
+ * @returns {number} Calibration adjustment (negative = was overconfident)
+ */
+function getCalibrationAdjustment(predictedProb, token) {
+  const settled = performanceData.bets.filter(b =>
+    b.outcome !== 'pending' && b.token === token
+  );
+  if (settled.length < 20) return 0; // Not enough data
+
+  // Group by predicted probability bucket (10% buckets)
+  const bucketSize = 10;
+  const bucketMin = Math.floor(predictedProb / bucketSize) * bucketSize;
+  const bucketMax = bucketMin + bucketSize;
+  const inBucket = settled.filter(b =>
+    b.predictedProb >= bucketMin && b.predictedProb < bucketMax
+  );
+  if (inBucket.length < 5) return 0; // Not enough in this bucket
+
+  const actualWinRate = inBucket.filter(b => b.outcome === 'won').length / inBucket.length * 100;
+  const avgPredicted = inBucket.reduce((s, b) => s + b.predictedProb, 0) / inBucket.length;
+
+  // How much were we off? Negative = we were overconfident
+  const calibrationError = actualWinRate - avgPredicted;
+
+  // Apply 50% of the correction (conservative — don't overcorrect)
+  return calibrationError * 0.5;
+}
+
+/**
  * Evaluate a market opportunity using pure empirical data
  * @param {object} parsed - Parsed market data
  * @param {object} currentPrice - Current crypto price
@@ -6129,16 +6262,43 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     const momentum = calculateMomentumMultiTimeframe(priceHistory);
     const spreadVal = orderbook ? (betSide === 'YES' ? orderbook.yesSpread : orderbook.noSpread) || 0 : 0;
 
+    // Compute cross-token and advanced features for ML
+    const btcHistory = cryptoPrices['BTC']?.history || [];
+    const btcMom = token !== 'BTC' ? calculateMomentumMultiTimeframe(btcHistory) : { m1: 0 };
+    // Volatility of volatility: std dev of recent vol readings (regime stability)
+    const recentVols = (cryptoPrices[token]?.history || []).slice(-30)
+      .map(h => h.price).filter(p => p > 0);
+    let volOfVol = 0;
+    if (recentVols.length >= 10) {
+      const returns = recentVols.slice(1).map((p, i) => Math.abs(Math.log(p / recentVols[i])));
+      const avgRet = returns.reduce((a, b) => a + b, 0) / returns.length;
+      volOfVol = Math.sqrt(returns.reduce((a, b) => a + (b - avgRet) ** 2, 0) / returns.length);
+    }
+    // Order imbalance from orderbook: (bidSize - askSize) / (bidSize + askSize)
+    let orderImbalance = 0;
+    if (orderbook) {
+      const bidDepth = betSide === 'YES'
+        ? (orderbook.yesTotalDepth || 0) : (orderbook.noTotalDepth || 0);
+      const askDepth = betSide === 'YES'
+        ? (orderbook.noTotalDepth || 0) : (orderbook.yesTotalDepth || 0);
+      if (bidDepth + askDepth > 0) {
+        orderImbalance = (bidDepth - askDepth) / (bidDepth + askDepth);
+      }
+    }
+
     const features = extractMLFeatures({
       absDistance,
       timeRemaining,
       token,
       side: betSide,
-      momentum1m: (momentum.m1 || 0) * 100,
-      momentum5m: (momentum.m5 || 0) * 100,
+      momentum1m: (parseFloat(momentum.m5) || 0) * 100,
+      momentum5m: (parseFloat(momentum.m5) || 0) * 100,
       volatility: cryptoPrices[token]?.volatility || 0.02,
       marketImpliedProb,
-      spread: spreadVal
+      spread: spreadVal,
+      btcMomentum1m: (parseFloat(btcMom.m5) || 0) * 100,
+      volOfVol,
+      orderImbalance,
     });
 
     mlPrediction = mlPredict(features);
@@ -6152,6 +6312,13 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       console.log(` ML blend: ml=${mlWinRate.toFixed(1)}% (weight=${(mlWeight*100).toFixed(0)}%) blended=${blendedWinRate.toFixed(1)}% (was ${adjustedWinRate.toFixed(1)}%)`);
       adjustedWinRate = blendedWinRate;
     }
+  }
+
+  // PERFORMANCE CALIBRATION: adjust predicted win rate based on actual bet outcomes
+  const calibrationAdj = getCalibrationAdjustment(adjustedWinRate, token);
+  if (calibrationAdj !== 0) {
+    adjustedWinRate += calibrationAdj;
+    console.log(` Calibration: ${calibrationAdj > 0 ? '+' : ''}${calibrationAdj.toFixed(1)}% (actual vs predicted) → ${adjustedWinRate.toFixed(1)}%`);
   }
 
   // TIME-DECAY ADJUSTMENT: less time remaining = higher probability favored side holds
@@ -6228,9 +6395,10 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
 
     // In low vol, outcomes are more predictable - smaller edge is acceptable but still need buffer
+    // With 8% base, low-vol reduces to 5% (still above noise threshold)
     const effectiveMinEdge = regime.regime === 'low'
-      ? Math.max(2.0, (rules.minEdgeAfterFees || 5) - 3)
-      : (rules.minEdgeAfterFees || 5);
+      ? Math.max(5.0, (rules.minEdgeAfterFees || 8) - 3)
+      : (rules.minEdgeAfterFees || 8);
     if (netEdge < effectiveMinEdge) {
       reasons.push(`Edge ${netEdge.toFixed(1)}% < ${effectiveMinEdge}%${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
     }
@@ -7992,21 +8160,29 @@ app.post('/api/model/selectivity', (req, res) => {
 // ML Model status endpoint
 app.get('/api/model/ml-status', (req, res) => {
   const ml = getMLModel();
-  const topFeatures = Object.entries(ml.weights || {})
-    .map(([name, weight]) => ({ name, weight, absWeight: Math.abs(weight) }))
-    .sort((a, b) => b.absWeight - a.absWeight)
-    .slice(0, 10);
+  // For GBDT: use feature importance; for logistic: use weights
+  const topFeatures = ml.modelType === 'gbdt' && ml.featureImportance
+    ? Object.entries(ml.featureImportance)
+        .map(([name, imp]) => ({ name, weight: imp, absWeight: imp }))
+        .sort((a, b) => b.absWeight - a.absWeight)
+        .slice(0, 10)
+    : Object.entries(ml.weights || {})
+        .map(([name, weight]) => ({ name, weight, absWeight: Math.abs(weight) }))
+        .sort((a, b) => b.absWeight - a.absWeight)
+        .slice(0, 10);
 
   res.json({
     success: true,
     mlModel: {
       version: ml.version,
+      modelType: ml.modelType || 'logistic',
       trainedOn: ml.trainedOn,
       lastUpdated: ml.lastUpdated,
       isActive: ml.trainedOn >= 200 && (ml.performance?.accuracy || 0) >= 0.55,
       performance: ml.performance,
       topFeatures,
       featureCount: ML_FEATURE_NAMES.length,
+      treeCount: ml.trees?.length || 0,
       blendWeight: ml.trainedOn >= 200 && (ml.performance?.accuracy || 0) >= 0.55
         ? Math.min(0.30, Math.max(0, ((ml.performance?.accuracy || 0) - 0.55) * 2))
         : 0
@@ -8421,10 +8597,10 @@ app.get('/api/portfolio', async (req, res) => {
       userPortfolio.balance = balanceData.balance || 0;
       userConfig.bankroll = userPortfolio.balance;
 
-      // Fetch recent fills (completed trades) - last 20
+      // Fetch recent fills (completed trades) - last 100
       let realBetHistory = [];
       try {
-        const fillsData = await kalshiRequest('GET', '/portfolio/fills?limit=20', null, userConfig);
+        const fillsData = await kalshiRequest('GET', '/portfolio/fills?limit=100', null, userConfig);
         let fills = fillsData.fills || [];
 
         // Filter out old fills - only show bets from today onwards
@@ -8590,6 +8766,55 @@ app.get('/api/portfolio', async (req, res) => {
           combinedHistory.push(memBet);
         }
       });
+
+      // Enrich pending/unknown betHistory entries with market data from Kalshi
+      // Without this, old bets that fall out of the fills limit stay "pending" forever
+      const stillPending = combinedHistory.filter(b =>
+        b.outcome !== 'won' && b.outcome !== 'lost' && b.ticker && !marketData[b.ticker]
+      );
+      if (stillPending.length > 0) {
+        const extraTickers = [...new Set(stillPending.map(b => b.ticker))].slice(0, 20);
+        const extraMarketPromises = extraTickers.map(async (ticker) => {
+          try {
+            const data = await kalshiRequest('GET', `/markets/${ticker}`, null, userConfig);
+            if (data.market) {
+              return { ticker, title: data.market.title || ticker, result: data.market.result || data.market.market_result, status: data.market.status, closeTime: data.market.close_time };
+            }
+          } catch (e) {}
+          return null;
+        });
+        (await Promise.all(extraMarketPromises)).forEach(m => { if (m) marketData[m.ticker] = m; });
+      }
+
+      // Update all pending/unknown entries with available market data
+      for (const bet of combinedHistory) {
+        if (bet.outcome === 'won' || bet.outcome === 'lost') continue;
+        const market = marketData[bet.ticker];
+        if (!market?.result) continue;
+        const wonBet = (bet.side || '').toLowerCase() === market.result;
+        bet.outcome = wonBet ? 'won' : 'lost';
+        bet.status = 'settled';
+        bet.payout = wonBet ? (bet.count || 0) * 100 : 0;
+        bet.profit = wonBet ? bet.payout - (bet.totalCost || 0) : -(bet.totalCost || 0);
+        if (market.title) bet.title = market.title;
+        if (market.closeTime) bet.closeTime = market.closeTime;
+      }
+
+      // Back-fill betHistory entries from enriched fill data so they persist
+      for (const fillBet of realBetHistory) {
+        if (fillBet.outcome !== 'won' && fillBet.outcome !== 'lost') continue;
+        const match = userBetHistory.find(b =>
+          b.ticker === fillBet.ticker &&
+          (b.side || '').toLowerCase() === (fillBet.side || '').toLowerCase() &&
+          b.outcome !== 'won' && b.outcome !== 'lost'
+        );
+        if (match) {
+          match.outcome = fillBet.outcome;
+          match.profit = fillBet.profit;
+          match.status = 'settled';
+          match.payout = fillBet.payout;
+        }
+      }
 
       // Sort by timestamp descending
       combinedHistory.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
@@ -9142,6 +9367,30 @@ app.post('/api/kill-switch/deactivate', (req, res) => {
 
 app.get('/api/kill-switch/status', (req, res) => {
   res.json({ active: isKillSwitchActive() });
+});
+
+// Drawdown breaker endpoints
+app.get('/api/drawdown-breaker/status', (req, res) => {
+  const bankroll = req.userState?.config?.bankroll || 0;
+  const drawdownPct = sessionHighWatermark > 0
+    ? ((sessionHighWatermark - bankroll) / sessionHighWatermark) * 100
+    : 0;
+  res.json({
+    active: drawdownBreaker,
+    sessionHighWatermark: sessionHighWatermark,
+    currentBankroll: bankroll,
+    drawdownPct: parseFloat(drawdownPct.toFixed(1)),
+    limitPct: DRAWDOWN_LIMIT_PCT
+  });
+});
+
+app.post('/api/drawdown-breaker/reset', (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+  resetDrawdownBreaker();
+  // Re-seed watermark with current bankroll
+  const bankroll = req.userState?.config?.bankroll || 0;
+  updateSessionHighWatermark(bankroll);
+  res.json({ success: true, message: 'Drawdown breaker reset', newHighWatermark: bankroll });
 });
 
 // Debug endpoint to see raw Kalshi data (uses global server credentials)
