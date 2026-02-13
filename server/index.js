@@ -2522,21 +2522,27 @@ async function fetchOrderbook(ticker, userConfig = null) {
     const cfg = userConfig || config;
     const response = await kalshiRequest('GET', `/markets/${ticker}/orderbook`, null, cfg);
 
-    // Parse orderbook response
+    // Kalshi API v2 returns: { orderbook: { yes: [[price_cents, qty], ...], no: [[price_cents, qty], ...] } }
+    // Binary market: YES bids = demand to buy YES, NO bids = demand to buy NO
+    // A NO bid at X¢ is equivalent to a YES ask at (100-X)¢
+    const ob = response.orderbook || response;
+    const yesBids = Array.isArray(ob.yes) ? ob.yes : []; // [[price, qty], ...] sorted highest first
+    const noBids = Array.isArray(ob.no) ? ob.no : [];
+
     const orderbook = {
       ticker,
       // YES side
-      bestYesBid: response.yes?.bid?.[0]?.price || 0,
-      bestYesAsk: response.yes?.ask?.[0]?.price || 0,
+      bestYesBid: yesBids.length > 0 ? yesBids[0][0] : 0,
+      bestYesAsk: noBids.length > 0 ? (100 - noBids[0][0]) : 0,
       yesSpread: 0,
-      yesLiquidityAtBest: response.yes?.ask?.[0]?.count || 0,
-      yesTotalDepth: (response.yes?.ask || []).reduce((sum, o) => sum + (o.count || 0), 0),
+      yesLiquidityAtBest: yesBids.length > 0 ? (yesBids[0][1] || 0) : 0,
+      yesTotalDepth: yesBids.reduce((sum, e) => sum + (e[1] || 0), 0),
       // NO side
-      bestNoBid: response.no?.bid?.[0]?.price || 0,
-      bestNoAsk: response.no?.ask?.[0]?.price || 0,
+      bestNoBid: noBids.length > 0 ? noBids[0][0] : 0,
+      bestNoAsk: yesBids.length > 0 ? (100 - yesBids[0][0]) : 0,
       noSpread: 0,
-      noLiquidityAtBest: response.no?.ask?.[0]?.count || 0,
-      noTotalDepth: (response.no?.ask || []).reduce((sum, o) => sum + (o.count || 0), 0),
+      noLiquidityAtBest: noBids.length > 0 ? (noBids[0][1] || 0) : 0,
+      noTotalDepth: noBids.reduce((sum, e) => sum + (e[1] || 0), 0),
       // Raw data
       raw: response,
       timestamp: now,
