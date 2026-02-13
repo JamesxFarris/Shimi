@@ -91,6 +91,33 @@ function resetDrawdownBreaker() {
 }
 
 // ============================================
+// DISCORD ALERTS — fire-and-forget with 2s rate limit
+// ============================================
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || '';
+const DISCORD_USER_ID = process.env.DISCORD_USER_ID || '';
+const _discordQueue = [];
+let _discordDraining = false;
+
+function sendDiscordAlert(embed) {
+  if (!DISCORD_WEBHOOK_URL) return;
+  _discordQueue.push(embed);
+  if (!_discordDraining) _drainDiscordQueue();
+}
+
+function _drainDiscordQueue() {
+  if (_discordQueue.length === 0) { _discordDraining = false; return; }
+  _discordDraining = true;
+  const embed = _discordQueue.shift();
+  const mentionContent = DISCORD_USER_ID ? `<@${DISCORD_USER_ID}>` : '';
+  fetch(DISCORD_WEBHOOK_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: mentionContent, embeds: [embed] }),
+  }).catch(err => console.log(' Discord alert failed:', err.message));
+  setTimeout(_drainDiscordQueue, 2000);
+}
+
+// ============================================
 // CONFIGURATION - Default template for new users
 // ============================================
 
@@ -189,6 +216,33 @@ const DEFAULT_CONFIG = {
 
 const LEARNED_PARAMS_FILE = path.join(__dirname, 'learned_params.json');
 const LEARNING_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+
+// ============================================
+// ECONOMIC CALENDAR — sit out during high-impact events
+// ============================================
+const ECONOMIC_CALENDAR_FILE = path.join(__dirname, 'economic_calendar.json');
+let economicCalendar = [];
+try {
+  if (fs.existsSync(ECONOMIC_CALENDAR_FILE)) {
+    economicCalendar = JSON.parse(fs.readFileSync(ECONOMIC_CALENDAR_FILE, 'utf8'));
+    console.log(` Loaded ${economicCalendar.length} economic calendar events`);
+  }
+} catch (err) {
+  console.log('Could not load economic calendar:', err.message);
+}
+
+function getActiveEconomicEvent() {
+  const now = Date.now();
+  for (const event of economicCalendar) {
+    const eventTime = new Date(event.datetime).getTime();
+    const sitOutMs = (event.sitOutMinutes || 15) * 60 * 1000;
+    // Sit out from (sitOutMinutes before) to (sitOutMinutes after) the event
+    if (now >= eventTime - sitOutMs && now <= eventTime + sitOutMs) {
+      return event;
+    }
+  }
+  return null;
+}
 
 // Default empirical tables structure
 const DEFAULT_EMPIRICAL_TABLES = {
@@ -828,6 +882,89 @@ function savePerformanceData() {
   });
 }
 
+// ============================================
+// DAILY P&L TRACKING
+// ============================================
+const DAILY_PNL_FILE = path.join(__dirname, 'daily_pnl_history.json');
+let dailyPnlHistory = [];
+let dailyStats = {
+  date: new Date().toISOString().slice(0, 10),
+  betsPlaced: 0,
+  fills: 0,
+  wins: 0,
+  losses: 0,
+  netPnlCents: 0,
+  totalWageredCents: 0,
+  bestBet: null,   // { ticker, pnlCents }
+  worstBet: null,  // { ticker, pnlCents }
+};
+
+function loadDailyPnlHistory() {
+  try {
+    if (fs.existsSync(DAILY_PNL_FILE)) {
+      dailyPnlHistory = JSON.parse(fs.readFileSync(DAILY_PNL_FILE, 'utf8'));
+      console.log(` Loaded ${dailyPnlHistory.length} daily P&L records`);
+    }
+  } catch (err) {
+    console.log('Could not load daily P&L history:', err.message);
+  }
+}
+loadDailyPnlHistory();
+
+function saveDailyPnlHistory() {
+  debouncedWrite('dailyPnl', () => {
+    try {
+      // Keep last 30 days
+      if (dailyPnlHistory.length > 30) dailyPnlHistory = dailyPnlHistory.slice(-30);
+      fs.writeFileSync(DAILY_PNL_FILE, JSON.stringify(dailyPnlHistory, null, 2));
+    } catch (err) {
+      console.log('Could not save daily P&L history:', err.message);
+    }
+  });
+}
+
+function rolloverDailyStats() {
+  const todayUTC = new Date().toISOString().slice(0, 10);
+  if (dailyStats.date === todayUTC) return;
+  // Day changed — archive yesterday's stats
+  const summary = { ...dailyStats };
+  dailyPnlHistory.push(summary);
+  saveDailyPnlHistory();
+
+  const pnlDollar = (summary.netPnlCents / 100).toFixed(2);
+  const winRate = summary.wins + summary.losses > 0
+    ? ((summary.wins / (summary.wins + summary.losses)) * 100).toFixed(1)
+    : '0.0';
+  console.log(` DAILY P&L SUMMARY (${summary.date}): ${summary.wins}W/${summary.losses}L (${winRate}%) P&L: $${pnlDollar}`);
+
+  // Discord summary
+  sendDiscordAlert({
+    title: `Daily P&L Summary — ${summary.date}`,
+    color: summary.netPnlCents >= 0 ? 0x2ecc71 : 0xe74c3c,
+    fields: [
+      { name: 'Bets', value: `${summary.fills} fills (${summary.wins}W / ${summary.losses}L)`, inline: true },
+      { name: 'Win Rate', value: `${winRate}%`, inline: true },
+      { name: 'Net P&L', value: `$${pnlDollar}`, inline: true },
+      { name: 'Wagered', value: `$${(summary.totalWageredCents / 100).toFixed(2)}`, inline: true },
+      ...(summary.bestBet ? [{ name: 'Best', value: `${summary.bestBet.ticker} +${(summary.bestBet.pnlCents / 100).toFixed(2)}`, inline: true }] : []),
+      ...(summary.worstBet ? [{ name: 'Worst', value: `${summary.worstBet.ticker} ${(summary.worstBet.pnlCents / 100).toFixed(2)}`, inline: true }] : []),
+    ],
+  });
+
+  // Reset for new day
+  dailyStats = {
+    date: todayUTC,
+    betsPlaced: 0,
+    fills: 0,
+    wins: 0,
+    losses: 0,
+    netPnlCents: 0,
+    totalWageredCents: 0,
+    bestBet: null,
+    worstBet: null,
+  };
+}
+
 // Track a new bet
 function trackBet(betInfo) {
   const bet = {
@@ -860,6 +997,11 @@ function trackBet(betInfo) {
   performanceData.summary.totalBets++;
   performanceData.summary.pending++;
   performanceData.summary.totalWagered += bet.totalCost;
+
+  // Daily P&L tracking
+  dailyStats.betsPlaced++;
+  dailyStats.fills++;
+  dailyStats.totalWageredCents += bet.totalCost;
 
   savePerformanceData();
   console.log(` Tracked bet: ${bet.side} on ${bet.token} @ ${bet.price}c (${bet.predictedProb.toFixed(1)}% predicted)`);
@@ -934,6 +1076,31 @@ function settleBet(betId, outcome, settlementPrice, actualProfit) {
     const result = outcome === 'won' ? bet.side.toLowerCase() : (bet.side.toLowerCase() === 'yes' ? 'no' : 'yes');
     matchSettlementWithSnapshots(bet.ticker, result);
   }
+
+  // Daily P&L tracking
+  const pnlCents = outcome === 'won' ? actualProfit : -bet.totalCost;
+  if (outcome === 'won') { dailyStats.wins++; } else { dailyStats.losses++; }
+  dailyStats.netPnlCents += pnlCents;
+  if (!dailyStats.bestBet || pnlCents > dailyStats.bestBet.pnlCents) {
+    dailyStats.bestBet = { ticker: bet.ticker, pnlCents };
+  }
+  if (!dailyStats.worstBet || pnlCents < dailyStats.worstBet.pnlCents) {
+    dailyStats.worstBet = { ticker: bet.ticker, pnlCents };
+  }
+
+  // Discord alert on settlement
+  const settledCount = performanceData.summary.wins + performanceData.summary.losses;
+  const runningWinRate = settledCount > 0 ? ((performanceData.summary.wins / settledCount) * 100).toFixed(1) : '0.0';
+  sendDiscordAlert({
+    title: `${outcome === 'won' ? 'WIN' : 'LOSS'}: ${bet.side} on ${bet.token}`,
+    color: outcome === 'won' ? 0x2ecc71 : 0xe74c3c,
+    fields: [
+      { name: 'Ticker', value: bet.ticker || 'N/A', inline: true },
+      { name: 'P&L', value: `${pnlCents > 0 ? '+' : ''}${(pnlCents / 100).toFixed(2)}`, inline: true },
+      { name: 'Running W/R', value: `${runningWinRate}% (${performanceData.summary.wins}W/${performanceData.summary.losses}L)`, inline: true },
+      { name: 'Daily P&L', value: `$${(dailyStats.netPnlCents / 100).toFixed(2)}`, inline: true },
+    ],
+  });
 
   console.log(` Settled bet: ${bet.side} on ${bet.token} ${outcome.toUpperCase()} (${actualProfit > 0 ? '+' : ''}${actualProfit}c)`);
   return bet;
@@ -1604,6 +1771,126 @@ let priceInterval = setInterval(() => {
 }, 5000);
 initKrakenWebSocket();
 initCoinbaseWebSocket();
+
+// ============================================
+// BINANCE aggTrade STREAM — buy/sell pressure
+// ============================================
+const BINANCE_AGG_SYMBOLS = { BTCUSDT: 'BTC', ETHUSDT: 'ETH', SOLUSDT: 'SOL' };
+const aggTradeVolume = {};
+for (const token of Object.values(BINANCE_AGG_SYMBOLS)) {
+  aggTradeVolume[token] = { trades: [] }; // { qty, isSell, ts }
+}
+
+function recordAggTrade(token, quantity, isSell, timestamp) {
+  const bucket = aggTradeVolume[token];
+  if (!bucket) return;
+  bucket.trades.push({ qty: quantity, isSell, ts: timestamp });
+  // Prune older than 5 min
+  const cutoff = timestamp - 5 * 60 * 1000;
+  while (bucket.trades.length > 0 && bucket.trades[0].ts < cutoff) {
+    bucket.trades.shift();
+  }
+}
+
+function getBuyPressure(token) {
+  const bucket = aggTradeVolume[token];
+  if (!bucket || bucket.trades.length === 0) return { pressure1m: 0, pressure5m: 0 };
+  const now = Date.now();
+  let buy1 = 0, sell1 = 0, buy5 = 0, sell5 = 0;
+  for (const t of bucket.trades) {
+    if (t.isSell) { sell5 += t.qty; } else { buy5 += t.qty; }
+    if (now - t.ts <= 60000) {
+      if (t.isSell) { sell1 += t.qty; } else { buy1 += t.qty; }
+    }
+  }
+  const total1 = buy1 + sell1;
+  const total5 = buy5 + sell5;
+  return {
+    pressure1m: total1 > 0 ? (buy1 - sell1) / total1 : 0,
+    pressure5m: total5 > 0 ? (buy5 - sell5) / total5 : 0,
+  };
+}
+
+let binanceAggWs = null;
+let binanceAggWsConnected = false;
+let binanceAggReconnectDelay = 1000;
+
+function initBinanceAggTradeWebSocket() {
+  const streams = Object.keys(BINANCE_AGG_SYMBOLS).map(s => `${s.toLowerCase()}@aggTrade`).join('/');
+  const url = `wss://stream.binance.com:9443/stream?streams=${streams}`;
+  try {
+    binanceAggWs = new WebSocket(url);
+    binanceAggWs.on('open', () => {
+      binanceAggWsConnected = true;
+      binanceAggReconnectDelay = 1000;
+      console.log(' Binance aggTrade WebSocket connected');
+    });
+    binanceAggWs.on('message', (raw) => {
+      try {
+        const msg = JSON.parse(raw);
+        const d = msg.data;
+        if (d && d.e === 'aggTrade') {
+          const token = BINANCE_AGG_SYMBOLS[d.s];
+          if (token) {
+            recordAggTrade(token, parseFloat(d.q), d.m, d.T || Date.now());
+          }
+        }
+      } catch (e) { /* ignore parse errors */ }
+    });
+    binanceAggWs.on('close', () => {
+      binanceAggWsConnected = false;
+      console.log(` Binance aggTrade WS closed, reconnecting in ${binanceAggReconnectDelay / 1000}s`);
+      setTimeout(initBinanceAggTradeWebSocket, binanceAggReconnectDelay);
+      binanceAggReconnectDelay = Math.min(30000, binanceAggReconnectDelay * 2);
+    });
+    binanceAggWs.on('error', (err) => {
+      console.log(' Binance aggTrade WS error:', err.message);
+      try { binanceAggWs.close(); } catch (e) {}
+    });
+  } catch (err) {
+    console.log(' Binance aggTrade WS init error:', err.message);
+    setTimeout(initBinanceAggTradeWebSocket, binanceAggReconnectDelay);
+    binanceAggReconnectDelay = Math.min(30000, binanceAggReconnectDelay * 2);
+  }
+}
+initBinanceAggTradeWebSocket();
+
+// ============================================
+// BINANCE FUNDING RATE — contrarian signal
+// ============================================
+const FUNDING_SYMBOLS = { BTCUSDT: 'BTC', ETHUSDT: 'ETH', SOLUSDT: 'SOL' };
+const fundingRates = {};
+
+async function fetchFundingRates() {
+  try {
+    const resp = await fetch('https://fapi.binance.com/fapi/v1/premiumIndex', { timeout: 8000 });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    for (const item of data) {
+      const token = FUNDING_SYMBOLS[item.symbol];
+      if (token) {
+        fundingRates[token] = {
+          rate: parseFloat(item.lastFundingRate) || 0,
+          timestamp: Date.now(),
+        };
+      }
+    }
+    const summary = Object.entries(fundingRates).map(([t, d]) => `${t}=${(d.rate * 100).toFixed(4)}%`).join(', ');
+    console.log(` Funding rates: ${summary}`);
+  } catch (err) {
+    console.log(' Funding rate fetch error:', err.message);
+  }
+}
+
+function getFundingRate(token) {
+  const entry = fundingRates[token];
+  if (!entry || Date.now() - entry.timestamp > 10 * 60 * 1000) return 0;
+  return entry.rate;
+}
+
+// Poll funding rates every 60s
+fetchFundingRates();
+setInterval(fetchFundingRates, 60000);
 
 // ============================================
 // RISK MANAGEMENT
@@ -5372,6 +5659,19 @@ async function runAutoBet(userId = null) {
       // Save user state
       if (userId) saveUserState(userId);
 
+      // Discord alert — simulated bet placed
+      sendDiscordAlert({
+        title: `SIM BET: ${betRecord.side} on ${assetName}`,
+        color: 0x3498db,
+        fields: [
+          { name: 'Ticker', value: best.ticker || 'N/A', inline: true },
+          { name: 'Contracts', value: `${count} @ ${priceCents}c`, inline: true },
+          { name: 'Cost', value: `$${(betRecord.totalCost / 100).toFixed(2)}`, inline: true },
+          { name: 'Edge', value: `+${best.edge.toFixed(1)}%`, inline: true },
+          { name: 'Win Prob', value: `${best.winProbability}%`, inline: true },
+        ],
+      });
+
       console.log(`\n SIMULATED BET PLACED:`);
       console.log(` ${betRecord.side.toUpperCase()} on ${assetName}`);
       console.log(` ${count} contracts @ ${priceCents}c = $${(betRecord.totalCost/100).toFixed(2)}`);
@@ -5560,6 +5860,20 @@ async function runAutoBet(userId = null) {
 
     // Save user state after successful bet
     if (userId) saveUserState(userId);
+
+    // Discord alert — real bet filled
+    sendDiscordAlert({
+      title: `LIVE BET: ${betRecord.side} on ${assetName}`,
+      color: 0x3498db,
+      fields: [
+        { name: 'Ticker', value: best.ticker || 'N/A', inline: true },
+        { name: 'Contracts', value: `${filledCount} @ ${betRecord.avgPrice}c`, inline: true },
+        { name: 'Cost', value: `$${(betRecord.totalCost / 100).toFixed(2)}`, inline: true },
+        { name: 'Edge', value: `+${best.edge.toFixed(1)}%`, inline: true },
+        { name: 'Win Prob', value: `${best.winProbability}%`, inline: true },
+        { name: 'Order', value: order.order_id || 'N/A', inline: true },
+      ],
+    });
 
     console.log(`\n REAL BET FILLED:`);
     console.log(` ${betRecord.side.toUpperCase()} on ${best.cryptoType || best.assetType}`);
@@ -5988,6 +6302,12 @@ function shouldSitOut(tables, token = null) {
     reasons.push(`${recent429Count} rate-limit errors - backing off`);
   }
 
+  // Economic calendar — sit out during FOMC, CPI, NFP
+  const activeEvent = getActiveEconomicEvent();
+  if (activeEvent) {
+    reasons.push(`Economic event: ${activeEvent.name} (sit out ${activeEvent.sitOutMinutes}min window)`);
+  }
+
   return {
     sitOut: reasons.length > 0,
     reasons
@@ -6413,6 +6733,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       }
     }
 
+    const buyPressure = getBuyPressure(token);
     const features = extractMLFeatures({
       absDistance,
       timeRemaining,
@@ -6426,6 +6747,9 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       btcMomentum1m: (parseFloat(btcMom.m5) || 0) * 100,
       volOfVol,
       orderImbalance,
+      buyPressure1m: buyPressure.pressure1m,
+      buyPressure5m: buyPressure.pressure5m,
+      fundingRate: getFundingRate(token),
     });
 
     mlPrediction = mlPredict(features);
@@ -6672,6 +6996,17 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       adjustedSignalStrength += depthPenalty;
       windowPenalties.push(`low depth ${depthPenalty}pts (${sideDepth} contracts)`);
     }
+  }
+
+  // Funding rate contrarian signal
+  // Positive funding = longs pay shorts (overcrowded longs → bearish bias → favor NO)
+  // Negative funding = shorts pay longs (overcrowded shorts → bullish bias → favor YES)
+  const fundRate = getFundingRate(token);
+  if (Math.abs(fundRate) > 0.0005) {
+    const contrarian = (fundRate > 0 && betSide === 'NO') || (fundRate < 0 && betSide === 'YES');
+    const fundAdj = contrarian ? 3 : -3;
+    adjustedSignalStrength += fundAdj;
+    windowPenalties.push(`funding ${fundAdj > 0 ? '+' : ''}${fundAdj}pts (rate=${(fundRate * 100).toFixed(4)}%)`);
   }
 
   // YES/NO bias adjustment: learned data shows NO wins more often across all tokens
@@ -9507,6 +9842,21 @@ app.get('/api/kill-switch/status', (req, res) => {
   res.json({ active: isKillSwitchActive() });
 });
 
+// Economic calendar endpoint
+app.get('/api/economic-calendar', (req, res) => {
+  const now = Date.now();
+  const activeEvent = getActiveEconomicEvent();
+  const upcoming = economicCalendar
+    .filter(e => new Date(e.datetime).getTime() > now)
+    .slice(0, 10);
+  res.json({ activeEvent, upcoming, totalEvents: economicCalendar.length });
+});
+
+// Daily P&L endpoint
+app.get('/api/daily-pnl', (req, res) => {
+  res.json({ today: dailyStats, history: dailyPnlHistory });
+});
+
 // Drawdown breaker endpoints
 app.get('/api/drawdown-breaker/status', (req, res) => {
   const bankroll = req.userState?.config?.bankroll || 0;
@@ -9685,6 +10035,9 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
   // contributing to 429 rate limits, and never produced usable data (price_snapshots.json was empty).
   // The 12,452-settlement empirical tables from buildEmpiricalLookupTables are sufficient.
 
+  // Daily P&L rollover check every 60 seconds
+  setInterval(rolloverDailyStats, 60000);
+
   // Keep-alive: Self-ping every 10 minutes to prevent Render free tier from spinning down
   const RENDER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
   setInterval(() => {
@@ -9767,6 +10120,11 @@ function gracefulShutdown(signal) {
     fs.writeFileSync(PRICE_SNAPSHOTS_FILE, JSON.stringify(priceSnapshots, null, 2));
     console.log(' Saved price snapshots');
   } catch (e) { console.error(' Failed to save price snapshots:', e.message); }
+  try {
+    if (dailyPnlHistory.length > 30) dailyPnlHistory = dailyPnlHistory.slice(-30);
+    fs.writeFileSync(DAILY_PNL_FILE, JSON.stringify(dailyPnlHistory, null, 2));
+    console.log(' Saved daily P&L history');
+  } catch (e) { console.error(' Failed to save daily P&L history:', e.message); }
   console.log(' Goodbye!');
   process.exit(0);
 }
