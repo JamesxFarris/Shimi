@@ -613,13 +613,21 @@ function buildMLTrainingData(settlements) {
   for (const s of settlements) {
     if (!s.token || !s.strikePrice || !s.result) continue;
 
-    // Skip samples without betting-time data — using settlement price causes data leakage
-    if (s.bettingTimePct === undefined) continue;
+    // Prefer betting-time distance (no data leakage), fall back to settlement distance
+    // Settlement distance is imperfect (measures outcome not input) but better than 0 samples
+    let pctFromStrike;
+    if (s.bettingTimePct !== undefined) {
+      pctFromStrike = s.bettingTimePct;
+    } else if (s.settlementPrice) {
+      pctFromStrike = ((s.settlementPrice - s.strikePrice) / s.strikePrice) * 100;
+    } else {
+      continue; // No distance data at all
+    }
 
-    const absDistance = Math.abs(s.bettingTimePct);
+    const absDistance = Math.abs(pctFromStrike);
     if (absDistance > 10) continue;
 
-    const wasAboveStrike = s.bettingTimePct > 0;
+    const wasAboveStrike = pctFromStrike > 0;
     const token = s.token;
     const side = wasAboveStrike ? 'YES' : 'NO';
     const yesWon = s.result === 'yes';
