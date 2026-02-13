@@ -24,6 +24,10 @@ const ML_FEATURE_NAMES = [
   'btcMomentum1m',      // BTC momentum as leading indicator for alts
   'volOfVol',           // Volatility of volatility (regime stability)
   'orderImbalance',     // Buy/sell pressure ratio from orderbook
+  // New features (v3.1) — aggTrade + funding
+  'buyPressure1m',      // Binance aggTrade buy/sell pressure 1-min window [-1, 1]
+  'buyPressure5m',      // Binance aggTrade buy/sell pressure 5-min window [-1, 1]
+  'fundingRate',        // Binance perpetual funding rate (scaled ×1000)
 ];
 
 let mlModel = {
@@ -97,6 +101,10 @@ function extractMLFeatures(params) {
     btcMomentum1m = 0,     // BTC's 1-min momentum (for alt predictions)
     volOfVol = 0,          // Volatility of recent volatility readings
     orderImbalance = 0,    // (bidSize - askSize) / (bidSize + askSize) from orderbook
+    // v3.1 params
+    buyPressure1m = 0,     // Binance aggTrade buy pressure 1m [-1, 1]
+    buyPressure5m = 0,     // Binance aggTrade buy pressure 5m [-1, 1]
+    fundingRate = 0,       // Binance perp funding rate (raw, e.g. 0.0001)
   } = params;
 
   const hour = new Date().getUTCHours();
@@ -125,6 +133,10 @@ function extractMLFeatures(params) {
     btcMomentum1m: token === 'BTC' ? 0 : btcMomentum1m, // Only for alts (BTC leading indicator)
     volOfVol,
     orderImbalance,
+    // v3.1 features
+    buyPressure1m,
+    buyPressure5m,
+    fundingRate: fundingRate * 1000, // Scale up for tree splits (0.0001 → 0.1)
   };
 }
 
@@ -616,6 +628,9 @@ function buildMLTrainingData(settlements) {
       btcMomentum1m: 0,
       volOfVol: 0,
       orderImbalance: 0,
+      buyPressure1m: 0,
+      buyPressure5m: 0,
+      fundingRate: 0,
     });
 
     features.hourMorning = (hour >= 6 && hour < 12) ? 1 : 0;
