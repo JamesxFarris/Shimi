@@ -132,7 +132,6 @@ async function runTests() {
 
       if (opps.risk.timeframeExposure) {
         log(colors.cyan, `   15min exposure: $${(opps.risk.timeframeExposure['15min'] / 100).toFixed(2)}`);
-        log(colors.cyan, `   Hourly exposure: $${(opps.risk.timeframeExposure['hourly'] / 100).toFixed(2)}`);
       }
 
       const hasRoom = parseFloat(opps.risk.remainingDollars) > 0.50;

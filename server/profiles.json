@@ -10,15 +10,7 @@
         "riskLimits": {
           "maxPerBet": 500,
           "maxPerToken": 500,
-          "maxTotal": 500,
-          "hourly": {
-            "maxPerBet": 500,
-            "maxTotal": 500
-          },
-          "other": {
-            "maxPerBet": 500,
-            "maxTotal": 500
-          }
+          "maxTotal": 500
         },
         "scaleIn": {
           "enabled": true,

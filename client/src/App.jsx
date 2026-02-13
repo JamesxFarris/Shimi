@@ -266,7 +266,6 @@ const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
           </div>
         </div>
         <div className="opp-meta">
-          {opp.marketTimeframe === 'hourly' && <span className="timeframe-badge hourly">1H</span>}
           {opp.isObviousBet && !notRecommended && <span className="high-conf-dot" title="High Confidence"></span>}
           <span className="time-badge">{opp.timeRemainingFormatted || 'Scanning...'}</span>
         </div>

@@ -1947,11 +1947,6 @@ body {
   text-transform: uppercase;
 }
 
-.timeframe-badge.hourly {
-  color: #ff9500;
-  background: rgba(255, 149, 0, 0.15);
-  border: 1px solid rgba(255, 149, 0, 0.4);
-}
 
 /* Stacked Stats - Vertical Layout */
 .stacked-stats {
