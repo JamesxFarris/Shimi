@@ -8597,10 +8597,11 @@ app.get('/api/portfolio', async (req, res) => {
       userPortfolio.balance = balanceData.balance || 0;
       userConfig.bankroll = userPortfolio.balance;
 
-      // Fetch recent fills (completed trades) - last 100
+      // Fetch recent fills (completed trades) - last 50
       let realBetHistory = [];
+      const marketData = {};
       try {
-        const fillsData = await kalshiRequest('GET', '/portfolio/fills?limit=100', null, userConfig);
+        const fillsData = await kalshiRequest('GET', '/portfolio/fills?limit=50', null, userConfig);
         let fills = fillsData.fills || [];
 
         // Filter out old fills - only show bets from today onwards
@@ -8674,7 +8675,6 @@ app.get('/api/portfolio', async (req, res) => {
 
         // Get market data including settlement results - FETCH IN PARALLEL for speed
         const uniqueTickers = [...new Set(realBetHistory.map(b => b.ticker))].slice(0, 50);
-        const marketData = {};
 
         // Fetch all market data in parallel
         const marketPromises = uniqueTickers.map(async (ticker) => {
@@ -8773,7 +8773,7 @@ app.get('/api/portfolio', async (req, res) => {
         b.outcome !== 'won' && b.outcome !== 'lost' && b.ticker && !marketData[b.ticker]
       );
       if (stillPending.length > 0) {
-        const extraTickers = [...new Set(stillPending.map(b => b.ticker))].slice(0, 20);
+        const extraTickers = [...new Set(stillPending.map(b => b.ticker))].slice(0, 10);
         const extraMarketPromises = extraTickers.map(async (ticker) => {
           try {
             const data = await kalshiRequest('GET', `/markets/${ticker}`, null, userConfig);
