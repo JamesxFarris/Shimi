@@ -143,7 +143,7 @@
     "minEmpiricalWinRate": 62,
     "minEdgeAfterFees": 3,
     "minUnfavoredEdge": 8,
-    "maxBetsPerHour": 8,
+    "maxBetsPerHour": 15,
     "maxBetsPerToken": 3,
     "requireRegimeCheck": true
   },

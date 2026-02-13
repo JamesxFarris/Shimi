@@ -28,6 +28,13 @@ const ML_FEATURE_NAMES = [
   'buyPressure1m',      // Binance aggTrade buy/sell pressure 1-min window [-1, 1]
   'buyPressure5m',      // Binance aggTrade buy/sell pressure 5-min window [-1, 1]
   'fundingRate',        // Binance perpetual funding rate (scaled ×1000)
+  // New features (v3.2) — hourly market awareness
+  'isHourly',           // Binary: 1 if hourly market, 0 if 15M
+  'durationRatio',      // Normalized: 0.25 for 15M, 1.0 for 1H
+  'buyPressure15m',     // Longer aggTrade window for hourly context
+  'buyPressure30m',     // 30-min aggTrade window
+  'trajectoryScore',    // Price trending vs choppy [-1, 1]
+  'crossTimeframeSignal', // Recent 15M settlement direction (normalized)
 ];
 
 let mlModel = {
@@ -105,6 +112,12 @@ function extractMLFeatures(params) {
     buyPressure1m = 0,     // Binance aggTrade buy pressure 1m [-1, 1]
     buyPressure5m = 0,     // Binance aggTrade buy pressure 5m [-1, 1]
     fundingRate = 0,       // Binance perp funding rate (raw, e.g. 0.0001)
+    // v3.2 params — hourly market awareness
+    durationRatio = 1,     // 1.0 for 15M, 4.0 for 1H
+    buyPressure15m = 0,    // Binance aggTrade buy pressure 15m [-1, 1]
+    buyPressure30m = 0,    // Binance aggTrade buy pressure 30m [-1, 1]
+    trajectoryScore = 0,   // Price trajectory consistency [-1, 1]
+    crossTimeframeSignal = 0, // Recent 15M settlement direction signal
   } = params;
 
   const hour = new Date().getUTCHours();
@@ -137,6 +150,13 @@ function extractMLFeatures(params) {
     buyPressure1m,
     buyPressure5m,
     fundingRate: fundingRate * 1000, // Scale up for tree splits (0.0001 → 0.1)
+    // v3.2 features — hourly market awareness
+    isHourly: durationRatio > 1 ? 1 : 0, // Binary: is this an hourly market?
+    durationRatio: durationRatio / 4, // Normalized: 0.25 for 15M, 1.0 for 1H
+    buyPressure15m, // Longer-window pressure (more relevant for hourly)
+    buyPressure30m,
+    trajectoryScore, // Trending vs choppy price path
+    crossTimeframeSignal: crossTimeframeSignal / 5, // Normalize to [-1, 1]
   };
 }
 
@@ -614,9 +634,10 @@ function buildMLTrainingData(settlements) {
       }
     } catch (e) {}
 
+    const isHourly = s.marketType === 'hourly';
     const features = extractMLFeatures({
       absDistance,
-      timeRemaining,
+      timeRemaining: isHourly ? timeRemaining * 4 : timeRemaining,
       token,
       side,
       momentum1m: 0,
@@ -631,6 +652,12 @@ function buildMLTrainingData(settlements) {
       buyPressure1m: 0,
       buyPressure5m: 0,
       fundingRate: 0,
+      // v3.2: duration awareness (hourly vs 15M)
+      durationRatio: isHourly ? 4 : 1,
+      buyPressure15m: 0,
+      buyPressure30m: 0,
+      trajectoryScore: 0,
+      crossTimeframeSignal: 0,
     });
 
     features.hourMorning = (hour >= 6 && hour < 12) ? 1 : 0;
