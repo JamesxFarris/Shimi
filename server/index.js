@@ -59,35 +59,44 @@ function isKillSwitchActive() {
 }
 
 // Session drawdown circuit breaker — pause betting if bankroll drops 15% from session peak
-// Tracks the high watermark since auto-bet was enabled or server started
-let sessionHighWatermark = 0;
-let drawdownBreaker = false; // true = trading halted due to drawdown
+// Per-user: each user has independent drawdown tracking
 const DRAWDOWN_LIMIT_PCT = 15; // Halt if down 15% from session peak
+const _drawdownState = new Map(); // userId -> { highWatermark, active }
 
-function updateSessionHighWatermark(bankrollCents) {
-  if (bankrollCents > sessionHighWatermark) {
-    sessionHighWatermark = bankrollCents;
+function _getDrawdownState(userId) {
+  const key = userId || '_global';
+  if (!_drawdownState.has(key)) {
+    _drawdownState.set(key, { highWatermark: 0, active: false });
+  }
+  return _drawdownState.get(key);
+}
+
+function updateSessionHighWatermark(bankrollCents, userId) {
+  const state = _getDrawdownState(userId);
+  if (bankrollCents > state.highWatermark) {
+    state.highWatermark = bankrollCents;
   }
 }
 
-function checkDrawdownBreaker(bankrollCents) {
-  if (sessionHighWatermark <= 0) return false;
-  const drawdownPct = ((sessionHighWatermark - bankrollCents) / sessionHighWatermark) * 100;
+function checkDrawdownBreaker(bankrollCents, userId) {
+  const state = _getDrawdownState(userId);
+  if (state.highWatermark <= 0) return false;
+  const drawdownPct = ((state.highWatermark - bankrollCents) / state.highWatermark) * 100;
   if (drawdownPct >= DRAWDOWN_LIMIT_PCT) {
-    if (!drawdownBreaker) {
-      console.error(` DRAWDOWN BREAKER: Bankroll $${(bankrollCents/100).toFixed(2)} is ${drawdownPct.toFixed(1)}% below session peak $${(sessionHighWatermark/100).toFixed(2)} — halting auto-bet`);
+    if (!state.active) {
+      console.error(` DRAWDOWN BREAKER [${userId || 'global'}]: Bankroll $${(bankrollCents/100).toFixed(2)} is ${drawdownPct.toFixed(1)}% below session peak $${(state.highWatermark/100).toFixed(2)} — halting auto-bet`);
     }
-    drawdownBreaker = true;
+    state.active = true;
     return true;
   }
-  drawdownBreaker = false;
+  state.active = false;
   return false;
 }
 
-function resetDrawdownBreaker() {
-  drawdownBreaker = false;
-  sessionHighWatermark = 0;
-  console.log(' Drawdown breaker reset');
+function resetDrawdownBreaker(userId) {
+  const key = userId || '_global';
+  _drawdownState.set(key, { highWatermark: 0, active: false });
+  console.log(` Drawdown breaker reset [${userId || 'global'}]`);
 }
 
 // ============================================
@@ -5086,13 +5095,14 @@ async function runAutoBet(userId = null) {
 
     // SAFETY CHECK 1b: Session drawdown circuit breaker
     const currentBankroll = userConfig.bankroll || 0;
-    updateSessionHighWatermark(currentBankroll);
-    if (checkDrawdownBreaker(currentBankroll)) {
+    updateSessionHighWatermark(currentBankroll, userId);
+    if (checkDrawdownBreaker(currentBankroll, userId)) {
+      const userDrawdown = _getDrawdownState(userId);
       lastScanStatus = {
         ...lastScanStatus,
         timestamp: new Date().toISOString(),
         status: 'drawdown_breaker',
-        statusMessage: `Drawdown breaker: $${(currentBankroll/100).toFixed(2)} is ${(((sessionHighWatermark - currentBankroll) / sessionHighWatermark) * 100).toFixed(1)}% below peak $${(sessionHighWatermark/100).toFixed(2)}`,
+        statusMessage: `Drawdown breaker: $${(currentBankroll/100).toFixed(2)} is ${(((userDrawdown.highWatermark - currentBankroll) / userDrawdown.highWatermark) * 100).toFixed(1)}% below peak $${(userDrawdown.highWatermark/100).toFixed(2)}`,
         blockedReasons: [`Session drawdown >${DRAWDOWN_LIMIT_PCT}%`]
       };
       console.log('========================================\n');
@@ -9854,15 +9864,16 @@ app.get('/api/daily-pnl', (req, res) => {
   res.json({ today: dailyStats, history: dailyPnlHistory });
 });
 
-// Drawdown breaker endpoints
+// Drawdown breaker endpoints (per-user)
 app.get('/api/drawdown-breaker/status', (req, res) => {
   const bankroll = req.userState?.config?.bankroll || 0;
-  const drawdownPct = sessionHighWatermark > 0
-    ? ((sessionHighWatermark - bankroll) / sessionHighWatermark) * 100
+  const state = _getDrawdownState(req.userId);
+  const drawdownPct = state.highWatermark > 0
+    ? ((state.highWatermark - bankroll) / state.highWatermark) * 100
     : 0;
   res.json({
-    active: drawdownBreaker,
-    sessionHighWatermark: sessionHighWatermark,
+    active: state.active,
+    sessionHighWatermark: state.highWatermark,
     currentBankroll: bankroll,
     drawdownPct: parseFloat(drawdownPct.toFixed(1)),
     limitPct: DRAWDOWN_LIMIT_PCT
@@ -9871,10 +9882,10 @@ app.get('/api/drawdown-breaker/status', (req, res) => {
 
 app.post('/api/drawdown-breaker/reset', (req, res) => {
   if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
-  resetDrawdownBreaker();
+  resetDrawdownBreaker(req.userId);
   // Re-seed watermark with current bankroll
   const bankroll = req.userState?.config?.bankroll || 0;
-  updateSessionHighWatermark(bankroll);
+  updateSessionHighWatermark(bankroll, req.userId);
   res.json({ success: true, message: 'Drawdown breaker reset', newHighWatermark: bankroll });
 });
 
