@@ -8018,10 +8018,9 @@ async function updateLearnedParameters(userConfig = null) {
       return { success: false, error: 'Insufficient data', sampleSize: settlements.length };
     }
 
-    // Try to enrich settlements with "betting time" data from candlesticks
-    // This addresses the model flaw where we only had settlement-time distance
-    // Note: This is best-effort - Kalshi may not retain historical candlesticks
-    await enrichSettlementsWithCandlesticks(settlements, userConfig);
+    // Candlestick enrichment disabled — Kalshi does not retain candlestick history
+    // for settled markets, so this burns ~100 API calls on startup for zero data.
+    // Prospective snapshots (price_snapshots.json) provide betting-time data instead.
 
     // Build comprehensive empirical tables using the new function
     const empiricalTables = buildEmpiricalLookupTables(settlements);
