@@ -1176,6 +1176,9 @@ async function checkPendingSettlements() {
   console.log(` Checking ${pending.length} pending bets for settlement...`);
 
   for (const bet of pending) {
+    // Guard against concurrent settlement of the same bet (async gap between find and settle)
+    if (bet._settling) continue;
+    bet._settling = true;
     try {
       // Infer expiry from ticker if not set (ticker format: KXBTC15M-26FEB031700-00)
       // Pattern: [YY][MMM][DD][HHMM] where YY=year, MMM=month, DD=day, HHMM=time
@@ -1227,7 +1230,7 @@ async function checkPendingSettlements() {
       // For simulated bets or if we can't get Kalshi data, check price
       if (bet.outcome === 'pending' && bet.strikePrice && bet.token) {
         const currentPrice = cryptoPrices[bet.token]?.price;
-        const priceAge = Date.now() - (cryptoPrices[bet.token]?.lastUpdate || 0);
+        const priceAge = Date.now() - (cryptoPrices[bet.token]?.timestamp || 0);
         // Use inferred expiryTime (variable from above) which may have been set earlier in this iteration
         if (currentPrice && expiryTime && new Date(expiryTime) <= new Date()) {
           // Only settle from price if data is fresh (within 60s of expiry)
@@ -1268,6 +1271,8 @@ async function checkPendingSettlements() {
       }
     } catch (err) {
       console.log(`Error checking settlement for ${bet.ticker}:`, err.message);
+    } finally {
+      bet._settling = false;
     }
   }
 }
@@ -2885,7 +2890,7 @@ function calculateSmartStopLoss(position, market, profitPercent, userConfig) {
 
   const pctFromStrike = Math.abs(currentPrice - strikePrice) / strikePrice * 100;
 
-  const empirical = lookupEmpiricalWinRate(pctFromStrike);
+  const empirical = lookupEmpiricalWinRate(pctFromStrike, token);
   const regime = detectVolatilityRegime(token);
 
   // CRITICAL: Determine if our position is favored or underdog
@@ -2930,7 +2935,7 @@ function calculateSmartStopLoss(position, market, profitPercent, userConfig) {
     console.log(`[SmartStopLoss] ${position.ticker}: Very low recovery (${recoveryChance.toFixed(0)}%) threshold: ${stopLossThreshold}%`);
   }
   // Near expiry with any loss
-  else if (timeRemaining < 2 * dRatio && profitPercent < -10) {
+  else if (timeRemaining < 2 && profitPercent < -10) {
     stopLossThreshold = Math.max(stopLossThreshold, -8);
     console.log(`[SmartStopLoss] ${position.ticker}: Near expiry (${timeRemaining.toFixed(1)}min) at ${profitPercent.toFixed(1)}% threshold: ${stopLossThreshold}%`);
   }
@@ -5104,8 +5109,24 @@ let lastScanStatus = {
 
 // Track insufficient balance to avoid spamming Kalshi API
 let insufficientBalanceUntil = 0; // timestamp when we can try again
+// Concurrency guard: prevent overlapping runAutoBet() calls that bypass risk limits
+let autoBetRunning = false;
 
 async function runAutoBet(userId = null) {
+  // Prevent concurrent runs — setInterval can fire while previous run is still awaiting API calls
+  if (autoBetRunning) {
+    console.log(' AUTO-BET: Previous cycle still running, skipping');
+    return;
+  }
+  autoBetRunning = true;
+  try {
+  return await _runAutoBetInner(userId);
+  } finally {
+    autoBetRunning = false;
+  }
+}
+
+async function _runAutoBetInner(userId = null) {
   // Global kill switch check halts all betting immediately
   if (isKillSwitchActive()) {
     console.log(' KILL SWITCH: Skipping auto-bet cycle');
@@ -5228,21 +5249,7 @@ async function runAutoBet(userId = null) {
         Object.fromEntries(Object.entries(rollingSpend).map(([k,v]) => [k, '$'+(v/100).toFixed(2)]))
       )} | Total: $${(totalSpend/100).toFixed(2)}/$${(maxTotal/100).toFixed(2)} | Per-token limit: $${(maxPerCycle/100).toFixed(2)}`);
 
-      // TAKE-PROFIT SCAN (Phase 5) - after positions loaded
-      if (userConfig.takeProfitSettings?.enabled && userPortfolio.positions?.length > 0) {
-        console.log(`\n Scanning ${userPortfolio.positions.length} positions for take-profit...`);
-        try {
-          const takeProfitOpps = await scanTakeProfitOpportunities(userConfig, userPortfolio, userId);
-          if (takeProfitOpps.length > 0) {
-            console.log(` Found ${takeProfitOpps.length} take-profit opportunities`);
-            takeProfitOpps.forEach(opp => {
-              console.log(` ${opp.position.ticker}: ${opp.evaluation.analysis.profitPercent.toFixed(1)}% profit`);
-            });
-          }
-        } catch (e) {
-          console.log(' Take-profit scan error:', e.message);
-        }
-      }
+      // AUTO-SELL REMOVED: Positions ride to expiry (no take-profit/stop-loss exits)
     }
 
     // SAFETY CHECK 2: Max open positions — limit exposure, not frequency
@@ -5508,10 +5515,40 @@ async function runAutoBet(userId = null) {
       return;
     }
 
-    lastScanStatus.opportunitiesFound = opportunities.length;
+    // CORRELATION GUARD: Limit tokens bet per 15-min window to reduce correlated losses
+    // Crypto tokens are 60-80% correlated — betting 4 tokens same direction ≈ 1 bet with 4x risk
+    const maxTokensPerWindow = userConfig.maxTokensPerWindow || 2;
+    const windowMs = 15 * 60 * 1000; // 15-minute correlation window
+    const tokensInWindow = new Set();
+    for (const [key, entry] of recentBets.entries()) {
+      if (now - entry.timestamp < windowMs && !entry.unfilled) {
+        const betToken = key.split(':')[1] ? getTokenFromTicker(key.split(':')[1]) : null;
+        if (betToken) tokensInWindow.add(betToken);
+      }
+    }
+    // Filter out opportunities for tokens that would exceed the per-window limit
+    const correlationFiltered = opportunities.filter(m => {
+      const oppToken = m.cryptoType || m.assetType || getTokenFromTicker(m.ticker);
+      if (tokensInWindow.has(oppToken)) return true; // Already bet this token, allow scale-in
+      if (tokensInWindow.size >= maxTokensPerWindow) {
+        console.log(` CORRELATION GUARD: Skipping ${oppToken} — already bet ${[...tokensInWindow].join(', ')} this window (max ${maxTokensPerWindow})`);
+        return false;
+      }
+      return true;
+    });
+    if (correlationFiltered.length === 0 && opportunities.length > 0) {
+      console.log(` All ${opportunities.length} opportunities blocked by correlation guard (${[...tokensInWindow].join(', ')} already bet)`);
+      lastScanStatus.status = 'no_opportunities';
+      lastScanStatus.statusMessage = `Correlation guard: ${[...tokensInWindow].join(', ')} already bet this 15min window`;
+      console.log('========================================\n');
+      return;
+    }
+    const finalOpportunities = correlationFiltered.length > 0 ? correlationFiltered : opportunities;
+
+    lastScanStatus.opportunitiesFound = finalOpportunities.length;
 
     // Always show the best opportunity found
-    const best = opportunities[0];
+    const best = finalOpportunities[0];
     const category = best.marketCategory || 'crypto';
 
     // Display EMPIRICAL analysis for best opportunity
@@ -6018,10 +6055,7 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
     }
     userAutoBetIntervals.set(req.userId, setInterval(() => runAutoBet(req.userId), intervalSeconds * 1000));
 
-    // Start take-profit scanning to monitor positions for exit opportunities
-    if (userConfig.takeProfitSettings?.enabled === true || userConfig.activeMonitoring?.stopLossEnabled === true) {
-      startTakeProfitScanning(15000, req.userId, userConfig, userPortfolio);
-    }
+    // AUTO-SELL REMOVED: No take-profit/stop-loss scanning — positions ride to expiry
 
     res.json({
       success: true,
@@ -6068,11 +6102,7 @@ app.get('/api/auto-bet/status', (req, res) => {
     runAutoBet(req.userId);
     userAutoBetIntervals.set(req.userId, setInterval(() => runAutoBet(req.userId), 10000));
 
-    // Also restore take-profit scanning (per-user)
-    if (!userTakeProfitIntervals.has(req.userId) &&
-        (userConfig.takeProfitSettings?.enabled === true || userConfig.activeMonitoring?.stopLossEnabled === true)) {
-      startTakeProfitScanning(15000, req.userId, userConfig, userPortfolio);
-    }
+    // AUTO-SELL REMOVED: No take-profit/stop-loss scanning
   }
 
   res.json({
@@ -6579,7 +6609,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   }
 
   // Price staleness gate — stale prices lead to incorrect distance calculations
-  const priceAge = Date.now() - (cryptoPrices[token]?.lastUpdate || 0);
+  const priceAge = Date.now() - (cryptoPrices[token]?.timestamp || 0);
   if (priceAge > 60000) {
     return earlyExit(`Stale price (${Math.round(priceAge / 1000)}s old)`);
   }
@@ -6616,7 +6646,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   // Look up empirical win rate
   const lookupDistance = absDistance;
-  const empirical = lookupEmpiricalWinRate(lookupDistance);
+  const empirical = lookupEmpiricalWinRate(lookupDistance, token);
 
   // Get token-specific optimal entry windows
   const tokenData = empiricalTables.byToken?.[token] || DEFAULT_EMPIRICAL_TABLES.byToken[token];
@@ -6847,12 +6877,12 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       timeRemaining,
       token,
       side: betSide,
-      momentum1m: (parseFloat(momentum.m5) || 0) * 100,
+      momentum1m: (parseFloat(momentum.m1) || 0) * 100,
       momentum5m: (parseFloat(momentum.m5) || 0) * 100,
       volatility: cryptoPrices[token]?.volatility || 0.02,
       marketImpliedProb,
       spread: spreadVal,
-      btcMomentum1m: (parseFloat(btcMom.m5) || 0) * 100,
+      btcMomentum1m: (parseFloat(btcMom.m1) || 0) * 100,
       volOfVol,
       orderImbalance,
       buyPressure1m: buyPressure.pressure1m,
@@ -6886,13 +6916,10 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   }
 
   // TIME-DECAY ADJUSTMENT: less time remaining = higher probability favored side holds
-  // The empirical tables average across all time windows, but a bet at 0.3% distance with
-  // 2 min left is much more likely to win than at 7 min left (less time for price to reverse).
-  // The theoretical model handles this in low-vol via z-scores, but in medium vol we need
-  // a direct adjustment. Based on random walk: P(cross barrier) ~ sqrt(time/vol).
-  // Conservative: boost up to 8% of the gap between current rate and 95% cap.
+  // Only apply when theoretical model wasn't already blended in (prevents double time bonus)
+  // The theoretical model already accounts for time via z-scores in low-vol regimes.
   const timeDecayThreshold = 5; // 5min
-  if (isFavoredSideBet && timeRemaining <= timeDecayThreshold && timeRemaining > 0 && adjustedWinRate < 93) {
+  if (theoreticalWeight === 0 && isFavoredSideBet && timeRemaining <= timeDecayThreshold && timeRemaining > 0 && adjustedWinRate < 93) {
     const gapTo95 = 95 - adjustedWinRate;
     const timeDecay = (timeDecayThreshold - timeRemaining) / timeDecayThreshold; // 0 at threshold, 1 at 0min
     // Scale boost by distance: farther from strike = stronger time-decay advantage
@@ -6966,6 +6993,13 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       : (rules.minEdgeAfterFees || 8);
     if (netEdge < effectiveMinEdge) {
       reasons.push(`Edge ${netEdge.toFixed(1)}% < ${effectiveMinEdge}%${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
+    }
+
+    // Token-specific coin-flip penalty: SOL has 64% coin-flip rate at close distances
+    // If we're within 2x the coin-flip threshold, the model has very weak signal
+    const coinFlipDist = getCoinFlipThreshold(token);
+    if (absDistance < coinFlipDist * 2) {
+      reasons.push(`Coin-flip territory: ${absDistance.toFixed(3)}% < ${(coinFlipDist * 2).toFixed(3)}% (2x ${token} threshold)`);
     }
   } else {
     // Unfavored bets at near-zero distance are coin flips — model has no signal
@@ -7119,23 +7153,8 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     windowPenalties.push(`funding ${fundAdj > 0 ? '+' : ''}${fundAdj}pts (rate=${(fundRate * 100).toFixed(4)}%)`);
   }
 
-  // YES/NO bias adjustment: learned data shows NO wins more often across all tokens
-  // Apply symmetric bonus/penalty so side selection isn't one-sided
-  if (betSide === 'NO') {
-    const noBiasBonus = getNoBiasBonus(token);
-    if (noBiasBonus > 0) {
-      adjustedSignalStrength += noBiasBonus;
-      windowPenalties.push(`NO bias +${noBiasBonus}pts`);
-    }
-  } else if (betSide === 'YES') {
-    // Symmetric YES penalty: if NO has a learned advantage, penalize YES bets
-    const tokenNoBias = learnedParams.byToken?.[token]?.noBias || 0;
-    if (tokenNoBias > 1 && learnedParams.byToken?.[token]?.sampleSize >= 100) {
-      const yesPenalty = -Math.min(5, tokenNoBias / 2);
-      adjustedSignalStrength += yesPenalty;
-      windowPenalties.push(`YES penalty ${yesPenalty.toFixed(1)}pts (NO bias ${tokenNoBias.toFixed(1)}%)`);
-    }
-  }
+  // NO bias: win rate adjustment already applied in edge calculation (lines ~6659-6674)
+  // Removed duplicate signal strength adjustment here to prevent double-counting
 
   // Same-side saturation: penalize one-sided streaks per token
   // Tokens with high NO bias (like SOL 4.44%) trigger at 2 consecutive YES bets
@@ -9404,12 +9423,7 @@ app.get('/api/portfolio', async (req, res) => {
       // Save updated state
       if (req.userId) saveUserState(req.userId);
 
-      // Start position protection monitoring if user has open positions
-      if (req.userId && userPortfolio.positions?.length > 0 && !userTakeProfitIntervals.has(req.userId) &&
-          (userConfig.takeProfitSettings?.enabled === true || userConfig.activeMonitoring?.stopLossEnabled === true)) {
-        console.log(` Starting position protection for user ${req.userId} (${userPortfolio.positions.length} open positions)`);
-        startTakeProfitScanning(15000, req.userId, userConfig, userPortfolio);
-      }
+      // AUTO-SELL REMOVED: No take-profit/stop-loss scanning
 
       // Calculate risk for response
       const portfolioRisk = getRiskByType(req.userState);

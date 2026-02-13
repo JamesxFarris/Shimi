@@ -136,12 +136,31 @@
       },
       "coinFlipThreshold": 0.4,
       "coinFlipPct": 64.1
+    },
+    "XRP": {
+      "sampleSize": 0,
+      "avgSettlementDistance": 0.36,
+      "settlementDistanceStdDev": 0.45,
+      "yesWinRate": 50,
+      "noWinRate": 50,
+      "noBias": 0,
+      "volatilityRank": 3,
+      "optimalEntryWindows": {
+        "distanceMin": 0.2,
+        "distanceMax": 5,
+        "timeMin": 2,
+        "timeMax": 10,
+        "priceMin": 40,
+        "priceMax": 95
+      },
+      "coinFlipThreshold": 0.3,
+      "coinFlipPct": 50
     }
   },
   "selectivityRules": {
-    "minSignalStrength": 55,
-    "minEmpiricalWinRate": 62,
-    "minEdgeAfterFees": 3,
+    "minSignalStrength": 58,
+    "minEmpiricalWinRate": 64,
+    "minEdgeAfterFees": 8,
     "minUnfavoredEdge": 8,
     "maxBetsPerHour": 15,
     "maxBetsPerToken": 3,
