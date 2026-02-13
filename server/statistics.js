@@ -105,7 +105,7 @@ function calculateMomentum(history, lookbackMinutes = 5) {
 function calculateMomentumMultiTimeframe(history) {
   if (history.length < 10) {
     return {
-      m5: 0, m15: 0, m60: 0,
+      m1: 0, m5: 0, m15: 0, m60: 0,
       aligned: false,
       strength: 0,
       direction: 'neutral'
@@ -124,11 +124,13 @@ function calculateMomentumMultiTimeframe(history) {
     return closest.price;
   };
 
+  const price1minAgo = findPriceAt(1);
   const price5minAgo = findPriceAt(5);
   const price15minAgo = findPriceAt(15);
   const price60minAgo = findPriceAt(60);
 
   // Calculate returns
+  const m1 = price1minAgo ? ((latest - price1minAgo) / price1minAgo) * 100 : 0;
   const m5 = price5minAgo ? ((latest - price5minAgo) / price5minAgo) * 100 : 0;
   const m15 = price15minAgo ? ((latest - price15minAgo) / price15minAgo) * 100 : 0;
   const m60 = price60minAgo ? ((latest - price60minAgo) / price60minAgo) * 100 : 0;
@@ -151,6 +153,7 @@ function calculateMomentumMultiTimeframe(history) {
   }
 
   return {
+    m1: m1.toFixed(2),
     m5: m5.toFixed(2),
     m15: m15.toFixed(2),
     m60: m60.toFixed(2),
