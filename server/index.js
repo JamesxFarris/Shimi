@@ -448,10 +448,19 @@ function saveLearnedParams() {
 }
 
 // Check if learning data is stale (>24 hours old)
+// Note: On Render free plan, filesystem is ephemeral — learned_params.json reverts
+// to the Docker image version on every instance restart. So lastUpdated may always
+// appear stale. Use sampleSize as the primary guard against unnecessary re-learning.
 function isLearningDataStale() {
   if (!learnedParams.lastUpdated) return true;
   const lastUpdate = new Date(learnedParams.lastUpdated).getTime();
   return Date.now() - lastUpdate > LEARNING_INTERVAL;
+}
+
+// Check if we have enough learned data to skip startup learning
+// With 12k+ samples baked into the Docker image, re-fetching on every restart is wasteful
+function hasAdequateLearnedData() {
+  return learnedParams.sampleSize >= 500 && Object.keys(learnedParams.winRateByDistance || {}).length >= 3;
 }
 
 // ML MODEL - imported from ./mlModel.js
@@ -10058,10 +10067,22 @@ const server = app.listen(PORT, '0.0.0.0', async () => {
   // ============================================
   // Run learning on startup if data is stale, then daily thereafter
 
-  // Initial learning check (delayed 30 seconds to let server stabilize)
+  // Initial learning check (skipped if we already have adequate data from Docker image)
+  // On Render free plan, filesystem is ephemeral — learned_params.json always loads from
+  // the Docker build, so lastUpdated will always appear stale after a few hours.
+  // With 12k+ samples already baked in, there's no value in re-fetching on every restart.
   setTimeout(async () => {
-    if (isLearningDataStale()) {
-      console.log(' Learned thresholds are stale, triggering learning update...');
+    if (hasAdequateLearnedData()) {
+      // Data is good enough — skip the expensive API calls on startup
+      console.log(` Learned data adequate (${learnedParams.sampleSize} samples, ${Object.keys(learnedParams.winRateByDistance || {}).length} buckets) — skipping startup learning`);
+      console.log(` Last updated: ${learnedParams.lastUpdated} (stale=${isLearningDataStale()} but data sufficient)`);
+      for (const [token, data] of Object.entries(learnedParams.byToken)) {
+        if (data.sampleSize > 0) {
+          console.log(` ${token}: ${data.sampleSize} samples, avg dist ${data.avgSettlementDistance?.toFixed(3)}%`);
+        }
+      }
+    } else if (isLearningDataStale()) {
+      console.log(' Insufficient learned data and stale, triggering learning update...');
       try {
         await updateLearnedParameters();
       } catch (err) {
