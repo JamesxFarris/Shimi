@@ -1003,7 +1003,7 @@ function trackBet(betInfo) {
     strikePrice: betInfo.strikePrice,
     currentPriceAtBet: betInfo.currentPrice,
     expiryTime: betInfo.expiryTime,
-    marketType: betInfo.marketType || (betInfo.ticker?.includes('1H') ? 'hourly' :
+    marketType: betInfo.marketType || (isHourlyMarket(betInfo.ticker) ? 'hourly' :
                                         betInfo.ticker?.includes('15M') ? '15min' : 'daily'),
     // Outcome tracking (filled in later)
     outcome: 'pending', // 'won' | 'lost' | 'pending'
@@ -1912,11 +1912,13 @@ setInterval(fetchFundingRates, 60000);
 // RISK MANAGEMENT
 // ============================================
 
-// Determine if a ticker is an hourly market
+// Determine if a ticker is an hourly (directional) market
+// Kalshi hourly series use 'D' suffix: KXBTCD, KXETHD, KXSOLD, KXXRPD
 function isHourlyMarket(ticker) {
   if (!ticker) return false;
-  // Hourly series end in 1H (e.g., KXBTC1H, KXETH1H)
-  return ticker.includes('1H') || ticker.includes('-1H-');
+  const upper = ticker.toUpperCase();
+  return upper.startsWith('KXBTCD') || upper.startsWith('KXETHD') ||
+         upper.startsWith('KXSOLD') || upper.startsWith('KXXRPD');
 }
 
 // Get market duration in minutes from ticker (15 or 60)
@@ -2089,8 +2091,13 @@ function getCurrentRiskFromPortfolio(userState = null) {
 // Extract token symbol from market ticker (e.g., KXBTC-24... -> BTC, KXSOL1H... -> SOL)
 function getTokenFromTicker(ticker) {
   if (!ticker) return null;
-  // Match patterns like KXBTC, KXETH, KXSOL, etc.
-  const match = ticker.match(/KX([A-Z]+)/);
+  const upper = ticker.toUpperCase();
+  // Check known tokens first (handles KXBTCD, KXBTC15M, etc.)
+  for (const token of Object.keys(TRACKED_TOKENS)) {
+    if (upper.includes(`KX${token}`)) return token;
+  }
+  // Fallback: extract letters after KX, stopping at digits or known suffixes
+  const match = upper.match(/KX([A-Z]{2,5}?)(?:15M|D|\d|-)/);
   if (match) return match[1];
   return null;
 }
@@ -3566,16 +3573,16 @@ async function fetchCryptoMarkets() {
   }
 
   try {
-    // Fetch 15-minute AND hourly BTC, ETH, SOL, XRP markets
+    // Fetch 15-minute AND hourly (directional) BTC, ETH, SOL, XRP markets
     const cryptoSeries = [
       'KXBTC15M', // Bitcoin 15-minute up/down
       'KXETH15M', // Ethereum 15-minute up/down
       'KXSOL15M', // Solana 15-minute up/down
       'KXXRP15M', // XRP 15-minute up/down
-      'KXBTC1H',  // Bitcoin 1-hour up/down
-      'KXETH1H',  // Ethereum 1-hour up/down
-      'KXSOL1H',  // Solana 1-hour up/down
-      'KXXRP1H',  // XRP 1-hour up/down
+      'KXBTCD',   // Bitcoin hourly directional (above/below)
+      'KXETHD',   // Ethereum hourly directional (above/below)
+      'KXSOLD',   // Solana hourly directional (above/below)
+      'KXXRPD',   // XRP hourly directional (above/below)
     ];
 
     const allMarkets = [];
@@ -3600,10 +3607,12 @@ async function fetchCryptoMarkets() {
       const closeTime = m.close_time ? new Date(m.close_time).getTime() : null;
       const timeRemaining = closeTime ? closeTime - now : null;
 
-      // Only include 15-minute or hourly markets
-      if (!ticker.includes('15M') && !ticker.includes('1H')) return false;
+      // Only include 15-minute or hourly directional markets
+      const is15M = ticker.includes('15M');
+      const isHourly = isHourlyMarket(ticker);
+      if (!is15M && !isHourly) return false;
 
-      // Time window: 30s to 20min for 15M, 30s to 65min for 1H
+      // Time window: 30s to 20min for 15M, 30s to 65min for hourly
       const maxTime = isHourlyMarket(ticker) ? 65 * 60 * 1000 : 20 * 60 * 1000;
       const isValid = timeRemaining && timeRemaining > 30000 && timeRemaining < maxTime;
       return isValid;
@@ -7566,8 +7575,8 @@ async function fetchBulkHistoricalData(token = 'all', maxPages = 1000, userConfi
     console.log(` Fetching ${t} historical data...`);
     let tokenSettlements = 0;
 
-    // Fetch both 15-minute and hourly settled markets
-    for (const series of [`KX${t}15M`, `KX${t}1H`]) {
+    // Fetch both 15-minute and hourly (directional) settled markets
+    for (const series of [`KX${t}15M`, `KX${t}D`]) {
       let cursor = null;
       let page = 0;
 
