@@ -3916,13 +3916,22 @@ function parseMarket(market) {
   // 15-minute markets use "up" (YES = price goes up = above starting price)
   let marketType = null;
   if (title.includes('above') || title.includes('>=') || title.includes('higher') ||
-      title.includes('or more') || title.includes('over') || title.includes(' up')) {
+      title.includes('or more') || title.includes('over') || title.includes(' up') ||
+      title.includes('at least') || title.includes('or higher')) {
     marketType = 'above'; // YES = price above strike
   } else if (title.includes('below') || title.includes('<=') || title.includes('lower') ||
-             title.includes('or less') || title.includes('under') || title.includes(' down')) {
+             title.includes('or less') || title.includes('under') || title.includes(' down') ||
+             title.includes('or lower')) {
     marketType = 'below'; // YES = price below strike
   } else if (title.includes('between')) {
     marketType = 'between';
+  }
+
+  // Fallback: single-strike markets (floor_strike only, no cap_strike) are directional "above"
+  // Kalshi hourly markets (KXBTCD) often have generic titles like "Bitcoin price on Feb 13, 2026?"
+  // but are actually YES = price >= floor_strike at expiry
+  if (!marketType && market.floor_strike !== undefined && market.cap_strike === undefined) {
+    marketType = 'above';
   }
 
   // Time remaining
