@@ -6636,11 +6636,11 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     return earlyExit('No real orders (phantom market)');
   }
 
-  // Fix 3: Minimum orderbook depth gate — prevent orders into empty books
+  // Minimum orderbook depth gate — prevent orders into completely empty books
   if (orderbook) {
     const totalDepth = (orderbook.yesTotalDepth || 0) + (orderbook.noTotalDepth || 0);
-    if (totalDepth < 5) {
-      return earlyExit(`Thin orderbook: ${totalDepth} contracts (min 5)`);
+    if (totalDepth < 1) {
+      return earlyExit(`Empty orderbook: 0 contracts`);
     }
   }
 
@@ -6735,7 +6735,8 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const marketPriceCents = Math.round(marketPrice * 100);
 
   // DEBUG: Log price values to trace mismatch
-  console.log(` ${token} prices: yesAsk=${(parsed.yesAsk*100).toFixed(0)}c noAsk=${(parsed.noAsk*100).toFixed(0)}c | betSide=${betSide}${isFavoredSideBet ? '' : ' (unfavored)'} | marketPrice=${marketPriceCents}c`);
+  const obDepth = orderbook ? `depth=${(orderbook.yesTotalDepth||0)+(orderbook.noTotalDepth||0)} (Y:${orderbook.yesTotalDepth||0} N:${orderbook.noTotalDepth||0})` : 'no-ob';
+  console.log(` ${token} prices: yesAsk=${(parsed.yesAsk*100).toFixed(0)}c noAsk=${(parsed.noAsk*100).toFixed(0)}c | betSide=${betSide}${isFavoredSideBet ? '' : ' (unfavored)'} | marketPrice=${marketPriceCents}c | ${obDepth}`);
 
   // Check price window - allow up to 97c for high-confidence near-expiry bets
   const withinPriceWindow = marketPriceCents >= (entryWindows.priceMin || 40) &&
