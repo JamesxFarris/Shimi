@@ -1856,28 +1856,24 @@ function initBinanceAggTradeWebSocket() {
 initBinanceAggTradeWebSocket();
 
 // ============================================
-// FUNDING RATE via Bybit (US-accessible, no auth)
+// FUNDING RATE via OKX (US-accessible, no auth)
 // ============================================
-const FUNDING_SYMBOLS = { BTCUSDT: 'BTC', ETHUSDT: 'ETH', SOLUSDT: 'SOL' };
+const OKX_FUNDING_INSTRUMENTS = { 'BTC-USDT-SWAP': 'BTC', 'ETH-USDT-SWAP': 'ETH', 'SOL-USDT-SWAP': 'SOL' };
 const fundingRates = {};
 
 async function fetchFundingRates() {
   try {
-    const resp = await fetch('https://api.bybit.com/v5/market/tickers?category=linear', { timeout: 8000 });
-    if (!resp.ok) return;
-    const data = await resp.json();
-    if (data.retCode !== 0 || !data.result?.list) return;
-    for (const item of data.result.list) {
-      const token = FUNDING_SYMBOLS[item.symbol];
-      if (token) {
-        fundingRates[token] = {
-          rate: parseFloat(item.fundingRate) || 0,
-          timestamp: Date.now(),
-        };
+    for (const [instId, token] of Object.entries(OKX_FUNDING_INSTRUMENTS)) {
+      const resp = await fetch(`https://www.okx.com/api/v5/public/funding-rate?instId=${instId}`, { timeout: 8000 });
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      const rate = parseFloat(data.data?.[0]?.fundingRate);
+      if (isFinite(rate)) {
+        fundingRates[token] = { rate, timestamp: Date.now() };
       }
     }
     const summary = Object.entries(fundingRates).map(([t, d]) => `${t}=${(d.rate * 100).toFixed(4)}%`).join(', ');
-    console.log(` Funding rates (Bybit): ${summary}`);
+    console.log(` Funding rates (OKX): ${summary}`);
   } catch (err) {
     console.log(' Funding rate fetch error:', err.message);
   }
