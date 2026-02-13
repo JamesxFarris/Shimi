@@ -3613,9 +3613,22 @@ async function fetchCryptoMarkets() {
       if (!is15M && !isHourly) return false;
 
       // Time window: 30s to 20min for 15M, 30s to 65min for hourly
-      const maxTime = isHourlyMarket(ticker) ? 65 * 60 * 1000 : 20 * 60 * 1000;
-      const isValid = timeRemaining && timeRemaining > 30000 && timeRemaining < maxTime;
-      return isValid;
+      const maxTime = isHourly ? 65 * 60 * 1000 : 20 * 60 * 1000;
+      if (!timeRemaining || timeRemaining <= 30000 || timeRemaining >= maxTime) return false;
+
+      // For hourly markets: only keep strikes within 3% of current price
+      // (KXBTCD has 50+ strikes per expiry; most are extreme 2c/98c bets we'd never take)
+      if (isHourly && m.floor_strike) {
+        const parsed = parseMarket(m);
+        const token = parsed?.cryptoType;
+        const currentPrice = token && cryptoPrices[token]?.price;
+        if (currentPrice && currentPrice > 0) {
+          const distPct = Math.abs(currentPrice - m.floor_strike) / m.floor_strike * 100;
+          if (distPct > 3) return false; // Skip strikes >3% away
+        }
+      }
+
+      return true;
     });
 
     const count15m = cryptoMarkets.filter(m => m.ticker?.includes('15M')).length;
