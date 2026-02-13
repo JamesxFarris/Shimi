@@ -5388,6 +5388,18 @@ async function _runAutoBetInner(userId = null) {
 
     console.log(` Analyzed: ${allOpps.length} valid | ${withEdgeCount} with edge | ${recommendedCount} recommended`);
 
+    // Log rejection reasons for each market so we can debug why nothing passes
+    if (recommendedCount === 0 && allOpps.length > 0) {
+      console.log(` Rejection reasons:`);
+      for (const m of allOpps) {
+        const token = m.cryptoType || m.assetType || getTokenFromTicker(m.ticker);
+        const topReason = m.reasons?.[0] || (m.shouldBet ? 'passed' : 'unknown');
+        const sig = m.signalStrength || 0;
+        const edge = m.edge?.toFixed(1) || '?';
+        console.log(`   ${token}: signal=${sig} edge=${edge}% | ${topReason}`);
+      }
+    }
+
     // Update scan status
     lastScanStatus.marketsScanned = cryptoMarkets.length;
     lastScanStatus.activeMarkets = allOpps.length;
@@ -6996,10 +7008,11 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
 
     // Token-specific coin-flip penalty: SOL has 64% coin-flip rate at close distances
-    // If we're within 2x the coin-flip threshold, the model has very weak signal
+    // Skip in low-vol: tight distances are expected, theoretical model already adjusts
+    // Use 1.5x threshold (not 2x) — SOL avg settlement 0.36%, 2x0.4=0.8% would block everything
     const coinFlipDist = getCoinFlipThreshold(token);
-    if (absDistance < coinFlipDist * 2) {
-      reasons.push(`Coin-flip territory: ${absDistance.toFixed(3)}% < ${(coinFlipDist * 2).toFixed(3)}% (2x ${token} threshold)`);
+    if (regime.regime !== 'low' && absDistance < coinFlipDist * 1.5) {
+      reasons.push(`Coin-flip territory: ${absDistance.toFixed(3)}% < ${(coinFlipDist * 1.5).toFixed(3)}% (1.5x ${token} threshold)`);
     }
   } else {
     // Unfavored bets at near-zero distance are coin flips — model has no signal
@@ -7027,7 +7040,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   // Hard block: no bets too early in the market (need price data to accumulate)
   // 15M: max 8min (or 10 in low vol). 1H: max 32min (or 40 in low vol).
-  const baseMaxTime = regime.regime === 'low' ? 10 : 8;
+  const baseMaxTime = regime.regime === 'low' ? 12 : 8;
   const maxTimeRemaining = baseMaxTime;
   if (timeRemaining > maxTimeRemaining) {
     reasons.push(`Too early: ${timeRemaining.toFixed(1)}min remaining > ${maxTimeRemaining.toFixed(0)}min max`);
@@ -7085,8 +7098,9 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       else penalty = -5;
 
       // In low vol, prices are more stable — time matters less
+      // Steeper reduction (0.3x) since hard block already widened to 12min
       if (regime.regime === 'low') {
-        penalty = Math.round(penalty * 0.6); // 40% reduction
+        penalty = Math.round(penalty * 0.3); // 70% reduction in low vol
       }
 
       adjustedSignalStrength += penalty;
