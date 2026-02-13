@@ -2507,6 +2507,70 @@ function getRemainingTokenBudget(ticker, assetType, userState = null, userConfig
 
 let marketCache = { data: null, lastFetch: 0, ttl: 15000 };
 
+// Settled market result cache — once settled, results never change
+// Prevents repeated API calls for the same settled markets on every portfolio/performance poll
+const settledMarketCache = new Map(); // ticker -> { title, result, status, closeTime }
+
+async function getMarketDataCached(ticker, userConfig = null) {
+  // Return cached result for settled markets (they never change)
+  if (settledMarketCache.has(ticker)) {
+    return settledMarketCache.get(ticker);
+  }
+  try {
+    const data = await kalshiRequest('GET', `/markets/${ticker}`, null, userConfig);
+    if (data.market) {
+      const entry = {
+        ticker,
+        title: data.market.title || ticker,
+        result: data.market.result || data.market.market_result,
+        status: data.market.status,
+        closeTime: data.market.close_time
+      };
+      // Cache settled markets permanently (result won't change)
+      if (entry.result && (entry.status === 'settled' || entry.status === 'finalized')) {
+        settledMarketCache.set(ticker, entry);
+      }
+      return entry;
+    }
+  } catch (e) {
+    // ignore
+  }
+  return { ticker, title: ticker, result: null, status: 'unknown' };
+}
+
+// Fetch multiple market details with throttled concurrency (max 3 at a time)
+async function getMarketDataBatch(tickers, userConfig = null) {
+  const results = {};
+  const uncached = [];
+
+  // Separate cached from uncached
+  for (const ticker of tickers) {
+    if (settledMarketCache.has(ticker)) {
+      results[ticker] = settledMarketCache.get(ticker);
+    } else {
+      uncached.push(ticker);
+    }
+  }
+
+  // Fetch uncached in small batches to avoid rate limiting
+  const BATCH_SIZE = 3;
+  for (let i = 0; i < uncached.length; i += BATCH_SIZE) {
+    const batch = uncached.slice(i, i + BATCH_SIZE);
+    const batchResults = await Promise.all(
+      batch.map(ticker => getMarketDataCached(ticker, userConfig))
+    );
+    for (const entry of batchResults) {
+      if (entry) results[entry.ticker] = entry;
+    }
+    // Small delay between batches if more to fetch
+    if (i + BATCH_SIZE < uncached.length) {
+      await new Promise(r => setTimeout(r, 200));
+    }
+  }
+
+  return results;
+}
+
 // ============================================
 // ORDERBOOK CACHE & FETCHING
 // ============================================
@@ -6706,32 +6770,46 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const durationRatio = marketDuration / 15; // 1.0 for 15M, 4.0 for 1H
   const timeRemaining = parsed.timeRemainingMinutes || marketDuration;
 
+  // Helper: all early exits must include UI display fields so the dashboard never shows "undefined @ NaN"
+  function earlyExit(reason) {
+    return {
+      shouldBet: false, reasons: [reason],
+      isRecommended: false, isLocked: true,
+      betSide: '--', side: '--', betPrice: 0, betPriceCents: 0,
+      marketPrice: 0, marketPriceCents: 0,
+      filterReason: reason, filterReasons: [reason],
+      signalStrength: 0, edge: 0, winRate: 0, winProbability: '0',
+      token, timeRemaining, currentPrice,
+      assetType: token
+    };
+  }
+
   // Basic validation
   if (!token || !strikePrice || !currentPrice) {
-    return { shouldBet: false, reasons: ['Missing required data'] };
+    return earlyExit('Missing required data');
   }
 
   // Price staleness gate — stale prices lead to incorrect distance calculations
   const priceAge = Date.now() - (cryptoPrices[token]?.lastUpdate || 0);
   if (priceAge > 60000) {
-    return { shouldBet: false, reasons: [`Stale price (${Math.round(priceAge / 1000)}s old)`] };
+    return earlyExit(`Stale price (${Math.round(priceAge / 1000)}s old)`);
   }
 
   // Reject non-directional markets (between/range) — we can only model above/below
   if (!parsed.marketType || parsed.marketType === 'between') {
-    return { shouldBet: false, reasons: [`Unsupported market type: ${parsed.marketType || 'unknown'}`] };
+    return earlyExit(`Unsupported market type: ${parsed.marketType || 'unknown'}`);
   }
 
   // Filter phantom markets: no real orders on one side
   if (!parsed.yesAsk || parsed.yesAsk <= 0.01 || !parsed.noAsk || parsed.noAsk <= 0.01) {
-    return { shouldBet: false, reasons: ['No real orders (phantom market)'] };
+    return earlyExit('No real orders (phantom market)');
   }
 
   // Fix 3: Minimum orderbook depth gate — prevent orders into empty books
   if (orderbook) {
     const totalDepth = (orderbook.yesTotalDepth || 0) + (orderbook.noTotalDepth || 0);
     if (totalDepth < 5) {
-      return { shouldBet: false, reasons: [`Thin orderbook: ${totalDepth} contracts (min 5)`] };
+      return earlyExit(`Thin orderbook: ${totalDepth} contracts (min 5)`);
     }
   }
 
@@ -6744,12 +6822,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   // Check for sit-out conditions
   if (regime.sitOut) {
-    return {
-      shouldBet: false,
-      regime: regime.regime,
-      reasons: [`Volatility spike: ${regime.reason}`],
-      signalStrength: 0
-    };
+    return { ...earlyExit(`Volatility spike: ${regime.reason}`), regime: regime.regime };
   }
 
   // Look up empirical win rate
@@ -9459,32 +9532,10 @@ app.get('/api/portfolio', async (req, res) => {
           price: bet.count > 0 ? Math.round(bet.totalCost / bet.count) : 0
         }));
 
-        // Get market data including settlement results - FETCH IN PARALLEL for speed
+        // Get market data including settlement results — uses cache for settled markets
         const uniqueTickers = [...new Set(realBetHistory.map(b => b.ticker))].slice(0, 50);
-
-        // Fetch all market data in parallel
-        const marketPromises = uniqueTickers.map(async (ticker) => {
-          try {
-            const data = await kalshiRequest('GET', `/markets/${ticker}`, null, userConfig);
-            if (data.market) {
-              return {
-                ticker,
-                title: data.market.title || ticker,
-                result: data.market.result || data.market.market_result,
-                status: data.market.status,
-                closeTime: data.market.close_time
-              };
-            }
-          } catch (e) {
-            return { ticker, title: ticker, result: null, status: 'unknown' };
-          }
-          return { ticker, title: ticker, result: null, status: 'unknown' };
-        });
-
-        const marketResults = await Promise.all(marketPromises);
-        marketResults.forEach(m => {
-          if (m) marketData[m.ticker] = m;
-        });
+        const batchResults = await getMarketDataBatch(uniqueTickers, userConfig);
+        Object.assign(marketData, batchResults);
 
         // Update bets with market data and calculate outcomes
         realBetHistory = realBetHistory.map(bet => {
@@ -9560,16 +9611,8 @@ app.get('/api/portfolio', async (req, res) => {
       );
       if (stillPending.length > 0) {
         const extraTickers = [...new Set(stillPending.map(b => b.ticker))].slice(0, 10);
-        const extraMarketPromises = extraTickers.map(async (ticker) => {
-          try {
-            const data = await kalshiRequest('GET', `/markets/${ticker}`, null, userConfig);
-            if (data.market) {
-              return { ticker, title: data.market.title || ticker, result: data.market.result || data.market.market_result, status: data.market.status, closeTime: data.market.close_time };
-            }
-          } catch (e) {}
-          return null;
-        });
-        (await Promise.all(extraMarketPromises)).forEach(m => { if (m) marketData[m.ticker] = m; });
+        const extraResults = await getMarketDataBatch(extraTickers, userConfig);
+        Object.assign(marketData, extraResults);
       }
 
       // Update all pending/unknown entries with available market data
@@ -9832,23 +9875,9 @@ app.get('/api/performance', async (req, res) => {
         // Filter out sell fills - these are take-profit exits, not bets
         fills = fills.filter(fill => (fill.action || 'buy').toLowerCase() !== 'sell');
 
-        // Get unique tickers to fetch market results
+        // Get unique tickers to fetch market results — uses cache for settled markets
         const uniqueTickers = [...new Set(fills.map(f => f.ticker))].slice(0, 50);
-        const marketData = {};
-
-        // Fetch market data in parallel
-        const marketPromises = uniqueTickers.map(async (ticker) => {
-          try {
-            const data = await kalshiRequest('GET', `/markets/${ticker}`, null, userConfig);
-            if (data.market) {
-              return { ticker, result: data.market.result || data.market.market_result, status: data.market.status };
-            }
-          } catch (e) { /* ignore */ }
-          return { ticker, result: null, status: 'unknown' };
-        });
-
-        const marketResults = await Promise.all(marketPromises);
-        marketResults.forEach(m => { if (m) marketData[m.ticker] = m; });
+        const marketData = await getMarketDataBatch(uniqueTickers, userConfig);
 
         // Process fills into raw bet records
         let bets = fills.map(fill => {
@@ -10224,22 +10253,9 @@ app.get('/api/debug/kalshi-fills', async (req, res) => {
     const fillsData = await kalshiRequest('GET', '/portfolio/fills?limit=30', null, useConfig);
     const fills = fillsData.fills || [];
 
-    // Fetch market data for each unique ticker
-    const uniqueTickers = [...new Set(fills.map(f => f.ticker))];
-    const marketResults = {};
-
-    for (const ticker of uniqueTickers.slice(0, 20)) {
-      try {
-        const market = await kalshiRequest('GET', `/markets/${ticker}`, null, useConfig);
-        marketResults[ticker] = {
-          result: market.market?.result || market.market?.market_result,
-          status: market.market?.status,
-          close_time: market.market?.close_time
-        };
-      } catch (e) {
-        marketResults[ticker] = { error: e.message };
-      }
-    }
+    // Fetch market data for each unique ticker — uses cache for settled markets
+    const uniqueTickers = [...new Set(fills.map(f => f.ticker))].slice(0, 20);
+    const marketResults = await getMarketDataBatch(uniqueTickers, useConfig);
 
     res.json({
       success: true,
