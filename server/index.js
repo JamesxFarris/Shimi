@@ -3818,11 +3818,11 @@ app.get('/api/opportunities/all', async (req, res) => {
   try {
     const showAll = req.query.showAll === 'true';
 
-    // Fetch 15-minute crypto markets only (BTC, ETH, SOL)
+    // Fetch 15-minute and hourly crypto markets (BTC, ETH, SOL, XRP)
     const cryptoMarkets = await fetchCryptoMarkets();
     const userConfig = req.userState?.config || config;
 
-    // Analyze crypto opportunities
+    // Analyze crypto opportunities (both 15M and hourly)
     const allAnalyzed = cryptoMarkets
       .map(m => {
         const parsed = parseMarket(m);
@@ -3831,52 +3831,58 @@ app.get('/api/opportunities/all', async (req, res) => {
         if (!priceData?.price) return null;
         const result = evaluateOpportunityEmpirical(parsed, priceData.price, learnedParams, null, userConfig);
         if (!result) return null;
-        return { ...parsed, ...result, marketCategory: 'crypto' };
+        const hourly = isHourlyMarket(m.ticker);
+        return { ...parsed, ...result, marketCategory: 'crypto', marketTimeframe: hourly ? 'hourly' : '15min' };
       })
       .filter(m => m !== null);
 
-    // ALWAYS SHOW CARDS - one for each token (BTC, ETH, SOL, XRP)
-    // Create placeholder cards for tokens without active markets
-    const tokenSlots = Object.keys(TRACKED_TOKENS).map(token => {
-      // Find the best opportunity for this token
+    // Show SEPARATE cards for 15M and hourly per token
+    // Best 15M + best hourly for each token (up to 8 cards)
+    const tokenSlots = [];
+    for (const token of Object.keys(TRACKED_TOKENS)) {
       const tokenOpps = allAnalyzed.filter(m => m.assetType === token || m.cryptoType === token);
+      const opps15m = tokenOpps.filter(m => m.marketTimeframe === '15min');
+      const oppsHourly = tokenOpps.filter(m => m.marketTimeframe === 'hourly');
 
-      if (tokenOpps.length > 0) {
-        // Sort by win probability and take the best one
-        tokenOpps.sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
-        const best = tokenOpps[0];
-        best.hasActiveMarket = true;
-        return best;
+      // Best 15M card for this token
+      if (opps15m.length > 0) {
+        opps15m.sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
+        opps15m[0].hasActiveMarket = true;
+        tokenSlots.push(opps15m[0]);
       } else {
-        // No active market - create a placeholder card
         const currentPrice = cryptoPrices[token]?.price || 0;
-        return {
-          assetType: token,
-          cryptoType: token,
-          hasActiveMarket: false,
-          isPlaceholder: true,
-          isRecommended: false,
-          filterReason: 'Waiting for next market',
-          currentPrice: currentPrice,
-          title: `${token} 15-Minute Up/Down`,
-          winProbability: '--',
-          edge: 0,
-          betSide: '--',
-          betPrice: 0,
-          betPriceCents: 0,
-          marketCategory: 'crypto'
-        };
+        tokenSlots.push({
+          assetType: token, cryptoType: token, hasActiveMarket: false, isPlaceholder: true,
+          isRecommended: false, filterReason: 'Waiting for next market', currentPrice,
+          title: `${token} 15-Minute Up/Down`, winProbability: '--', edge: 0,
+          betSide: '--', betPrice: 0, betPriceCents: 0, marketCategory: 'crypto', marketTimeframe: '15min'
+        });
       }
-    });
 
-    // Filter to recommended only (unless showAll=true), but always include placeholders
+      // Best hourly card for this token
+      if (oppsHourly.length > 0) {
+        oppsHourly.sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
+        oppsHourly[0].hasActiveMarket = true;
+        tokenSlots.push(oppsHourly[0]);
+      } else {
+        const currentPrice = cryptoPrices[token]?.price || 0;
+        tokenSlots.push({
+          assetType: token, cryptoType: token, hasActiveMarket: false, isPlaceholder: true,
+          isRecommended: false, filterReason: 'Waiting for next hourly market', currentPrice,
+          title: `${token} Hourly Above/Below`, winProbability: '--', edge: 0,
+          betSide: '--', betPrice: 0, betPriceCents: 0, marketCategory: 'crypto', marketTimeframe: 'hourly'
+        });
+      }
+    }
+
+    // Sort: active markets first, then by win probability
     const allOpportunities = showAll
       ? tokenSlots.sort((a, b) => {
           if (a.isPlaceholder && !b.isPlaceholder) return 1;
           if (!a.isPlaceholder && b.isPlaceholder) return -1;
           return parseFloat(b.winProbability || 0) - parseFloat(a.winProbability || 0);
         })
-      : tokenSlots; // Always show all 3 slots
+      : tokenSlots;
 
     // Refresh positions before calculating risk (user-specific)
     const userPortfolio = req.userState?.portfolio || portfolio;
