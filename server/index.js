@@ -21,6 +21,16 @@ import {
 } from './statistics.js';
 import * as sentiment from './sentiment.js';
 import { kalshiRequest, setDefaultConfig as setKalshiDefaultConfig, KALSHI_API_BASE } from './kalshiAPI.js';
+import {
+  addLeader, removeLeader, updateLeader, getLeaders,
+  startCopyTrading, stopCopyTrading, getCopyTradingStatus,
+  serializeCopyState, loadCopyState
+} from './copyTrading.js';
+import {
+  addPolyWallet, removePolyWallet, updatePolyWallet, getPolyWallets,
+  startPolyTracker, stopPolyTracker, getPolyTrackerStatus,
+  serializePolyState, loadPolyState, fetchPolyPositions, fetchPolyProfile
+} from './polymarketTracker.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -762,6 +772,14 @@ async function getUserStateAsync(userId) {
           betHistory: row.bet_history || [],
           portfolio: row.portfolio || { balance: 0, positions: [] }
         });
+        // Restore copy trading state if saved
+        if (loadedConfig.copyTrading) {
+          loadCopyState(userId, loadedConfig.copyTrading);
+        }
+        // Restore Polymarket tracker state if saved
+        if (loadedConfig.polyTrading) {
+          loadPolyState(userId, loadedConfig.polyTrading);
+        }
         console.log(` Loaded state for user ${userId} from database`);
       } else {
         // New user - create default state
@@ -9980,6 +9998,225 @@ app.post('/api/kill-switch/deactivate', (req, res) => {
 
 app.get('/api/kill-switch/status', (req, res) => {
   res.json({ active: isKillSwitchActive() });
+});
+
+// ============================================
+// COPY TRADING ENDPOINTS
+// ============================================
+
+// Get copy trading status
+app.get('/api/copy-trading/status', (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+  res.json({ success: true, ...getCopyTradingStatus(req.userId) });
+});
+
+// Add a leader account to copy
+app.post('/api/copy-trading/leaders', async (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+
+  const { name, apiKeyId, privateKey, scaleFactor, maxBetCents, marketsFilter } = req.body;
+  if (!apiKeyId || !privateKey) {
+    return res.status(400).json({ success: false, error: 'API key ID and private key are required' });
+  }
+
+  // Validate the leader credentials by fetching their balance
+  try {
+    const testConfig = { apiKeyId, privateKey, isAuthenticated: true };
+    await kalshiRequest('GET', '/portfolio/balance', null, testConfig);
+  } catch (err) {
+    return res.status(400).json({ success: false, error: `Invalid leader credentials: ${err.message}` });
+  }
+
+  const leader = addLeader(req.userId, { name, apiKeyId, privateKey, scaleFactor, maxBetCents, marketsFilter });
+
+  // Persist to DB
+  const userConfig = req.userState.config;
+  userConfig.copyTrading = serializeCopyState(req.userId);
+  await saveUserState(req.userId);
+
+  res.json({ success: true, leader: { ...leader, privateKey: undefined, apiKeyId: leader.apiKeyId?.slice(0, 8) + '...' } });
+});
+
+// Remove a leader
+app.delete('/api/copy-trading/leaders/:leaderId', async (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+
+  const removed = removeLeader(req.userId, req.params.leaderId);
+  if (!removed) {
+    return res.status(404).json({ success: false, error: 'Leader not found' });
+  }
+
+  // Persist
+  const userConfig = req.userState.config;
+  userConfig.copyTrading = serializeCopyState(req.userId);
+  await saveUserState(req.userId);
+
+  res.json({ success: true });
+});
+
+// Update a leader's settings
+app.put('/api/copy-trading/leaders/:leaderId', async (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+
+  const updated = updateLeader(req.userId, req.params.leaderId, req.body);
+  if (!updated) {
+    return res.status(404).json({ success: false, error: 'Leader not found' });
+  }
+
+  // Persist
+  const userConfig = req.userState.config;
+  userConfig.copyTrading = serializeCopyState(req.userId);
+  await saveUserState(req.userId);
+
+  res.json({ success: true, leader: { ...updated, privateKey: undefined, apiKeyId: updated.apiKeyId?.slice(0, 8) + '...' } });
+});
+
+// Toggle copy trading on/off
+app.post('/api/copy-trading/toggle', async (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+
+  const { enabled, intervalSeconds = 15 } = req.body;
+  const userConfig = req.userState.config;
+
+  if (!userConfig.isAuthenticated) {
+    return res.status(400).json({ success: false, error: 'Connect your Kalshi account first' });
+  }
+
+  const status = getCopyTradingStatus(req.userId);
+  if (status.stats.activeLeaders === 0) {
+    return res.status(400).json({ success: false, error: 'Add at least one leader account first' });
+  }
+
+  if (enabled && !status.running) {
+    const result = startCopyTrading(req.userId, userConfig, intervalSeconds * 1000);
+    if (!result.success) return res.status(400).json(result);
+    res.json({ success: true, message: `Copy trading enabled (polling every ${intervalSeconds}s)`, running: true });
+  } else if (!enabled && status.running) {
+    stopCopyTrading(req.userId);
+    res.json({ success: true, message: 'Copy trading stopped', running: false });
+  } else {
+    res.json({ success: true, message: `Copy trading ${status.running ? 'already running' : 'already stopped'}`, running: status.running });
+  }
+});
+
+// Get copy trading activity log
+app.get('/api/copy-trading/activity', (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+  const status = getCopyTradingStatus(req.userId);
+  res.json({ success: true, activity: status.recentActivity });
+});
+
+// ============================================
+// POLYMARKET COPY TRADING ENDPOINTS
+// ============================================
+
+// Get Polymarket tracker status
+app.get('/api/poly-trading/status', (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+  res.json({ success: true, ...getPolyTrackerStatus(req.userId) });
+});
+
+// Add a Polymarket wallet to track
+app.post('/api/poly-trading/wallets', async (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+
+  const { name, walletAddress, scaleFactor, maxBetCents, assetsFilter } = req.body;
+  if (!walletAddress) {
+    return res.status(400).json({ success: false, error: 'Wallet address is required' });
+  }
+
+  // Validate wallet by fetching positions
+  try {
+    const positions = await fetchPolyPositions(walletAddress, 1);
+    if (!Array.isArray(positions)) {
+      return res.status(400).json({ success: false, error: 'Could not verify wallet - no data returned' });
+    }
+  } catch (err) {
+    return res.status(400).json({ success: false, error: `Could not verify wallet: ${err.message}` });
+  }
+
+  try {
+    const wallet = addPolyWallet(req.userId, { name, walletAddress, scaleFactor, maxBetCents, assetsFilter });
+
+    // Persist
+    const userConfig = req.userState.config;
+    userConfig.polyTrading = serializePolyState(req.userId);
+    await saveUserState(req.userId);
+
+    // Fetch profile info for response
+    const profile = await fetchPolyProfile(walletAddress);
+
+    res.json({ success: true, wallet, profile });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Remove a tracked wallet
+app.delete('/api/poly-trading/wallets/:walletId', async (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+
+  const removed = removePolyWallet(req.userId, req.params.walletId);
+  if (!removed) return res.status(404).json({ success: false, error: 'Wallet not found' });
+
+  const userConfig = req.userState.config;
+  userConfig.polyTrading = serializePolyState(req.userId);
+  await saveUserState(req.userId);
+
+  res.json({ success: true });
+});
+
+// Update wallet settings
+app.put('/api/poly-trading/wallets/:walletId', async (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+
+  const updated = updatePolyWallet(req.userId, req.params.walletId, req.body);
+  if (!updated) return res.status(404).json({ success: false, error: 'Wallet not found' });
+
+  const userConfig = req.userState.config;
+  userConfig.polyTrading = serializePolyState(req.userId);
+  await saveUserState(req.userId);
+
+  res.json({ success: true, wallet: updated });
+});
+
+// Toggle Polymarket copy trading on/off
+app.post('/api/poly-trading/toggle', async (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+
+  const { enabled, intervalSeconds = 20 } = req.body;
+  const userConfig = req.userState.config;
+
+  if (!userConfig.isAuthenticated) {
+    return res.status(400).json({ success: false, error: 'Connect your Kalshi account first (needed to place copy trades)' });
+  }
+
+  const status = getPolyTrackerStatus(req.userId);
+  if (status.stats.activeWallets === 0) {
+    return res.status(400).json({ success: false, error: 'Add at least one Polymarket wallet first' });
+  }
+
+  if (enabled && !status.running) {
+    const result = startPolyTracker(req.userId, userConfig, intervalSeconds * 1000);
+    if (!result.success) return res.status(400).json(result);
+    res.json({ success: true, message: `Polymarket copy trading enabled (polling every ${intervalSeconds}s)`, running: true });
+  } else if (!enabled && status.running) {
+    stopPolyTracker(req.userId);
+    res.json({ success: true, message: 'Polymarket copy trading stopped', running: false });
+  } else {
+    res.json({ success: true, running: status.running });
+  }
+});
+
+// Preview: fetch a Polymarket wallet's current positions
+app.get('/api/poly-trading/preview/:walletAddress', async (req, res) => {
+  try {
+    const positions = await fetchPolyPositions(req.params.walletAddress, 20);
+    const profile = await fetchPolyProfile(req.params.walletAddress);
+    res.json({ success: true, positions: positions || [], profile });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
 });
 
 // Economic calendar endpoint
