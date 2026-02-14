@@ -247,11 +247,14 @@ function parsePolyMarketTitle(title, slug, outcome) {
 
   if (!asset) return null; // Not a crypto market we can match
 
-  // Detect timeframe
+  // Detect timeframe -- order matters: check 15m before 1m to avoid partial matches
   let timeframe = null;
   if (titleLower.includes('15 min') || slugLower.includes('15m')) timeframe = '15m';
   else if (titleLower.includes('1 hour') || slugLower.includes('1h')) timeframe = '1h';
   else if (titleLower.includes('4 hour') || slugLower.includes('4h')) timeframe = '4h';
+  else if (titleLower.includes('5 min') || slugLower.includes('5m')) timeframe = '5m';
+  else if (titleLower.includes('1 min') || slugLower.includes('1m')) timeframe = '1m';
+  else if (titleLower.includes('10 min') || slugLower.includes('10m')) timeframe = '10m';
 
   // Detect direction from outcome
   let direction = null;
@@ -305,10 +308,15 @@ function findMatchingKalshiMarket(parsed, kalshiMarkets, allowedTimeframes) {
   const prefix = KALSHI_TICKER_PREFIX[parsed.asset];
   if (!prefix) return null;
 
-  // Determine which Kalshi series to search based on Polymarket timeframe
-  // Kalshi uses suffix H for hourly (e.g. KXBTCH), no suffix for 15m (KXBTC)
+  // Only copy 15m and 1h markets -- Kalshi doesn't have 5m/1m/10m
+  // Reject any timeframe that isn't 15m or 1h
   const isHourly = parsed.timeframe === '1h' || parsed.timeframe === '4h';
-  const is15m = parsed.timeframe === '15m' || !parsed.timeframe;
+  const is15m = parsed.timeframe === '15m';
+
+  if (!isHourly && !is15m) {
+    // 5m, 1m, 10m, or unknown timeframe -- no Kalshi equivalent
+    return null;
+  }
 
   // Check if this timeframe is allowed by the wallet config
   if (allowedTimeframes && allowedTimeframes.length > 0) {
@@ -316,13 +324,10 @@ function findMatchingKalshiMarket(parsed, kalshiMarkets, allowedTimeframes) {
     if (!allowedTimeframes.includes(tf)) return null;
   }
 
-  // For hourly markets, look for KXBTCH / KXETHH / etc
-  // For 15m markets, look for KXBTC / KXETH / etc
+  // Kalshi uses suffix H for hourly (e.g. KXBTCH), no suffix for 15m (KXBTC)
   const seriesPrefixes = [];
   if (isHourly) seriesPrefixes.push(prefix + 'H');
   if (is15m) seriesPrefixes.push(prefix);
-  // If timeframe unknown, try both
-  if (!parsed.timeframe) seriesPrefixes.push(prefix + 'H');
 
   // Filter to markets matching the asset + timeframe series
   const assetMarkets = kalshiMarkets.filter(m => {
