@@ -318,7 +318,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
         timeMin: 2, // Allow late entries
         timeMax: 8, // Tightened from 13: only bet when 2-8 min remain (best data window)
         priceMin: 55, // Raised from 40: below 55c is coin-flip territory
-        priceMax: 85 // Lowered from 95: above 85c is bad risk/reward (pay 85c to win 15c)
+        priceMax: 92 // Raised from 85: 75c+ bets are high-probability favored bets
       }
     },
     ETH: {
@@ -335,7 +335,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
         timeMin: 2,
         timeMax: 8, // Tightened from 13
         priceMin: 55, // Raised from 40
-        priceMax: 85 // Lowered from 95
+        priceMax: 92 // Raised from 85: allow high-probability bets
       }
     },
     SOL: {
@@ -352,7 +352,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
         timeMin: 2,
         timeMax: 7, // Tighter than BTC/ETH: SOL needs more price confirmation
         priceMin: 55, // Raised from 40
-        priceMax: 80 // Lower ceiling: SOL's 64% coin-flip rate makes high-price bets risky
+        priceMax: 90 // Raised from 80: allow high-probability favored bets
       }
     },
     XRP: {
@@ -369,7 +369,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
         timeMin: 2,
         timeMax: 7,
         priceMin: 55,
-        priceMax: 80
+        priceMax: 90 // Raised from 80
       }
     }
   },
