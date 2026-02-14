@@ -6735,9 +6735,10 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const unfavoredGrossEdge = unfavoredWinRate - (unfavoredPrice * 100);
 
   // Pick the side with higher positive gross edge
-  // Guard rail: skip unfavored if ask price is too low (no market maker)
+  // Guard rail: skip unfavored if ask price is too low (high risk underdog bet)
   let betSide, marketPrice, isFavoredSideBet;
-  const unfavoredViable = unfavoredPrice >= 0.20 && unfavoredGrossEdge > favoredGrossEdge && unfavoredGrossEdge > 0;
+  const unfavoredMinPrice = 0.35; // 35c floor: below this you're a <35% underdog, too risky
+  const unfavoredViable = unfavoredPrice >= unfavoredMinPrice && unfavoredGrossEdge > favoredGrossEdge && unfavoredGrossEdge > 0;
   if (unfavoredViable) {
     betSide = unfavoredSide;
     marketPrice = unfavoredPrice;
@@ -7088,8 +7089,8 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   let adjustedSignalStrength = signalStrength;
   let windowPenalties = [];
 
-  if (!withinPriceWindow && isFavoredSideBet) {
-    // Soft penalty instead of hard rejection — let edge calc decide
+  if (!withinPriceWindow) {
+    // Soft penalty for any bet outside price window — favored or unfavored
     const pricePenalty = marketPriceCents < (entryWindows.priceMin || 40) ? -10 : -8;
     adjustedSignalStrength += pricePenalty;
     windowPenalties.push(`price-window ${pricePenalty}pts (${marketPriceCents}c outside [${entryWindows.priceMin || 40}-${entryWindows.priceMax || 95}c])`);
