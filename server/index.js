@@ -21,6 +21,11 @@ import {
 } from './statistics.js';
 import * as sentiment from './sentiment.js';
 import { kalshiRequest, setDefaultConfig as setKalshiDefaultConfig, KALSHI_API_BASE } from './kalshiAPI.js';
+import {
+  addLeader, removeLeader, updateLeader, getLeaders,
+  startCopyTrading, stopCopyTrading, getCopyTradingStatus,
+  serializeCopyState, loadCopyState
+} from './copyTrading.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -762,6 +767,10 @@ async function getUserStateAsync(userId) {
           betHistory: row.bet_history || [],
           portfolio: row.portfolio || { balance: 0, positions: [] }
         });
+        // Restore copy trading state if saved
+        if (loadedConfig.copyTrading) {
+          loadCopyState(userId, loadedConfig.copyTrading);
+        }
         console.log(` Loaded state for user ${userId} from database`);
       } else {
         // New user - create default state
@@ -9980,6 +9989,112 @@ app.post('/api/kill-switch/deactivate', (req, res) => {
 
 app.get('/api/kill-switch/status', (req, res) => {
   res.json({ active: isKillSwitchActive() });
+});
+
+// ============================================
+// COPY TRADING ENDPOINTS
+// ============================================
+
+// Get copy trading status
+app.get('/api/copy-trading/status', (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+  res.json({ success: true, ...getCopyTradingStatus(req.userId) });
+});
+
+// Add a leader account to copy
+app.post('/api/copy-trading/leaders', async (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+
+  const { name, apiKeyId, privateKey, scaleFactor, maxBetCents, marketsFilter } = req.body;
+  if (!apiKeyId || !privateKey) {
+    return res.status(400).json({ success: false, error: 'API key ID and private key are required' });
+  }
+
+  // Validate the leader credentials by fetching their balance
+  try {
+    const testConfig = { apiKeyId, privateKey, isAuthenticated: true };
+    await kalshiRequest('GET', '/portfolio/balance', null, testConfig);
+  } catch (err) {
+    return res.status(400).json({ success: false, error: `Invalid leader credentials: ${err.message}` });
+  }
+
+  const leader = addLeader(req.userId, { name, apiKeyId, privateKey, scaleFactor, maxBetCents, marketsFilter });
+
+  // Persist to DB
+  const userConfig = req.userState.config;
+  userConfig.copyTrading = serializeCopyState(req.userId);
+  await saveUserState(req.userId);
+
+  res.json({ success: true, leader: { ...leader, privateKey: undefined, apiKeyId: leader.apiKeyId?.slice(0, 8) + '...' } });
+});
+
+// Remove a leader
+app.delete('/api/copy-trading/leaders/:leaderId', async (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+
+  const removed = removeLeader(req.userId, req.params.leaderId);
+  if (!removed) {
+    return res.status(404).json({ success: false, error: 'Leader not found' });
+  }
+
+  // Persist
+  const userConfig = req.userState.config;
+  userConfig.copyTrading = serializeCopyState(req.userId);
+  await saveUserState(req.userId);
+
+  res.json({ success: true });
+});
+
+// Update a leader's settings
+app.put('/api/copy-trading/leaders/:leaderId', async (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+
+  const updated = updateLeader(req.userId, req.params.leaderId, req.body);
+  if (!updated) {
+    return res.status(404).json({ success: false, error: 'Leader not found' });
+  }
+
+  // Persist
+  const userConfig = req.userState.config;
+  userConfig.copyTrading = serializeCopyState(req.userId);
+  await saveUserState(req.userId);
+
+  res.json({ success: true, leader: { ...updated, privateKey: undefined, apiKeyId: updated.apiKeyId?.slice(0, 8) + '...' } });
+});
+
+// Toggle copy trading on/off
+app.post('/api/copy-trading/toggle', async (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+
+  const { enabled, intervalSeconds = 15 } = req.body;
+  const userConfig = req.userState.config;
+
+  if (!userConfig.isAuthenticated) {
+    return res.status(400).json({ success: false, error: 'Connect your Kalshi account first' });
+  }
+
+  const status = getCopyTradingStatus(req.userId);
+  if (status.stats.activeLeaders === 0) {
+    return res.status(400).json({ success: false, error: 'Add at least one leader account first' });
+  }
+
+  if (enabled && !status.running) {
+    const result = startCopyTrading(req.userId, userConfig, intervalSeconds * 1000);
+    if (!result.success) return res.status(400).json(result);
+    res.json({ success: true, message: `Copy trading enabled (polling every ${intervalSeconds}s)`, running: true });
+  } else if (!enabled && status.running) {
+    stopCopyTrading(req.userId);
+    res.json({ success: true, message: 'Copy trading stopped', running: false });
+  } else {
+    res.json({ success: true, message: `Copy trading ${status.running ? 'already running' : 'already stopped'}`, running: status.running });
+  }
+});
+
+// Get copy trading activity log
+app.get('/api/copy-trading/activity', (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+  const status = getCopyTradingStatus(req.userId);
+  res.json({ success: true, activity: status.recentActivity });
 });
 
 // Economic calendar endpoint

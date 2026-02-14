@@ -584,6 +584,31 @@ function App() {
   // Performance tracking
   const [performance, setPerformance] = useState(null)
 
+  // Copy trading state
+  const [copyStatus, setCopyStatus] = useState({ running: false, leaders: [], recentActivity: [], stats: { totalLeaders: 0, activeLeaders: 0, totalCopied: 0 } })
+  const [copyLeaderForm, setCopyLeaderForm] = useState({ name: '', apiKeyId: '', privateKey: '', scaleFactor: 1.0, maxBetCents: 500 })
+  const [copyLoading, setCopyLoading] = useState(false)
+  const [copyError, setCopyError] = useState(null)
+  const [showAddLeader, setShowAddLeader] = useState(false)
+
+  const fetchCopyStatus = useCallback(async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/copy-trading/status`)
+      if (res.ok) {
+        const data = await res.json()
+        if (data.success) setCopyStatus(data)
+      }
+    } catch {}
+  }, [])
+
+  // Poll copy trading status when on that tab
+  useEffect(() => {
+    if (tab !== 'copytrade') return
+    fetchCopyStatus()
+    const interval = setInterval(fetchCopyStatus, 5000)
+    return () => clearInterval(interval)
+  }, [tab, fetchCopyStatus])
+
   // Fetch prices directly (faster updates)
   // Fetch opportunities (now uses unified endpoint for all market types)
   // Always fetch ALL markets to show cards even without edge
@@ -1188,6 +1213,10 @@ function App() {
             <span className="nav-text">History</span>
             {newBetsCount > 0 && <span className="nav-badge">{newBetsCount}</span>}
           </button>
+          <button className={`nav-item ${tab === 'copytrade' ? 'active' : ''}`} onClick={() => { setTab('copytrade'); fetchCopyStatus(); }}>
+            <span className="nav-icon">⇄</span>
+            <span className="nav-text">Copy Trade</span>
+          </button>
           <button className={`nav-item ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>
             <span className="nav-icon">⚙</span>
             <span className="nav-text">Config</span>
@@ -1258,6 +1287,7 @@ function App() {
             <h2 className="page-title">
               {tab === 'dashboard' && 'Dashboard'}
               {tab === 'history' && 'Bet History'}
+              {tab === 'copytrade' && 'Copy Trading'}
               {tab === 'settings' && 'Settings'}
             </h2>
           </div>
@@ -1688,6 +1718,301 @@ function App() {
           )}
 
 
+          {/* Copy Trading Tab */}
+          {tab === 'copytrade' && (
+            <div className="settings-page">
+              <div className="settings-grid">
+                {/* Copy Trading Status */}
+                <div className="settings-card wide">
+                  <h3 className="settings-card-title">Copy Trading</h3>
+                  <p className="settings-description">
+                    Mirror trades from high-performing Kalshi accounts. Add a leader's read-only API key to automatically copy their positions.
+                  </p>
+                  <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginTop: '12px' }}>
+                    <button
+                      className={`auto-bet-btn ${copyStatus.running ? 'active' : ''}`}
+                      onClick={async () => {
+                        setCopyLoading(true)
+                        setCopyError(null)
+                        try {
+                          const res = await authFetch(`${API_BASE}/api/copy-trading/toggle`, {
+                            method: 'POST',
+                            body: JSON.stringify({ enabled: !copyStatus.running })
+                          })
+                          const data = await res.json()
+                          if (!data.success) setCopyError(data.error)
+                          else fetchCopyStatus()
+                        } catch (err) { setCopyError('Connection failed') }
+                        finally { setCopyLoading(false) }
+                      }}
+                      disabled={copyLoading || copyStatus.stats.activeLeaders === 0}
+                    >
+                      {copyLoading ? 'Working...' : copyStatus.running ? 'Stop Copying' : 'Start Copying'}
+                    </button>
+                    <span className={`connection-status ${copyStatus.running ? 'connected' : 'simulated'}`} style={{ padding: '4px 8px' }}>
+                      <span className="status-dot"></span>
+                      <span>{copyStatus.running ? 'Copying Active' : 'Stopped'}</span>
+                    </span>
+                  </div>
+                  {copyError && <div className="auth-error" style={{ marginTop: '8px' }}>{copyError}</div>}
+
+                  {/* Aggregate Stats */}
+                  <div className="settings-list" style={{ marginTop: '16px' }}>
+                    <div className="settings-item">
+                      <span className="settings-label">Leaders</span>
+                      <span className="settings-value">{copyStatus.stats.activeLeaders} / {copyStatus.stats.totalLeaders}</span>
+                    </div>
+                    <div className="settings-item">
+                      <span className="settings-label">Trades Copied</span>
+                      <span className="settings-value">{copyStatus.stats.totalCopied}</span>
+                    </div>
+                    <div className="settings-item">
+                      <span className="settings-label">Skipped</span>
+                      <span className="settings-value">{copyStatus.stats.totalSkipped || 0}</span>
+                    </div>
+                    <div className="settings-item">
+                      <span className="settings-label">Errors</span>
+                      <span className="settings-value">{copyStatus.stats.totalErrored || 0}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Leader Accounts */}
+                <div className="settings-card wide">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h3 className="settings-card-title" style={{ margin: 0 }}>Leader Accounts</h3>
+                    <button className="connect-btn" onClick={() => setShowAddLeader(true)}>
+                      + Add Leader
+                    </button>
+                  </div>
+
+                  {copyStatus.leaders.length === 0 ? (
+                    <div className="connect-prompt" style={{ marginTop: '16px' }}>
+                      <p>No leader accounts configured. Add a Kalshi account to start copying trades.</p>
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      {copyStatus.leaders.map(leader => (
+                        <div key={leader.id} className="settings-card" style={{ margin: 0, border: '1px solid var(--border)', background: 'var(--bg-secondary)' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div>
+                              <strong>{leader.name}</strong>
+                              <span style={{ marginLeft: '8px', opacity: 0.5, fontSize: '12px' }}>{leader.apiKeyId}</span>
+                            </div>
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                              <span className={`connection-status ${leader.enabled ? 'connected' : 'simulated'}`} style={{ padding: '2px 6px', fontSize: '11px' }}>
+                                <span className="status-dot"></span>
+                                <span>{leader.enabled ? 'Active' : 'Paused'}</span>
+                              </span>
+                              <button
+                                className="disconnect-btn"
+                                style={{ padding: '4px 8px', fontSize: '11px' }}
+                                onClick={async () => {
+                                  const res = await authFetch(`${API_BASE}/api/copy-trading/leaders/${leader.id}`, { method: 'PUT', body: JSON.stringify({ enabled: !leader.enabled }) })
+                                  if (res.ok) fetchCopyStatus()
+                                }}
+                              >
+                                {leader.enabled ? 'Pause' : 'Resume'}
+                              </button>
+                              <button
+                                className="disconnect-btn"
+                                style={{ padding: '4px 8px', fontSize: '11px', color: '#ff4444' }}
+                                onClick={async () => {
+                                  if (!confirm(`Remove leader "${leader.name}"?`)) return
+                                  const res = await authFetch(`${API_BASE}/api/copy-trading/leaders/${leader.id}`, { method: 'DELETE' })
+                                  if (res.ok) fetchCopyStatus()
+                                }}
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          </div>
+                          <div className="settings-list" style={{ marginTop: '8px' }}>
+                            <div className="settings-item">
+                              <span className="settings-label">Scale Factor</span>
+                              <span className="settings-value">{leader.scaleFactor}x</span>
+                            </div>
+                            <div className="settings-item">
+                              <span className="settings-label">Max Bet</span>
+                              <span className="settings-value">${(leader.maxBetCents / 100).toFixed(2)}</span>
+                            </div>
+                            <div className="settings-item">
+                              <span className="settings-label">Trades Copied</span>
+                              <span className="settings-value">{leader.stats.totalCopied}</span>
+                            </div>
+                            <div className="settings-item">
+                              <span className="settings-label">Last Poll</span>
+                              <span className="settings-value">{leader.lastPollAt ? new Date(leader.lastPollAt).toLocaleTimeString() : 'Never'}</span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Recent Copy Activity */}
+                <div className="settings-card wide">
+                  <h3 className="settings-card-title">Recent Activity</h3>
+                  {copyStatus.recentActivity.length === 0 ? (
+                    <p className="settings-description">No copy trading activity yet. Start copying to see trades here.</p>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px', maxHeight: '400px', overflowY: 'auto' }}>
+                      {copyStatus.recentActivity.map((item, i) => (
+                        <div key={i} style={{
+                          padding: '8px 12px',
+                          borderRadius: '6px',
+                          background: item.status === 'copied' ? 'rgba(0,255,136,0.08)' : item.status === 'error' ? 'rgba(255,68,68,0.08)' : 'rgba(255,255,255,0.04)',
+                          border: `1px solid ${item.status === 'copied' ? 'rgba(0,255,136,0.2)' : item.status === 'error' ? 'rgba(255,68,68,0.2)' : 'rgba(255,255,255,0.1)'}`,
+                          fontSize: '13px'
+                        }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                            <span>
+                              <strong style={{ color: item.status === 'copied' ? '#00ff88' : item.status === 'error' ? '#ff4444' : '#ffaa00' }}>
+                                {item.status === 'copied' ? 'COPIED' : item.status === 'error' ? 'ERROR' : 'SKIPPED'}
+                              </strong>
+                              {' '}{item.action} {item.copyCount || '?'}x {item.side?.toUpperCase()} {item.ticker}
+                            </span>
+                            <span style={{ opacity: 0.5 }}>{item.leaderName}</span>
+                          </div>
+                          {item.error && <div style={{ color: '#ff4444', fontSize: '11px', marginTop: '4px' }}>{item.error}</div>}
+                          {item.timestamp && <div style={{ opacity: 0.4, fontSize: '11px', marginTop: '2px' }}>{new Date(item.timestamp).toLocaleString()}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* How Copy Trading Works */}
+                <div className="settings-card wide">
+                  <h3 className="settings-card-title">How Copy Trading Works</h3>
+                  <div className="how-it-works">
+                    <div className="how-step">
+                      <div className="step-number">1</div>
+                      <div className="step-content">
+                        <h4>Add a Leader</h4>
+                        <p>Enter the Kalshi API credentials of the account you want to copy. Read-only API keys work.</p>
+                      </div>
+                    </div>
+                    <div className="how-step">
+                      <div className="step-number">2</div>
+                      <div className="step-content">
+                        <h4>Configure Scale</h4>
+                        <p>Set a scale factor (e.g. 0.5x = half size) and max bet cap to control your risk.</p>
+                      </div>
+                    </div>
+                    <div className="how-step">
+                      <div className="step-number">3</div>
+                      <div className="step-content">
+                        <h4>Start Copying</h4>
+                        <p>The engine polls the leader's trades every 15 seconds and mirrors new positions on your account.</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Add Leader Modal */}
+          {showAddLeader && (
+            <div className="modal-overlay" onClick={() => setShowAddLeader(false)}>
+              <div className="modal" onClick={e => e.stopPropagation()}>
+                <div className="modal-header">
+                  <h2>Add Leader Account</h2>
+                  <button className="modal-close" onClick={() => setShowAddLeader(false)}>x</button>
+                </div>
+                <p className="modal-description">Enter the Kalshi API credentials of the account you want to copy trade. Read-only scope is sufficient.</p>
+
+                {copyError && <div className="auth-error">{copyError}</div>}
+
+                <form onSubmit={async (e) => {
+                  e.preventDefault()
+                  setCopyLoading(true)
+                  setCopyError(null)
+                  try {
+                    const res = await authFetch(`${API_BASE}/api/copy-trading/leaders`, {
+                      method: 'POST',
+                      body: JSON.stringify(copyLeaderForm)
+                    })
+                    const data = await res.json()
+                    if (data.success) {
+                      setShowAddLeader(false)
+                      setCopyLeaderForm({ name: '', apiKeyId: '', privateKey: '', scaleFactor: 1.0, maxBetCents: 500 })
+                      fetchCopyStatus()
+                    } else {
+                      setCopyError(data.error)
+                    }
+                  } catch { setCopyError('Connection failed') }
+                  finally { setCopyLoading(false) }
+                }}>
+                  <div className="form-group">
+                    <label>Name (optional)</label>
+                    <input
+                      type="text"
+                      value={copyLeaderForm.name}
+                      onChange={e => setCopyLeaderForm(f => ({ ...f, name: e.target.value }))}
+                      placeholder="e.g. Top Crypto Trader"
+                      autoComplete="off"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Leader's API Key ID</label>
+                    <input
+                      type="text"
+                      value={copyLeaderForm.apiKeyId}
+                      onChange={e => setCopyLeaderForm(f => ({ ...f, apiKeyId: e.target.value }))}
+                      placeholder="API key ID from the leader's account"
+                      required
+                      autoComplete="off"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Leader's Private Key (PEM)</label>
+                    <textarea
+                      value={copyLeaderForm.privateKey}
+                      onChange={e => setCopyLeaderForm(f => ({ ...f, privateKey: e.target.value }))}
+                      placeholder="-----BEGIN PRIVATE KEY-----..."
+                      rows={5}
+                      required
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Scale Factor ({copyLeaderForm.scaleFactor}x)</label>
+                    <input
+                      type="range"
+                      min="0.1"
+                      max="5"
+                      step="0.1"
+                      value={copyLeaderForm.scaleFactor}
+                      onChange={e => setCopyLeaderForm(f => ({ ...f, scaleFactor: parseFloat(e.target.value) }))}
+                    />
+                    <span style={{ fontSize: '12px', opacity: 0.6 }}>
+                      Leader bets 10 contracts, you bet {Math.round(10 * copyLeaderForm.scaleFactor)} contracts
+                    </span>
+                  </div>
+                  <div className="form-group">
+                    <label>Max Bet Per Copy (${(copyLeaderForm.maxBetCents / 100).toFixed(2)})</label>
+                    <input
+                      type="range"
+                      min="50"
+                      max="5000"
+                      step="50"
+                      value={copyLeaderForm.maxBetCents}
+                      onChange={e => setCopyLeaderForm(f => ({ ...f, maxBetCents: parseInt(e.target.value) }))}
+                    />
+                  </div>
+                  <div className="modal-actions">
+                    <button type="button" className="btn-secondary" onClick={() => setShowAddLeader(false)}>Cancel</button>
+                    <button type="submit" className="btn-primary" disabled={copyLoading}>
+                      {copyLoading ? 'Validating...' : 'Add Leader'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
           {/* Settings Tab */}
           {tab === 'settings' && (
             <div className="settings-page">
@@ -1902,6 +2227,10 @@ function App() {
             <span>📈</span>
             <span>History</span>
             {newBetsCount > 0 && <span className="nav-badge mobile">{newBetsCount}</span>}
+          </button>
+          <button className={`mobile-nav-item ${tab === 'copytrade' ? 'active' : ''}`} onClick={() => { setTab('copytrade'); fetchCopyStatus(); }}>
+            <span>⇄</span>
+            <span>Copy</span>
           </button>
           <button className={`mobile-nav-item ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>
             <span>⚙️</span>
