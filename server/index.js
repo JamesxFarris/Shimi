@@ -378,7 +378,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
   selectivityRules: {
     minSignalStrength: 58, // 0-100 score required to bet (raised from 50: only clear signals)
     minEmpiricalWinRate: 64, // Minimum win rate from lookup tables (lowered from 68: allow borderline high-edge bets)
-    minEdgeAfterFees: 8, // 8% minimum edge after fees (Kalshi Brier ~0.05, small edges are noise)
+    minEdgeAfterFees: 6, // 6% minimum edge after fees (lowered from 8: allows more bets in efficient markets)
     minUnfavoredEdge: 8, // 8% minimum net edge for unfavored-side bets (raised from 5: long shots need bigger edge)
     maxBetsPerToken: 3, // Per-token concentration limit
     maxBetsPerHour: 15, // Maximum bets placed in a rolling 1-hour window
@@ -5900,9 +5900,9 @@ async function _runAutoBetInner(userId = null) {
 
     if (filledCount === 0 && status === 'resting' && order.order_id) {
       // Kalshi may return 'resting' before the matching engine fills the order.
-      // Poll up to 3 times with increasing delays before giving up.
-      for (let pollAttempt = 1; pollAttempt <= 3; pollAttempt++) {
-        await sleep(300 * pollAttempt); // 300ms, 600ms, 900ms
+      // Poll up to 5 times with 1s delays (5s total) to give the matching engine time.
+      for (let pollAttempt = 1; pollAttempt <= 5; pollAttempt++) {
+        await sleep(1000); // 1s per poll, 5s total
         try {
           const checkResp = await kalshiRequest('GET', `/portfolio/orders/${order.order_id}`, null, userConfig);
           const updated = checkResp.order;
@@ -6457,12 +6457,12 @@ function shouldSitOut(tables, token = null) {
     reasons.push(`Economic event: ${activeEvent.name} (sit out ${activeEvent.sitOutMinutes}min window)`);
   }
 
-  // Low-liquidity hours: 05:00-14:00 UTC (midnight-9AM EST)
-  // Kalshi crypto orderbooks are empty ("phantom markets"), orders go unfilled,
-  // and the few that fill tend to lose. Empirical: 0 wins from late-night fills.
+  // Low-liquidity hours: 07:00-13:00 UTC (2AM-8AM EST)
+  // Kalshi crypto orderbooks thin out overnight; narrowed from 05:00-14:00 (9 hours)
+  // to 07:00-13:00 (6 hours) so the bot can trade during early morning and afternoon.
   const utcHour = new Date().getUTCHours();
-  if (utcHour >= 5 && utcHour < 14) {
-    reasons.push(`Low-liquidity hours (${utcHour}:00 UTC — sit out 05:00-14:00 UTC)`);
+  if (utcHour >= 7 && utcHour < 13) {
+    reasons.push(`Low-liquidity hours (${utcHour}:00 UTC — sit out 07:00-13:00 UTC)`);
   }
 
   // maxBetsPerHour — prevent overtrading in choppy markets
@@ -7065,11 +7065,11 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       reasons.push(`Win rate ${adjustedWinRate.toFixed(1)}% < ${effectiveMinWinRate}%${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
     }
 
-    // In low vol, outcomes are more predictable - smaller edge is acceptable but still need buffer
-    // With 8% base, low-vol reduces to 5% (still above noise threshold)
+    // In low vol, outcomes are more predictable - smaller edge is acceptable
+    // With 6% base, low-vol reduces to 3% (allows more bets through in calm markets)
     const effectiveMinEdge = regime.regime === 'low'
-      ? Math.max(5.0, (rules.minEdgeAfterFees || 8) - 3)
-      : (rules.minEdgeAfterFees || 8);
+      ? Math.max(3.0, (rules.minEdgeAfterFees || 6) - 3)
+      : (rules.minEdgeAfterFees || 6);
     if (netEdge < effectiveMinEdge) {
       reasons.push(`Edge ${netEdge.toFixed(1)}% < ${effectiveMinEdge}%${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
     }
@@ -7242,13 +7242,14 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // NO bias: win rate adjustment already applied in edge calculation (lines ~6659-6674)
   // Removed duplicate signal strength adjustment here to prevent double-counting
 
-  // YES SIDE PENALTY: Empirical data shows YES bets win ~4% vs NO ~52% across all tokens
-  // The model consistently overestimates YES probability. Rather than hard-blocking,
-  // apply a heavy signal penalty so only very strong signals can overcome it.
+  // YES SIDE PENALTY: Reduced from -15 to -5. The NO-bias win rate adjustment
+  // (lines ~6750-6766) already reduces YES edge in the edge calculation.
+  // -15 was double-counting and blocking ALL YES bets, leaving the bot unable to trade
+  // when price is above strike (which is >50% of the time).
   if (betSide === 'YES') {
-    const yesPenalty = -15;
+    const yesPenalty = -5;
     adjustedSignalStrength += yesPenalty;
-    windowPenalties.push(`YES-side ${yesPenalty}pts (historical underperformance)`);
+    windowPenalties.push(`YES-side ${yesPenalty}pts (caution)`);
   }
 
   // Same-side saturation: penalize one-sided streaks per token
