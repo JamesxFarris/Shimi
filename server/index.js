@@ -6692,6 +6692,12 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const pctFromStrike = ((currentPrice - strikePrice) / strikePrice) * 100;
   const absDistance = Math.abs(pctFromStrike);
 
+  // SANITY CHECK: For 15-minute markets, distance > 5% is impossible (BTC would need to move ~$3400).
+  // This catches bad floor_strike values from Kalshi API (e.g. $15 range floor instead of actual strike).
+  if (absDistance > 5) {
+    return earlyExit(`Bad strike price: $${strikePrice.toFixed(2)} vs current $${currentPrice.toFixed(2)} (${absDistance.toFixed(1)}% distance)`);
+  }
+
   // Detect volatility regime
   const regime = detectVolatilityRegime(token);
 
