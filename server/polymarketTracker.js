@@ -510,27 +510,31 @@ async function pollPolyWallet(wallet) {
     return [];
   }
 
+  // Polymarket timestamps are Unix seconds (e.g. 1771076079)
+  // Ensure numeric comparison
+  const latestTs = Number(buyTrades[0].timestamp);
+
   // First poll: record latest trade and don't copy (avoid copying history)
   if (!wallet.lastTradeTimestamp) {
-    const latest = buyTrades[0];
-    wallet.lastTradeTimestamp = latest.timestamp;
-    wallet.lastTradeHash = latest.transactionHash;
+    wallet.lastTradeTimestamp = latestTs;
+    wallet.lastTradeHash = buyTrades[0].transactionHash;
     wallet.lastPollAt = new Date().toISOString();
-    console.log(` POLY TRACKER [${wallet.name}]: Initial sync - recorded latest trade at ${latest.timestamp}`);
+    console.log(` POLY TRACKER [${wallet.name}]: Initial sync - recorded latest trade at ${latestTs} (${new Date(latestTs * 1000).toISOString()}), ${buyTrades.length} recent BUY trades`);
     return [];
   }
 
-  // Find new trades since last poll
+  // Find new trades since last poll (numeric timestamp comparison)
+  const lastTs = Number(wallet.lastTradeTimestamp);
   const newTrades = buyTrades.filter(t => {
     if (t.transactionHash === wallet.lastTradeHash) return false;
-    return t.timestamp > wallet.lastTradeTimestamp;
+    return Number(t.timestamp) > lastTs;
   });
 
   // Update last seen
   if (newTrades.length > 0) {
-    const latest = newTrades[0];
-    wallet.lastTradeTimestamp = latest.timestamp;
-    wallet.lastTradeHash = latest.transactionHash;
+    wallet.lastTradeTimestamp = Number(newTrades[0].timestamp);
+    wallet.lastTradeHash = newTrades[0].transactionHash;
+    console.log(` POLY TRACKER [${wallet.name}]: Found ${newTrades.length} new trades! Latest: "${newTrades[0].title}" (${newTrades[0].outcome})`);
   }
   wallet.lastPollAt = new Date().toISOString();
 
@@ -540,11 +544,20 @@ async function pollPolyWallet(wallet) {
 async function runPolyCycle(userId, followerConfig) {
   const state = getPolyState(userId);
 
+  if (state.wallets.filter(w => w.enabled).length === 0) {
+    return;
+  }
+
   for (const wallet of state.wallets) {
     if (!wallet.enabled) continue;
 
     try {
       const newTrades = await pollPolyWallet(wallet);
+
+      if (newTrades.length === 0) {
+        // Heartbeat log so you know it's alive
+        console.log(` POLY POLL [${wallet.name}]: polled OK, no new trades (last seen: ${wallet.lastTradeTimestamp || 'syncing'}, copies: ${getCopiesInLastHour(wallet)}/${wallet.maxCopiesPerHour}/hr)`);
+      }
 
       for (const trade of newTrades) {
         const result = await mirrorPolyTrade(trade, wallet, followerConfig);

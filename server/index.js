@@ -10120,7 +10120,7 @@ app.get('/api/poly-trading/status', (req, res) => {
 app.post('/api/poly-trading/wallets', async (req, res) => {
   if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
 
-  const { name, walletAddress, scaleFactor, maxBetCents, assetsFilter } = req.body;
+  const { name, walletAddress, scaleFactor, maxBetCents, assetsFilter, maxCopiesPerHour, timeframes } = req.body;
   if (!walletAddress) {
     return res.status(400).json({ success: false, error: 'Wallet address is required' });
   }
@@ -10136,7 +10136,7 @@ app.post('/api/poly-trading/wallets', async (req, res) => {
   }
 
   try {
-    const wallet = addPolyWallet(req.userId, { name, walletAddress, scaleFactor, maxBetCents, assetsFilter });
+    const wallet = addPolyWallet(req.userId, { name, walletAddress, scaleFactor, maxBetCents, assetsFilter, maxCopiesPerHour, timeframes });
 
     // Persist
     const userConfig = req.userState.config;
