@@ -1244,8 +1244,20 @@ async function checkPendingSettlements() {
           const expiryMs = new Date(expiryTime).getTime();
           const settlementDelay = Date.now() - expiryMs;
           if (settlementDelay > 120000) {
-            // More than 2 minutes past expiry price has likely moved, skip price-based settlement
-            console.log(` Skipping price-based settlement for ${bet.id}: ${(settlementDelay/1000).toFixed(0)}s past expiry (price may be stale)`);
+            // More than 2 minutes past expiry — price has likely moved, skip price-based settlement
+            // Cap log spam: only log first 5 attempts, then suppress until timeout
+            if (!bet._settlementAttempts) bet._settlementAttempts = 0;
+            bet._settlementAttempts++;
+            if (bet._settlementAttempts <= 5) {
+              console.log(` Skipping price-based settlement for ${bet.id}: ${(settlementDelay/1000).toFixed(0)}s past expiry (price may be stale)`);
+            } else if (bet._settlementAttempts === 6) {
+              console.log(` Settlement for ${bet.id}: suppressing further logs (waiting for Kalshi API result)`);
+            }
+            // After 30 minutes of retries, force-settle as lost (Kalshi API never responded)
+            if (settlementDelay > 30 * 60 * 1000) {
+              console.log(` Settlement TIMEOUT for ${bet.id}: ${(settlementDelay/1000).toFixed(0)}s past expiry — forcing loss`);
+              settleBet(bet.id, 'lost', null, 0);
+            }
           } else {
             // Market should have settled - determine outcome from price
             const isAbove = currentPrice >= bet.strikePrice;
@@ -5551,15 +5563,22 @@ async function _runAutoBetInner(userId = null) {
       }
     }
     // Filter out opportunities for tokens that would exceed the per-window limit
-    const correlationFiltered = opportunities.filter(m => {
+    // BUG FIX: Use incremental tracking so tokens added in THIS scan count toward the limit.
+    // Old code used .filter() which didn't update tokensInWindow between iterations,
+    // so an empty recentBets let all 4 tokens through in the same scan.
+    const tokensThisScan = new Set(tokensInWindow);
+    const correlationFiltered = [];
+    for (const m of opportunities) {
       const oppToken = m.cryptoType || m.assetType || getTokenFromTicker(m.ticker);
-      if (tokensInWindow.has(oppToken)) return true; // Already bet this token, allow scale-in
-      if (tokensInWindow.size >= maxTokensPerWindow) {
-        console.log(` CORRELATION GUARD: Skipping ${oppToken} — already bet ${[...tokensInWindow].join(', ')} this window (max ${maxTokensPerWindow})`);
-        return false;
+      if (tokensThisScan.has(oppToken)) {
+        correlationFiltered.push(m); // Already bet this token, allow scale-in
+      } else if (tokensThisScan.size >= maxTokensPerWindow) {
+        console.log(` CORRELATION GUARD: Skipping ${oppToken} — already have ${[...tokensThisScan].join(', ')} this window (max ${maxTokensPerWindow})`);
+      } else {
+        tokensThisScan.add(oppToken); // New token, count it toward the limit
+        correlationFiltered.push(m);
       }
-      return true;
-    });
+    }
     if (correlationFiltered.length === 0 && opportunities.length > 0) {
       console.log(` All ${opportunities.length} opportunities blocked by correlation guard (${[...tokensInWindow].join(', ')} already bet)`);
       lastScanStatus.status = 'no_opportunities';
@@ -6438,6 +6457,14 @@ function shouldSitOut(tables, token = null) {
     reasons.push(`Economic event: ${activeEvent.name} (sit out ${activeEvent.sitOutMinutes}min window)`);
   }
 
+  // Low-liquidity hours: 05:00-14:00 UTC (midnight-9AM EST)
+  // Kalshi crypto orderbooks are empty ("phantom markets"), orders go unfilled,
+  // and the few that fill tend to lose. Empirical: 0 wins from late-night fills.
+  const utcHour = new Date().getUTCHours();
+  if (utcHour >= 5 && utcHour < 14) {
+    reasons.push(`Low-liquidity hours (${utcHour}:00 UTC — sit out 05:00-14:00 UTC)`);
+  }
+
   // maxBetsPerHour — prevent overtrading in choppy markets
   const maxPerHour = config?.selectivityRules?.maxBetsPerHour ?? 15;
   const oneHourAgo = Date.now() - 3600000;
@@ -7208,6 +7235,15 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   // NO bias: win rate adjustment already applied in edge calculation (lines ~6659-6674)
   // Removed duplicate signal strength adjustment here to prevent double-counting
+
+  // YES SIDE PENALTY: Empirical data shows YES bets win ~4% vs NO ~52% across all tokens
+  // The model consistently overestimates YES probability. Rather than hard-blocking,
+  // apply a heavy signal penalty so only very strong signals can overcome it.
+  if (betSide === 'YES') {
+    const yesPenalty = -15;
+    adjustedSignalStrength += yesPenalty;
+    windowPenalties.push(`YES-side ${yesPenalty}pts (historical underperformance)`);
+  }
 
   // Same-side saturation: penalize one-sided streaks per token
   // Tokens with high NO bias (like SOL 4.44%) trigger at 2 consecutive YES bets
