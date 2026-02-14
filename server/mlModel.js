@@ -152,7 +152,7 @@ function extractMLFeatures(params) {
     fundingRate: fundingRate * 1000, // Scale up for tree splits (0.0001 → 0.1)
     // v3.2 features
     isHourly: 0,
-    durationRatio: 0.25,
+    durationRatio: 1.0,
     buyPressure15m,
     buyPressure30m,
     trajectoryScore,
@@ -642,6 +642,9 @@ function buildMLTrainingData(settlements) {
       }
     } catch (e) {}
 
+    // Use neutral 50% when no real market price data — avoids data leakage
+    // when absDistance is derived from settlement price rather than betting-time price
+    const marketImpliedProb = s.bettingTimePct != null ? 50 + absDistance * 5 : 50;
     const features = extractMLFeatures({
       absDistance,
       timeRemaining,
@@ -650,7 +653,7 @@ function buildMLTrainingData(settlements) {
       momentum1m: 0,
       momentum5m: 0,
       volatility: 0.02,
-      marketImpliedProb: 50 + absDistance * 5,
+      marketImpliedProb,
       spread: 0,
       btcMomentum1m: 0,
       volOfVol: 0,

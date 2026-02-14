@@ -1224,7 +1224,8 @@ async function checkPendingSettlements() {
           if (market.market?.result) {
             const result = market.market.result; // 'yes' or 'no'
             const won = (bet.side.toLowerCase() === result);
-            const profit = won ? (bet.contracts * 100 - bet.totalCost) : 0;
+            const contracts = bet.contracts || Math.floor((bet.totalCost || 0) / (bet.priceCents || 1));
+            const profit = won ? (contracts * 100 - (bet.totalCost || 0)) : 0;
             settleBet(bet.id, won ? 'won' : 'lost', market.market.settlement_value, profit);
             console.log(` Settled bet ${bet.id}: ${won ? 'WON' : 'LOST'} (${bet.side} on ${bet.ticker})`);
           }
@@ -1238,7 +1239,13 @@ async function checkPendingSettlements() {
         const currentPrice = cryptoPrices[bet.token]?.price;
         const priceAge = Date.now() - (cryptoPrices[bet.token]?.timestamp || 0);
         // Use inferred expiryTime (variable from above) which may have been set earlier in this iteration
-        if (currentPrice && expiryTime && new Date(expiryTime) <= new Date()) {
+        // Reject stale prices (>60s old) — they give wrong settlement results
+        if (priceAge > 60000) {
+          if (!bet._staleLogCount) bet._staleLogCount = 0;
+          if (bet._staleLogCount++ < 3) {
+            console.log(` Skipping price-based settlement for ${bet.id}: price is ${(priceAge/1000).toFixed(0)}s stale`);
+          }
+        } else if (currentPrice && expiryTime && new Date(expiryTime) <= new Date()) {
           // Only settle from price if data is fresh (within 60s of expiry)
           // Stale prices give wrong settlement results
           const expiryMs = new Date(expiryTime).getTime();
@@ -1263,7 +1270,8 @@ async function checkPendingSettlements() {
             const isAbove = currentPrice >= bet.strikePrice;
             const won = (bet.side.toLowerCase() === 'yes' && isAbove) ||
                         (bet.side.toLowerCase() === 'no' && !isAbove);
-            const profit = won ? (bet.contracts * 100 - bet.totalCost) : 0;
+            const contracts2 = bet.contracts || Math.floor((bet.totalCost || 0) / (bet.priceCents || 1));
+            const profit = won ? (contracts2 * 100 - (bet.totalCost || 0)) : 0;
             settleBet(bet.id, won ? 'won' : 'lost', currentPrice, profit);
             console.log(` Settled bet ${bet.id} via price: ${won ? 'WON' : 'LOST'} (${bet.side} ${bet.token} @ strike $${bet.strikePrice}, current $${currentPrice}, delay=${(settlementDelay/1000).toFixed(0)}s)`);
           }
@@ -1822,8 +1830,8 @@ function recordAggTrade(token, quantity, isSell, timestamp) {
   const bucket = aggTradeVolume[token];
   if (!bucket) return;
   bucket.trades.push({ qty: quantity, isSell, ts: timestamp });
-  // Prune older than 5 min
-  const cutoff = timestamp - 5 * 60 * 1000;
+  // Prune older than 30 min (needed for 30-min buy pressure calculation)
+  const cutoff = timestamp - 30 * 60 * 1000;
   while (bucket.trades.length > 0 && bucket.trades[0].ts < cutoff) {
     bucket.trades.shift();
   }
@@ -2890,83 +2898,6 @@ function calculateTakeProfitUrgency(position, market, momentum, profitPercent) {
  * Uses distance from strike, time remaining, and volatility to make smarter exit decisions
  * @returns {number} Stop-loss threshold (e.g., -15 means exit at -15% loss)
  */
-function calculateSmartStopLoss(position, market, profitPercent, userConfig) {
-  const cfg = userConfig || config;
-  // Use activeMonitoring settings, fall back to limitOrderSettings for backwards compatibility
-  const defaultStopLoss = cfg.activeMonitoring?.stopLossThreshold || cfg.limitOrderSettings?.stopLoss?.threshold || -40;
-
-  // Need market data for smart decisions
-  if (!market || !market.close_time) {
-    return defaultStopLoss;
-  }
-
-  const token = getTokenFromTicker(position.ticker);
-  const timeRemaining = (new Date(market.close_time).getTime() - Date.now()) / 60000; // minutes
-
-  // Calculate distance from strike
-  const parsed = parseMarket(market);
-  const strikePrice = parsed?.strikePrice || 0;
-  const currentPrice = cryptoPrices[token]?.price;
-
-  if (!currentPrice || !strikePrice) {
-    return defaultStopLoss;
-  }
-
-  const pctFromStrike = Math.abs(currentPrice - strikePrice) / strikePrice * 100;
-
-  const empirical = lookupEmpiricalWinRate(pctFromStrike, token);
-  const regime = detectVolatilityRegime(token);
-
-  // CRITICAL: Determine if our position is favored or underdog
-  // YES bet wins if price ends ABOVE strike
-  // NO bet wins if price ends BELOW strike
-  const positionSide = position.side || (position.position > 0 ? 'yes' : 'no');
-  const priceAboveStrike = currentPrice > strikePrice;
-
-  // Are we the favored side?
-  const positionIsFavored = (positionSide === 'yes' && priceAboveStrike) ||
-                            (positionSide === 'no' && !priceAboveStrike);
-
-  // Use the CORRECT win rate based on whether we're favored or underdog
-  // If we're the underdog (losing side), use surpriseRate as our recovery chance
-  const baseRecoveryChance = positionIsFavored ? empirical.winRate : empirical.surpriseRate;
-  const recoveryChance = Math.min(99.5, baseRecoveryChance * (regime.multiplier || 1.0));
-
-  // Log for debugging
-  if (profitPercent < 0) {
-    console.log(`[SmartStopLoss] ${position.ticker}: side=${positionSide}, price ${priceAboveStrike ? 'ABOVE' : 'BELOW'} strike, ` +
-                `favored=${positionIsFavored}, recovery=${recoveryChance.toFixed(1)}% (${positionIsFavored ? 'favored' : 'underdog'})`);
-  }
-
-  // Dynamic stop-loss based on recovery probability and time
-  let stopLossThreshold = defaultStopLoss;
-
-  // Coin-flip territory: very close to strike with little time
-  const coinFlipThreshold = learnedParams?.byToken?.[token]?.coinFlipThreshold || 0.1;
-  if (pctFromStrike < coinFlipThreshold && timeRemaining < 3) {
-    // Exit anything unprofitable - it's a coin flip
-    stopLossThreshold = Math.max(stopLossThreshold, -5);
-    console.log(`[SmartStopLoss] ${position.ticker}: Coin-flip territory (${pctFromStrike.toFixed(3)}% from strike, ${timeRemaining.toFixed(1)}min left) threshold: ${stopLossThreshold}%`);
-  }
-  // Low recovery chance with limited time
-  else if (recoveryChance < 55 && timeRemaining < 5) {
-    stopLossThreshold = Math.max(stopLossThreshold, -15);
-    console.log(`[SmartStopLoss] ${position.ticker}: Low recovery (${recoveryChance.toFixed(0)}%) + limited time (${timeRemaining.toFixed(1)}min) threshold: ${stopLossThreshold}%`);
-  }
-  // Very low recovery chance regardless of time
-  else if (recoveryChance < 45) {
-    stopLossThreshold = Math.max(stopLossThreshold, -10);
-    console.log(`[SmartStopLoss] ${position.ticker}: Very low recovery (${recoveryChance.toFixed(0)}%) threshold: ${stopLossThreshold}%`);
-  }
-  // Near expiry with any loss
-  else if (timeRemaining < 2 && profitPercent < -10) {
-    stopLossThreshold = Math.max(stopLossThreshold, -8);
-    console.log(`[SmartStopLoss] ${position.ticker}: Near expiry (${timeRemaining.toFixed(1)}min) at ${profitPercent.toFixed(1)}% threshold: ${stopLossThreshold}%`);
-  }
-
-  return stopLossThreshold;
-}
-
 /**
  * Smart take-profit evaluation
  * Considers multiple factors to decide when to lock in gains
@@ -4527,7 +4458,8 @@ app.post('/api/bet', async (req, res) => {
 
     // Real bet - use limit order slightly above ask to ensure fill
     // Add 2 cent buffer to improve fill rate
-    const fillSlippage = userConfig.selectivityRules?.fillSlippageCents ?? 3;
+    const baseFillSlippage1 = userConfig.selectivityRules?.fillSlippageCents ?? 3;
+    const fillSlippage = baseFillSlippage1;
     const fillPrice = Math.min(priceCents + fillSlippage, 99);
 
     // Generate idempotency key to prevent duplicate orders on timeout/retry
@@ -4978,7 +4910,8 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
     }
 
     // Real bet - use limit order slightly above ask to ensure fill
-    const fillSlippage = userConfig.selectivityRules?.fillSlippageCents ?? 3;
+    const baseFillSlippage2 = userConfig.selectivityRules?.fillSlippageCents ?? 3;
+    const fillSlippage = baseFillSlippage2;
     const fillPrice = Math.min(priceCents + fillSlippage, 99);
 
     const orderRequest = {
@@ -5717,10 +5650,10 @@ async function _runAutoBetInner(userId = null) {
     const aggKellyBet = isLowVol
       ? Math.max(0, Math.round(0.5 * (best.edge / 100) / Math.max(0.01, 1 - best.betPrice) * bankroll * confidenceScale))
       : kellyBet;
-    // Cap at cycle budget, floor at 1 contract
-    const MAX_BET_CENTS = Math.min(hardCapCents, Math.max(priceCents, aggKellyBet));
+    // Cap at cycle budget — don't force minimum 1 contract if Kelly says bet is too small
+    const MAX_BET_CENTS = Math.min(hardCapCents, aggKellyBet);
 
-    console.log(` Bet sizing: Kelly=${(kellyFraction*100).toFixed(1)}% bankroll=$${(bankroll/100).toFixed(2)} kellyBet=$${(aggKellyBet/100).toFixed(2)}${isLowVol ? ' (1/3 low-vol)' : ''} confidence=${(confidenceScale*100).toFixed(0)}% (${sampleSize} samples) capped=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
+    console.log(` Bet sizing: Kelly=${(kellyFraction*100).toFixed(1)}% bankroll=$${(bankroll/100).toFixed(2)} kellyBet=$${(aggKellyBet/100).toFixed(2)}${isLowVol ? ' (1/2 low-vol)' : ''} confidence=${(confidenceScale*100).toFixed(0)}% (${sampleSize} samples) capped=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
 
     // Calculate contracts but cap total cost
     let count = Math.floor(MAX_BET_CENTS / priceCents);
@@ -5847,7 +5780,9 @@ async function _runAutoBetInner(userId = null) {
     }
 
     // Real bet - use limit order slightly above ask to ensure fill
-    const fillSlippage = userConfig.selectivityRules?.fillSlippageCents ?? 3;
+    // Match edge calc's regime-adjusted slippage: low-vol = calmer books = tighter limit
+    const baseFillSlippage3 = userConfig.selectivityRules?.fillSlippageCents ?? 3;
+    const fillSlippage = best.regime === 'low' ? Math.max(1, baseFillSlippage3 - 2) : baseFillSlippage3;
     const fillPrice = Math.min(priceCents + fillSlippage, 99);
 
     // Fix 1: Track the attempt BEFORE placing order so side-flip protection works even on unfilled orders
@@ -6993,6 +6928,12 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       adjustedWinRate += timeBoost;
       console.log(` Time-decay boost: +${timeBoost.toFixed(1)}% (${timeRemaining.toFixed(1)}min left, ${absDistance.toFixed(2)}% dist) → ${adjustedWinRate.toFixed(1)}%`);
     }
+  }
+
+  // HARD CAP: win rate can never exceed 98% regardless of stacking adjustments
+  if (adjustedWinRate > 98) {
+    console.log(` Win rate capped: ${adjustedWinRate.toFixed(1)}% → 98%`);
+    adjustedWinRate = 98;
   }
 
   console.log(` Edge calc: empirical=${empirical.winRate.toFixed(1)}% vs market=${marketImpliedProb.toFixed(0)}% @ distance=${absDistance.toFixed(2)}%`);
