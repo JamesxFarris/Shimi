@@ -130,7 +130,7 @@ function extractMLFeatures(params) {
     momentum1m,
     momentum5m,
     volatility: volatility * 100,
-    volToDistance: absDistance > 0 ? (volatility * 100) / absDistance : 0,
+    volToDistance: absDistance > 0 ? Math.min(1000, (volatility * 100) / absDistance) : 0,
     marketImpliedProb: marketImpliedProb / 100,
     priceDeviation: (marketImpliedProb - 50) / 50,
     spread,
