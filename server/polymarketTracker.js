@@ -247,11 +247,14 @@ function parsePolyMarketTitle(title, slug, outcome) {
 
   if (!asset) return null; // Not a crypto market we can match
 
-  // Detect timeframe
+  // Detect timeframe -- order matters: check 15m before 1m to avoid partial matches
   let timeframe = null;
   if (titleLower.includes('15 min') || slugLower.includes('15m')) timeframe = '15m';
   else if (titleLower.includes('1 hour') || slugLower.includes('1h')) timeframe = '1h';
   else if (titleLower.includes('4 hour') || slugLower.includes('4h')) timeframe = '4h';
+  else if (titleLower.includes('5 min') || slugLower.includes('5m')) timeframe = '5m';
+  else if (titleLower.includes('1 min') || slugLower.includes('1m')) timeframe = '1m';
+  else if (titleLower.includes('10 min') || slugLower.includes('10m')) timeframe = '10m';
 
   // Detect direction from outcome
   let direction = null;
@@ -305,10 +308,15 @@ function findMatchingKalshiMarket(parsed, kalshiMarkets, allowedTimeframes) {
   const prefix = KALSHI_TICKER_PREFIX[parsed.asset];
   if (!prefix) return null;
 
-  // Determine which Kalshi series to search based on Polymarket timeframe
-  // Kalshi uses suffix H for hourly (e.g. KXBTCH), no suffix for 15m (KXBTC)
+  // Only copy 15m and 1h markets -- Kalshi doesn't have 5m/1m/10m
+  // Reject any timeframe that isn't 15m or 1h
   const isHourly = parsed.timeframe === '1h' || parsed.timeframe === '4h';
-  const is15m = parsed.timeframe === '15m' || !parsed.timeframe;
+  const is15m = parsed.timeframe === '15m';
+
+  if (!isHourly && !is15m) {
+    // 5m, 1m, 10m, or unknown timeframe -- no Kalshi equivalent
+    return null;
+  }
 
   // Check if this timeframe is allowed by the wallet config
   if (allowedTimeframes && allowedTimeframes.length > 0) {
@@ -316,13 +324,10 @@ function findMatchingKalshiMarket(parsed, kalshiMarkets, allowedTimeframes) {
     if (!allowedTimeframes.includes(tf)) return null;
   }
 
-  // For hourly markets, look for KXBTCH / KXETHH / etc
-  // For 15m markets, look for KXBTC / KXETH / etc
+  // Kalshi uses suffix H for hourly (e.g. KXBTCH), no suffix for 15m (KXBTC)
   const seriesPrefixes = [];
   if (isHourly) seriesPrefixes.push(prefix + 'H');
   if (is15m) seriesPrefixes.push(prefix);
-  // If timeframe unknown, try both
-  if (!parsed.timeframe) seriesPrefixes.push(prefix + 'H');
 
   // Filter to markets matching the asset + timeframe series
   const assetMarkets = kalshiMarkets.filter(m => {
@@ -510,27 +515,31 @@ async function pollPolyWallet(wallet) {
     return [];
   }
 
+  // Polymarket timestamps are Unix seconds (e.g. 1771076079)
+  // Ensure numeric comparison
+  const latestTs = Number(buyTrades[0].timestamp);
+
   // First poll: record latest trade and don't copy (avoid copying history)
   if (!wallet.lastTradeTimestamp) {
-    const latest = buyTrades[0];
-    wallet.lastTradeTimestamp = latest.timestamp;
-    wallet.lastTradeHash = latest.transactionHash;
+    wallet.lastTradeTimestamp = latestTs;
+    wallet.lastTradeHash = buyTrades[0].transactionHash;
     wallet.lastPollAt = new Date().toISOString();
-    console.log(` POLY TRACKER [${wallet.name}]: Initial sync - recorded latest trade at ${latest.timestamp}`);
+    console.log(` POLY TRACKER [${wallet.name}]: Initial sync - recorded latest trade at ${latestTs} (${new Date(latestTs * 1000).toISOString()}), ${buyTrades.length} recent BUY trades`);
     return [];
   }
 
-  // Find new trades since last poll
+  // Find new trades since last poll (numeric timestamp comparison)
+  const lastTs = Number(wallet.lastTradeTimestamp);
   const newTrades = buyTrades.filter(t => {
     if (t.transactionHash === wallet.lastTradeHash) return false;
-    return t.timestamp > wallet.lastTradeTimestamp;
+    return Number(t.timestamp) > lastTs;
   });
 
   // Update last seen
   if (newTrades.length > 0) {
-    const latest = newTrades[0];
-    wallet.lastTradeTimestamp = latest.timestamp;
-    wallet.lastTradeHash = latest.transactionHash;
+    wallet.lastTradeTimestamp = Number(newTrades[0].timestamp);
+    wallet.lastTradeHash = newTrades[0].transactionHash;
+    console.log(` POLY TRACKER [${wallet.name}]: Found ${newTrades.length} new trades! Latest: "${newTrades[0].title}" (${newTrades[0].outcome})`);
   }
   wallet.lastPollAt = new Date().toISOString();
 
@@ -540,11 +549,20 @@ async function pollPolyWallet(wallet) {
 async function runPolyCycle(userId, followerConfig) {
   const state = getPolyState(userId);
 
+  if (state.wallets.filter(w => w.enabled).length === 0) {
+    return;
+  }
+
   for (const wallet of state.wallets) {
     if (!wallet.enabled) continue;
 
     try {
       const newTrades = await pollPolyWallet(wallet);
+
+      if (newTrades.length === 0) {
+        // Heartbeat log so you know it's alive
+        console.log(` POLY POLL [${wallet.name}]: polled OK, no new trades (last seen: ${wallet.lastTradeTimestamp || 'syncing'}, copies: ${getCopiesInLastHour(wallet)}/${wallet.maxCopiesPerHour}/hr)`);
+      }
 
       for (const trade of newTrades) {
         const result = await mirrorPolyTrade(trade, wallet, followerConfig);
