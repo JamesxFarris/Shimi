@@ -367,9 +367,9 @@ function findMatchingKalshiMarket(parsed, kalshiMarkets, allowedTimeframes) {
 }
 
 function extractStrikeFromTicker(ticker) {
-  // Kalshi tickers like KXBTC-26FEB14-T1530-B66000
-  // The B66000 part is the strike price
-  const match = (ticker || '').match(/[BA](\d+(?:\.\d+)?)/);
+  // Kalshi tickers like KXBTC-26FEB14-T1530-B96500 or -A97000
+  // The last segment after -B or -A is the strike price
+  const match = (ticker || '').match(/-[BA](\d+(?:\.\d+)?)$/);
   if (match) return parseFloat(match[1]);
   return null;
 }
@@ -424,11 +424,13 @@ async function mirrorPolyTrade(trade, wallet, followerConfig) {
   const kalshiMarket = findMatchingKalshiMarket(parsed, kalshiMarkets, wallet.timeframes);
 
   if (!kalshiMarket) {
+    const isUnsupported = parsed.timeframe && !['15m', '1h'].includes(parsed.timeframe);
     return {
       status: 'no_match',
-      reason: 'no_kalshi_equivalent',
+      reason: isUnsupported ? `${parsed.timeframe}_not_on_kalshi` : 'no_kalshi_equivalent',
       asset: parsed.asset,
       direction: parsed.direction,
+      timeframe: parsed.timeframe,
       polyTitle: trade.title,
       walletName: wallet.name,
       timestamp: new Date().toISOString(),
