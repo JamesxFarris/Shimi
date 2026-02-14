@@ -31,6 +31,7 @@ import {
   startPolyTracker, stopPolyTracker, getPolyTrackerStatus,
   serializePolyState, loadPolyState, fetchPolyPositions, fetchPolyProfile
 } from './polymarketTracker.js';
+import { analyzeWallet } from './walletAnalyzer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -10216,6 +10217,48 @@ app.get('/api/poly-trading/preview/:walletAddress', async (req, res) => {
     res.json({ success: true, positions: positions || [], profile });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ============================================
+// WALLET ANALYZER ENDPOINTS
+// ============================================
+
+// Analyze a Polymarket wallet's trading strategy
+app.get('/api/wallet-analysis/:walletAddress', async (req, res) => {
+  const { walletAddress } = req.params;
+  const depth = parseInt(req.query.depth) || 200;
+
+  try {
+    const analysis = await analyzeWallet(walletAddress, { depth: Math.min(depth, 500) });
+    res.json(analysis);
+  } catch (err) {
+    console.error(`Wallet analysis error: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Quick check: just detect if a wallet is using both-sides strategy
+app.get('/api/wallet-analysis/:walletAddress/quick', async (req, res) => {
+  try {
+    const analysis = await analyzeWallet(req.params.walletAddress, { depth: 50, includePositions: false });
+    if (!analysis.success) return res.status(400).json(analysis);
+
+    res.json({
+      success: true,
+      walletAddress: analysis.walletAddress,
+      profileName: analysis.profileName,
+      primaryStrategy: analysis.strategy.primaryStrategy,
+      strategies: analysis.strategy.strategies,
+      confidence: analysis.strategy.confidence,
+      summary: analysis.strategy.summary,
+      bothSidesMarkets: analysis.arbitrage.bothSidesMarkets,
+      pureArbitrageMarkets: analysis.arbitrage.pureArbitrageMarkets,
+      tradesAnalyzed: analysis.tradesAnalyzed,
+      isBot: analysis.timing.isBot,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

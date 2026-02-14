@@ -616,6 +616,9 @@ function App() {
   const [polyLoading, setPolyLoading] = useState(false)
   const [polyError, setPolyError] = useState(null)
   const [showAddPolyWallet, setShowAddPolyWallet] = useState(false)
+  const [walletAnalysis, setWalletAnalysis] = useState(null)
+  const [walletAnalysisLoading, setWalletAnalysisLoading] = useState(false)
+  const [showWalletAnalysis, setShowWalletAnalysis] = useState(false)
 
   const fetchPolyStatus = useCallback(async () => {
     try {
@@ -1981,6 +1984,20 @@ function App() {
                               </span>
                             </div>
                             <div style={{ display: 'flex', gap: '6px' }}>
+                              <button className="disconnect-btn" style={{ padding: '3px 7px', fontSize: '11px', color: '#8b5cf6' }}
+                                onClick={async () => {
+                                  setWalletAnalysisLoading(true)
+                                  setShowWalletAnalysis(true)
+                                  setWalletAnalysis(null)
+                                  try {
+                                    const res = await authFetch(`${API_BASE}/api/wallet-analysis/${w.walletAddress}?depth=200`)
+                                    const data = await res.json()
+                                    setWalletAnalysis(data)
+                                  } catch (err) { setWalletAnalysis({ success: false, error: 'Connection failed' }) }
+                                  finally { setWalletAnalysisLoading(false) }
+                                }}
+                                disabled={walletAnalysisLoading}
+                              >{walletAnalysisLoading && showWalletAnalysis ? 'Analyzing...' : 'Analyze'}</button>
                               <button className="disconnect-btn" style={{ padding: '3px 7px', fontSize: '11px' }}
                                 onClick={async () => {
                                   const res = await authFetch(`${API_BASE}/api/poly-trading/wallets/${w.id}`, { method: 'PUT', body: JSON.stringify({ enabled: !w.enabled }) })
@@ -2089,6 +2106,278 @@ function App() {
                     </div>
                   </div>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* Wallet Analysis Modal */}
+          {showWalletAnalysis && (
+            <div className="modal-overlay" onClick={() => setShowWalletAnalysis(false)}>
+              <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '700px', maxHeight: '85vh', overflow: 'auto' }}>
+                <div className="modal-header">
+                  <h2>Wallet Strategy Analysis</h2>
+                  <button className="modal-close" onClick={() => setShowWalletAnalysis(false)}>x</button>
+                </div>
+
+                {walletAnalysisLoading && (
+                  <div style={{ textAlign: 'center', padding: '40px', color: '#8b5cf6' }}>
+                    <div style={{ fontSize: '16px', marginBottom: '8px' }}>Analyzing wallet trades...</div>
+                    <div style={{ opacity: 0.5, fontSize: '13px' }}>Fetching activity, detecting patterns, classifying strategy</div>
+                  </div>
+                )}
+
+                {walletAnalysis && !walletAnalysis.success && (
+                  <div className="auth-error" style={{ margin: '20px' }}>{walletAnalysis.error}</div>
+                )}
+
+                {walletAnalysis && walletAnalysis.success && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', padding: '0 4px' }}>
+                    {/* Header */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <div>
+                        <span style={{ fontFamily: 'monospace', fontSize: '13px', opacity: 0.5 }}>
+                          {walletAnalysis.walletAddress.slice(0, 10)}...{walletAnalysis.walletAddress.slice(-6)}
+                        </span>
+                        {walletAnalysis.profileName && <span style={{ marginLeft: '8px', color: '#8b5cf6' }}>{walletAnalysis.profileName}</span>}
+                      </div>
+                      <span style={{ fontSize: '12px', opacity: 0.4 }}>{walletAnalysis.tradesAnalyzed} trades analyzed</span>
+                    </div>
+
+                    {/* Primary Strategy */}
+                    <div style={{ padding: '14px', borderRadius: '10px', background: 'rgba(139,92,246,0.1)', border: '1px solid rgba(139,92,246,0.3)' }}>
+                      <div style={{ fontSize: '11px', textTransform: 'uppercase', opacity: 0.5, marginBottom: '6px' }}>Primary Strategy</div>
+                      <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#8b5cf6' }}>
+                        {walletAnalysis.strategy.primaryStrategy.replace(/_/g, ' ')}
+                      </div>
+                      {walletAnalysis.strategy.strategies.length > 1 && (
+                        <div style={{ marginTop: '8px', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                          {walletAnalysis.strategy.strategies.map(s => (
+                            <span key={s} style={{
+                              padding: '2px 8px', borderRadius: '4px', fontSize: '11px',
+                              background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+                            }}>
+                              {s.replace(/_/g, ' ')} ({walletAnalysis.strategy.confidence[s]}%)
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <pre style={{ marginTop: '10px', fontSize: '12px', whiteSpace: 'pre-wrap', opacity: 0.8, lineHeight: '1.5', fontFamily: 'inherit' }}>
+                        {walletAnalysis.strategy.summary}
+                      </pre>
+                    </div>
+
+                    {/* P&L */}
+                    <div className="settings-card" style={{ margin: 0 }}>
+                      <h3 className="settings-card-title">P&L Estimate</h3>
+                      <div className="settings-list">
+                        <div className="settings-item">
+                          <span className="settings-label">Total Bought</span>
+                          <span className="settings-value">${walletAnalysis.pnl.totalBought.toFixed(2)}</span>
+                        </div>
+                        <div className="settings-item">
+                          <span className="settings-label">Total Sold</span>
+                          <span className="settings-value">${walletAnalysis.pnl.totalSold.toFixed(2)}</span>
+                        </div>
+                        <div className="settings-item">
+                          <span className="settings-label">Fees</span>
+                          <span className="settings-value" style={{ color: '#ff8800' }}>${walletAnalysis.pnl.totalFees.toFixed(2)}</span>
+                        </div>
+                        <div className="settings-item">
+                          <span className="settings-label">Realized P&L</span>
+                          <span className="settings-value" style={{ color: walletAnalysis.pnl.realizedPnl >= 0 ? '#00ff88' : '#ff4444' }}>
+                            {walletAnalysis.pnl.realizedPnl >= 0 ? '+' : ''}${walletAnalysis.pnl.realizedPnl.toFixed(2)}
+                          </span>
+                        </div>
+                        <div className="settings-item">
+                          <span className="settings-label">ROI</span>
+                          <span className="settings-value" style={{ color: walletAnalysis.pnl.roi >= 0 ? '#00ff88' : '#ff4444' }}>
+                            {walletAnalysis.pnl.roi >= 0 ? '+' : ''}{walletAnalysis.pnl.roi}%
+                          </span>
+                        </div>
+                        <div className="settings-item">
+                          <span className="settings-label">Avg P&L / Trade</span>
+                          <span className="settings-value">${walletAnalysis.pnl.avgPnlPerTrade.toFixed(4)}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Both Sides / Arbitrage */}
+                    {walletAnalysis.arbitrage.bothSidesMarkets > 0 && (
+                      <div className="settings-card" style={{ margin: 0, borderLeft: '3px solid #ff8800' }}>
+                        <h3 className="settings-card-title">Both-Sides Detection</h3>
+                        <div className="settings-list">
+                          <div className="settings-item">
+                            <span className="settings-label">Markets w/ Both Sides</span>
+                            <span className="settings-value" style={{ color: '#ff8800' }}>{walletAnalysis.arbitrage.bothSidesMarkets}</span>
+                          </div>
+                          <div className="settings-item">
+                            <span className="settings-label">Pure Arbitrage (cost &lt; $1)</span>
+                            <span className="settings-value" style={{ color: '#00ff88' }}>{walletAnalysis.arbitrage.pureArbitrageMarkets}</span>
+                          </div>
+                          <div className="settings-item">
+                            <span className="settings-label">Hedged (cost &gt;= $1)</span>
+                            <span className="settings-value">{walletAnalysis.arbitrage.hedgedMarkets}</span>
+                          </div>
+                          <div className="settings-item">
+                            <span className="settings-label">Guaranteed Arb Profit</span>
+                            <span className="settings-value" style={{ color: '#00ff88' }}>${walletAnalysis.arbitrage.totalGuaranteedProfit.toFixed(2)}</span>
+                          </div>
+                        </div>
+                        {walletAnalysis.arbitrage.details.length > 0 && (
+                          <div style={{ marginTop: '10px', maxHeight: '200px', overflowY: 'auto' }}>
+                            <div style={{ fontSize: '11px', textTransform: 'uppercase', opacity: 0.5, marginBottom: '6px' }}>Top Both-Sides Markets</div>
+                            {walletAnalysis.arbitrage.details.slice(0, 10).map((arb, i) => (
+                              <div key={i} style={{
+                                padding: '6px 10px', marginBottom: '4px', borderRadius: '6px',
+                                background: arb.isArbitrage ? 'rgba(0,255,136,0.06)' : 'rgba(255,255,255,0.03)',
+                                border: `1px solid ${arb.isArbitrage ? 'rgba(0,255,136,0.15)' : 'rgba(255,255,255,0.06)'}`,
+                                fontSize: '12px',
+                              }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                  <span style={{ maxWidth: '60%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{arb.market}</span>
+                                  <span style={{ color: arb.isArbitrage ? '#00ff88' : '#888' }}>
+                                    {arb.isArbitrage ? `ARB +$${arb.guaranteedProfit.toFixed(2)}` : 'HEDGE'}
+                                  </span>
+                                </div>
+                                <div style={{ opacity: 0.5, fontSize: '11px', marginTop: '2px' }}>
+                                  YES: {arb.yesContracts} @ ${arb.yesAvgPrice.toFixed(2)} | NO: {arb.noContracts} @ ${arb.noAvgPrice.toFixed(2)} | Combined: ${arb.combinedCost.toFixed(3)}
+                                  {arb.timeBetweenSides && <> | gap: {arb.timeBetweenSides.formatted}</>}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Scalping */}
+                    {walletAnalysis.scalping.profitableRoundTrips > 0 && (
+                      <div className="settings-card" style={{ margin: 0, borderLeft: '3px solid #00bfff' }}>
+                        <h3 className="settings-card-title">Scalping Detected</h3>
+                        <div className="settings-list">
+                          <div className="settings-item">
+                            <span className="settings-label">Profitable Round-Trips</span>
+                            <span className="settings-value">{walletAnalysis.scalping.profitableRoundTrips}</span>
+                          </div>
+                          <div className="settings-item">
+                            <span className="settings-label">Est. Scalp Profit</span>
+                            <span className="settings-value" style={{ color: '#00ff88' }}>${walletAnalysis.scalping.totalScalpProfit.toFixed(2)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Timing */}
+                    <div className="settings-card" style={{ margin: 0 }}>
+                      <h3 className="settings-card-title">Timing Analysis</h3>
+                      <div className="settings-list">
+                        <div className="settings-item">
+                          <span className="settings-label">Trades / Day</span>
+                          <span className="settings-value">{walletAnalysis.timing.tradesPerDay}</span>
+                        </div>
+                        <div className="settings-item">
+                          <span className="settings-label">Avg Interval</span>
+                          <span className="settings-value">{walletAnalysis.timing.avgTimeBetweenTrades}</span>
+                        </div>
+                        <div className="settings-item">
+                          <span className="settings-label">Median Interval</span>
+                          <span className="settings-value">{walletAnalysis.timing.medianTimeBetweenTrades}</span>
+                        </div>
+                        <div className="settings-item">
+                          <span className="settings-label">Likely Bot?</span>
+                          <span className="settings-value" style={{ color: walletAnalysis.timing.isBot ? '#ff8800' : '#00ff88' }}>
+                            {walletAnalysis.timing.isBot ? 'Yes' : 'No'}
+                          </span>
+                        </div>
+                      </div>
+                      {walletAnalysis.timing.peakHours && (
+                        <div style={{ marginTop: '8px', fontSize: '12px', opacity: 0.6 }}>
+                          Peak hours (UTC): {walletAnalysis.timing.peakHours.slice(0, 3).map(h => `${h.hour}:00 (${h.count})`).join(', ')}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Sizing */}
+                    {walletAnalysis.sizing.count > 0 && (
+                      <div className="settings-card" style={{ margin: 0 }}>
+                        <h3 className="settings-card-title">Position Sizing</h3>
+                        <div className="settings-list">
+                          <div className="settings-item">
+                            <span className="settings-label">Total Volume</span>
+                            <span className="settings-value">${walletAnalysis.sizing.totalVolume.toFixed(2)}</span>
+                          </div>
+                          <div className="settings-item">
+                            <span className="settings-label">Avg Size</span>
+                            <span className="settings-value">${walletAnalysis.sizing.avgSize.toFixed(2)}</span>
+                          </div>
+                          <div className="settings-item">
+                            <span className="settings-label">Median Size</span>
+                            <span className="settings-value">${walletAnalysis.sizing.medianSize.toFixed(2)}</span>
+                          </div>
+                          <div className="settings-item">
+                            <span className="settings-label">Uniform Sizing?</span>
+                            <span className="settings-value" style={{ color: walletAnalysis.sizing.isUniformSizing ? '#ff8800' : '#888' }}>
+                              {walletAnalysis.sizing.isUniformSizing ? `Yes (${(walletAnalysis.sizing.coeffOfVariation * 100).toFixed(1)}% var)` : `No (${(walletAnalysis.sizing.coeffOfVariation * 100).toFixed(1)}% var)`}
+                            </span>
+                          </div>
+                        </div>
+                        {walletAnalysis.sizing.topSizes && walletAnalysis.sizing.topSizes.length > 0 && (
+                          <div style={{ marginTop: '8px', fontSize: '12px', opacity: 0.6 }}>
+                            Favorite sizes: {walletAnalysis.sizing.topSizes.slice(0, 3).map(s => `$${s.size} (${s.pct}%)`).join(', ')}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Preferences */}
+                    <div className="settings-card" style={{ margin: 0 }}>
+                      <h3 className="settings-card-title">Market Preferences</h3>
+                      <div className="settings-list">
+                        {walletAnalysis.preferences.assets.length > 0 && (
+                          <div className="settings-item">
+                            <span className="settings-label">Assets</span>
+                            <span className="settings-value">{walletAnalysis.preferences.assets.map(a => `${a.asset} (${a.count})`).join(', ')}</span>
+                          </div>
+                        )}
+                        {walletAnalysis.preferences.timeframes.length > 0 && (
+                          <div className="settings-item">
+                            <span className="settings-label">Timeframes</span>
+                            <span className="settings-value">{walletAnalysis.preferences.timeframes.map(t => `${t.timeframe} (${t.count})`).join(', ')}</span>
+                          </div>
+                        )}
+                        {walletAnalysis.preferences.marketTypes.length > 0 && (
+                          <div className="settings-item">
+                            <span className="settings-label">Market Types</span>
+                            <span className="settings-value">{walletAnalysis.preferences.marketTypes.map(t => `${t.type} (${t.count})`).join(', ')}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Recent Trades */}
+                    {walletAnalysis.recentTrades.length > 0 && (
+                      <div className="settings-card" style={{ margin: 0 }}>
+                        <h3 className="settings-card-title">Recent Trades ({walletAnalysis.recentTrades.length})</h3>
+                        <div style={{ maxHeight: '250px', overflowY: 'auto' }}>
+                          {walletAnalysis.recentTrades.slice(0, 20).map((t, i) => (
+                            <div key={i} style={{
+                              padding: '5px 10px', marginBottom: '3px', borderRadius: '4px', fontSize: '12px',
+                              background: t.side === 'BUY' ? 'rgba(0,255,136,0.04)' : 'rgba(255,68,68,0.04)',
+                              border: `1px solid ${t.side === 'BUY' ? 'rgba(0,255,136,0.1)' : 'rgba(255,68,68,0.1)'}`,
+                            }}>
+                              <span style={{ color: t.side === 'BUY' ? '#00ff88' : '#ff4444', fontWeight: 'bold', marginRight: '6px' }}>{t.side}</span>
+                              <span style={{ color: '#8b5cf6' }}>{t.outcome}</span>
+                              <span style={{ marginLeft: '6px', opacity: 0.7 }}>{t.title?.slice(0, 50)}</span>
+                              <span style={{ float: 'right', opacity: 0.5 }}>
+                                ${parseFloat(t.size || 0).toFixed(2)} @ {parseFloat(t.price || 0).toFixed(2)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
