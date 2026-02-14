@@ -39,7 +39,7 @@ function getPolyState(userId) {
 // WALLET MANAGEMENT
 // ============================================
 
-function addPolyWallet(userId, { name, walletAddress, scaleFactor = 1.0, maxBetCents = 500, assetsFilter = null }) {
+function addPolyWallet(userId, { name, walletAddress, scaleFactor = 1.0, maxBetCents = 500, assetsFilter = null, maxCopiesPerHour = 3, timeframes = null }) {
   const state = getPolyState(userId);
   const id = `poly_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
@@ -55,15 +55,19 @@ function addPolyWallet(userId, { name, walletAddress, scaleFactor = 1.0, maxBetC
     walletAddress: addr,
     scaleFactor: Math.max(0.01, Math.min(10, scaleFactor)),
     maxBetCents: Math.max(50, Math.min(10000, maxBetCents)),
+    maxCopiesPerHour: Math.max(1, Math.min(20, maxCopiesPerHour)), // rate limit
+    timeframes: timeframes || ['15m', '1h'],  // which timeframes to copy
     assetsFilter,  // null = all, or ['BTC', 'ETH', 'SOL']
     enabled: true,
     addedAt: new Date().toISOString(),
     lastPollAt: null,
     lastTradeTimestamp: null,
     lastTradeHash: null,
+    recentCopyTimestamps: [],  // timestamps of recent copies for rate limiting
     stats: {
       totalCopied: 0,
       totalSkipped: 0,
+      totalRateLimited: 0,
       totalNoMatch: 0,
       totalErrored: 0,
     },
@@ -89,6 +93,8 @@ function updatePolyWallet(userId, walletId, updates) {
   if (updates.name !== undefined) wallet.name = updates.name;
   if (updates.scaleFactor !== undefined) wallet.scaleFactor = Math.max(0.01, Math.min(10, updates.scaleFactor));
   if (updates.maxBetCents !== undefined) wallet.maxBetCents = Math.max(50, Math.min(10000, updates.maxBetCents));
+  if (updates.maxCopiesPerHour !== undefined) wallet.maxCopiesPerHour = Math.max(1, Math.min(20, updates.maxCopiesPerHour));
+  if (updates.timeframes !== undefined) wallet.timeframes = updates.timeframes;
   if (updates.assetsFilter !== undefined) wallet.assetsFilter = updates.assetsFilter;
   if (updates.enabled !== undefined) wallet.enabled = updates.enabled;
 
@@ -103,12 +109,35 @@ function getPolyWallets(userId) {
     walletAddress: w.walletAddress,
     scaleFactor: w.scaleFactor,
     maxBetCents: w.maxBetCents,
+    maxCopiesPerHour: w.maxCopiesPerHour,
+    timeframes: w.timeframes,
     assetsFilter: w.assetsFilter,
     enabled: w.enabled,
     addedAt: w.addedAt,
     lastPollAt: w.lastPollAt,
+    copiesThisHour: getCopiesInLastHour(w),
     stats: w.stats,
   }));
+}
+
+// ============================================
+// RATE LIMITING
+// ============================================
+
+function getCopiesInLastHour(wallet) {
+  const oneHourAgo = Date.now() - 3600000;
+  // Prune old timestamps
+  wallet.recentCopyTimestamps = (wallet.recentCopyTimestamps || []).filter(ts => ts > oneHourAgo);
+  return wallet.recentCopyTimestamps.length;
+}
+
+function canCopyTrade(wallet) {
+  return getCopiesInLastHour(wallet) < wallet.maxCopiesPerHour;
+}
+
+function recordCopy(wallet) {
+  if (!wallet.recentCopyTimestamps) wallet.recentCopyTimestamps = [];
+  wallet.recentCopyTimestamps.push(Date.now());
 }
 
 // ============================================
@@ -258,8 +287,9 @@ async function refreshKalshiMarkets(followerConfig) {
   }
 
   try {
-    // Fetch active crypto markets from Kalshi
-    const data = await kalshiRequest('GET', '/markets?status=active&series_ticker=KXBTC,KXETH,KXSOL,KXXRP&limit=200', null, followerConfig);
+    // Fetch active crypto markets from Kalshi (15m and hourly series)
+    // KXBTC = 15m BTC, KXBTCH = hourly BTC, similar for ETH/SOL
+    const data = await kalshiRequest('GET', '/markets?status=active&series_ticker=KXBTC,KXBTCH,KXETH,KXETHH,KXSOL,KXSOLH,KXXRP&limit=200', null, followerConfig);
     kalshiMarketCache.markets = data.markets || [];
     kalshiMarketCache.lastFetched = now;
     return kalshiMarketCache.markets;
@@ -269,29 +299,45 @@ async function refreshKalshiMarkets(followerConfig) {
   }
 }
 
-function findMatchingKalshiMarket(parsed, kalshiMarkets) {
+function findMatchingKalshiMarket(parsed, kalshiMarkets, allowedTimeframes) {
   if (!parsed || !parsed.asset) return null;
 
   const prefix = KALSHI_TICKER_PREFIX[parsed.asset];
   if (!prefix) return null;
 
-  // Filter to markets matching the asset
-  const assetMarkets = kalshiMarkets.filter(m =>
-    m.ticker?.startsWith(prefix) || m.event_ticker?.startsWith(prefix)
-  );
+  // Determine which Kalshi series to search based on Polymarket timeframe
+  // Kalshi uses suffix H for hourly (e.g. KXBTCH), no suffix for 15m (KXBTC)
+  const isHourly = parsed.timeframe === '1h' || parsed.timeframe === '4h';
+  const is15m = parsed.timeframe === '15m' || !parsed.timeframe;
+
+  // Check if this timeframe is allowed by the wallet config
+  if (allowedTimeframes && allowedTimeframes.length > 0) {
+    const tf = isHourly ? '1h' : '15m';
+    if (!allowedTimeframes.includes(tf)) return null;
+  }
+
+  // For hourly markets, look for KXBTCH / KXETHH / etc
+  // For 15m markets, look for KXBTC / KXETH / etc
+  const seriesPrefixes = [];
+  if (isHourly) seriesPrefixes.push(prefix + 'H');
+  if (is15m) seriesPrefixes.push(prefix);
+  // If timeframe unknown, try both
+  if (!parsed.timeframe) seriesPrefixes.push(prefix + 'H');
+
+  // Filter to markets matching the asset + timeframe series
+  const assetMarkets = kalshiMarkets.filter(m => {
+    const ticker = m.ticker || '';
+    const eventTicker = m.event_ticker || '';
+    return seriesPrefixes.some(p => ticker.startsWith(p) || eventTicker.startsWith(p));
+  });
 
   if (assetMarkets.length === 0) return null;
 
-  // For 15-minute up/down markets, find the closest active market
-  // Kalshi 15m crypto markets have tickers like KXBTC-26FEB14-T1530-B66000
-  // We want the one that's currently active (closest to expiry but still open)
   const now = new Date();
-
   let bestMatch = null;
   let bestTimeDiff = Infinity;
 
   for (const market of assetMarkets) {
-    // Prefer markets that are still open and close soon (active 15m windows)
     const closeTime = market.close_time ? new Date(market.close_time) : null;
     if (!closeTime || closeTime < now) continue;
 
@@ -341,6 +387,19 @@ async function mirrorPolyTrade(trade, wallet, followerConfig) {
     };
   }
 
+  // Rate limit check -- don't spam bets
+  if (!canCopyTrade(wallet)) {
+    const copiesLeft = wallet.maxCopiesPerHour - getCopiesInLastHour(wallet);
+    return {
+      status: 'rate_limited',
+      reason: `${getCopiesInLastHour(wallet)}/${wallet.maxCopiesPerHour} copies this hour (limit reached)`,
+      asset: parsed.asset,
+      polyTitle: trade.title,
+      walletName: wallet.name,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
   // Apply asset filter
   if (wallet.assetsFilter && wallet.assetsFilter.length > 0) {
     if (!wallet.assetsFilter.includes(parsed.asset)) {
@@ -355,9 +414,9 @@ async function mirrorPolyTrade(trade, wallet, followerConfig) {
     }
   }
 
-  // Find matching Kalshi market
+  // Find matching Kalshi market (respects timeframe filter)
   const kalshiMarkets = await refreshKalshiMarkets(followerConfig);
-  const kalshiMarket = findMatchingKalshiMarket(parsed, kalshiMarkets);
+  const kalshiMarket = findMatchingKalshiMarket(parsed, kalshiMarkets, wallet.timeframes);
 
   if (!kalshiMarket) {
     return {
@@ -400,6 +459,7 @@ async function mirrorPolyTrade(trade, wallet, followerConfig) {
 
   try {
     const result = await kalshiRequest('POST', '/portfolio/orders', orderBody, followerConfig);
+    recordCopy(wallet); // track for rate limiting
     return {
       status: 'copied',
       polyTitle: trade.title,
@@ -407,9 +467,12 @@ async function mirrorPolyTrade(trade, wallet, followerConfig) {
       polyUsdcSize: polyUsdcSize.toFixed(2),
       asset: parsed.asset,
       direction: parsed.direction,
+      timeframe: parsed.timeframe || 'unknown',
       kalshiTicker: kalshiMarket.ticker,
       kalshiSide,
       copyCount,
+      copiesThisHour: getCopiesInLastHour(wallet),
+      maxCopiesPerHour: wallet.maxCopiesPerHour,
       orderId: result.order?.order_id,
       walletName: wallet.name,
       timestamp: new Date().toISOString(),
@@ -493,7 +556,10 @@ async function runPolyCycle(userId, followerConfig) {
         // Update stats
         if (result.status === 'copied') {
           wallet.stats.totalCopied++;
-          console.log(` POLY COPY [${wallet.name}]: ${result.copyCount}x ${result.kalshiSide} ${result.kalshiTicker} (from ${result.polyTitle})`);
+          console.log(` POLY COPY [${wallet.name}]: ${result.copyCount}x ${result.kalshiSide} ${result.kalshiTicker} [${result.timeframe}] (${result.copiesThisHour}/${result.maxCopiesPerHour} this hr)`);
+        } else if (result.status === 'rate_limited') {
+          wallet.stats.totalRateLimited++;
+          console.log(` POLY RATE LIMITED [${wallet.name}]: ${result.reason} - skipping ${result.polyTitle}`);
         } else if (result.status === 'skipped') {
           wallet.stats.totalSkipped++;
         } else if (result.status === 'no_match') {
@@ -570,6 +636,7 @@ function getPolyTrackerStatus(userId) {
       totalWallets: state.wallets.length,
       activeWallets: state.wallets.filter(w => w.enabled).length,
       totalCopied: state.wallets.reduce((s, w) => s + w.stats.totalCopied, 0),
+      totalRateLimited: state.wallets.reduce((s, w) => s + (w.stats.totalRateLimited || 0), 0),
       totalSkipped: state.wallets.reduce((s, w) => s + w.stats.totalSkipped, 0),
       totalNoMatch: state.wallets.reduce((s, w) => s + w.stats.totalNoMatch, 0),
       totalErrored: state.wallets.reduce((s, w) => s + w.stats.totalErrored, 0),
@@ -590,6 +657,8 @@ function serializePolyState(userId) {
       walletAddress: w.walletAddress,
       scaleFactor: w.scaleFactor,
       maxBetCents: w.maxBetCents,
+      maxCopiesPerHour: w.maxCopiesPerHour,
+      timeframes: w.timeframes,
       assetsFilter: w.assetsFilter,
       enabled: w.enabled,
       addedAt: w.addedAt,

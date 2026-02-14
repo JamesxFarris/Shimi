@@ -612,7 +612,7 @@ function App() {
 
   // Polymarket copy trading state
   const [polyStatus, setPolyStatus] = useState({ running: false, wallets: [], recentActivity: [], stats: { totalWallets: 0, activeWallets: 0, totalCopied: 0 } })
-  const [polyWalletForm, setPolyWalletForm] = useState({ name: '', walletAddress: '', scaleFactor: 1.0, maxBetCents: 500 })
+  const [polyWalletForm, setPolyWalletForm] = useState({ name: '', walletAddress: '', scaleFactor: 1.0, maxBetCents: 500, maxCopiesPerHour: 3, timeframes: ['15m', '1h'] })
   const [polyLoading, setPolyLoading] = useState(false)
   const [polyError, setPolyError] = useState(null)
   const [showAddPolyWallet, setShowAddPolyWallet] = useState(false)
@@ -1954,12 +1954,12 @@ function App() {
                       <span className="settings-value" style={{ color: '#00ff88' }}>{polyStatus.stats.totalCopied}</span>
                     </div>
                     <div className="settings-item">
-                      <span className="settings-label">No Kalshi Match</span>
-                      <span className="settings-value">{polyStatus.stats.totalNoMatch || 0}</span>
+                      <span className="settings-label">Rate Limited</span>
+                      <span className="settings-value" style={{ color: '#ff8800' }}>{polyStatus.stats.totalRateLimited || 0}</span>
                     </div>
                     <div className="settings-item">
-                      <span className="settings-label">Errors</span>
-                      <span className="settings-value">{polyStatus.stats.totalErrored || 0}</span>
+                      <span className="settings-label">No Kalshi Match</span>
+                      <span className="settings-value">{polyStatus.stats.totalNoMatch || 0}</span>
                     </div>
                   </div>
 
@@ -2006,7 +2006,17 @@ function App() {
                               <span className="settings-value">${(w.maxBetCents / 100).toFixed(2)}</span>
                             </div>
                             <div className="settings-item">
-                              <span className="settings-label">Copied</span>
+                              <span className="settings-label">Copies/hr</span>
+                              <span className="settings-value" style={{ color: (w.copiesThisHour || 0) >= w.maxCopiesPerHour ? '#ff8800' : '#00ff88' }}>
+                                {w.copiesThisHour || 0} / {w.maxCopiesPerHour}
+                              </span>
+                            </div>
+                            <div className="settings-item">
+                              <span className="settings-label">Timeframes</span>
+                              <span className="settings-value">{(w.timeframes || ['15m', '1h']).join(', ')}</span>
+                            </div>
+                            <div className="settings-item">
+                              <span className="settings-label">Total Copied</span>
                               <span className="settings-value">{w.stats.totalCopied}</span>
                             </div>
                           </div>
@@ -2031,8 +2041,8 @@ function App() {
                         }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                             <span>
-                              <strong style={{ color: item.status === 'copied' ? '#8b5cf6' : item.status === 'error' ? '#ff4444' : item.status === 'no_match' ? '#ff8800' : '#888' }}>
-                                {item.status === 'copied' ? 'COPIED' : item.status === 'error' ? 'ERROR' : item.status === 'no_match' ? 'NO MATCH' : 'SKIPPED'}
+                              <strong style={{ color: item.status === 'copied' ? '#8b5cf6' : item.status === 'error' ? '#ff4444' : item.status === 'no_match' ? '#ff8800' : item.status === 'rate_limited' ? '#ffaa00' : '#888' }}>
+                                {item.status === 'copied' ? 'COPIED' : item.status === 'error' ? 'ERROR' : item.status === 'no_match' ? 'NO MATCH' : item.status === 'rate_limited' ? 'RATE LIMITED' : 'SKIPPED'}
                               </strong>
                               {item.status === 'copied' && <> {item.copyCount}x {item.kalshiSide?.toUpperCase()} {item.kalshiTicker}</>}
                               {item.status !== 'copied' && <> {item.polyTitle?.slice(0, 50)}</>}
@@ -2041,7 +2051,7 @@ function App() {
                           </div>
                           {item.status === 'copied' && (
                             <div style={{ opacity: 0.5, fontSize: '11px', marginTop: '2px' }}>
-                              from: {item.polyTitle?.slice(0, 60)} ({item.polyOutcome}) · ${item.polyUsdcSize}
+                              from: {item.polyTitle?.slice(0, 60)} ({item.polyOutcome}) · ${item.polyUsdcSize} · {item.timeframe || '?'} · {item.copiesThisHour}/{item.maxCopiesPerHour}/hr
                             </div>
                           )}
                           {item.error && <div style={{ color: '#ff4444', fontSize: '11px', marginTop: '2px' }}>{item.error}</div>}
@@ -2263,6 +2273,43 @@ function App() {
                       value={polyWalletForm.maxBetCents}
                       onChange={e => setPolyWalletForm(f => ({ ...f, maxBetCents: parseInt(e.target.value) }))}
                     />
+                  </div>
+                  <div className="form-group">
+                    <label>Max Copies Per Hour ({polyWalletForm.maxCopiesPerHour})</label>
+                    <input
+                      type="range"
+                      min="1"
+                      max="20"
+                      step="1"
+                      value={polyWalletForm.maxCopiesPerHour}
+                      onChange={e => setPolyWalletForm(f => ({ ...f, maxCopiesPerHour: parseInt(e.target.value) }))}
+                    />
+                    <span style={{ fontSize: '12px', opacity: 0.6 }}>
+                      This guy places hundreds of bets/hour -- {polyWalletForm.maxCopiesPerHour}/hr keeps it manageable
+                    </span>
+                  </div>
+                  <div className="form-group">
+                    <label>Timeframes to Copy</label>
+                    <div style={{ display: 'flex', gap: '12px', marginTop: '4px' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={polyWalletForm.timeframes.includes('15m')}
+                          onChange={e => {
+                            const tf = polyWalletForm.timeframes.filter(t => t !== '15m')
+                            if (e.target.checked) tf.push('15m')
+                            setPolyWalletForm(f => ({ ...f, timeframes: tf.length ? tf : ['15m'] }))
+                          }} />
+                        15-minute
+                      </label>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                        <input type="checkbox" checked={polyWalletForm.timeframes.includes('1h')}
+                          onChange={e => {
+                            const tf = polyWalletForm.timeframes.filter(t => t !== '1h')
+                            if (e.target.checked) tf.push('1h')
+                            setPolyWalletForm(f => ({ ...f, timeframes: tf.length ? tf : ['1h'] }))
+                          }} />
+                        Hourly
+                      </label>
+                    </div>
                   </div>
                   <div className="modal-actions">
                     <button type="button" className="btn-secondary" onClick={() => setShowAddPolyWallet(false)}>Cancel</button>
