@@ -1442,7 +1442,7 @@ function App() {
                           const profitCents = bet.profit || (bet.outcome === 'lost' ? -(bet.totalCost || bet.count * bet.price || 0) : 0)
                           return (
                             <tr key={bet.id} className={bet.outcome}>
-                              <td>{new Date(bet.timestamp).toLocaleTimeString()}</td>
+                              <td>{new Date(bet.timestamp).toLocaleDateString([], { month: 'numeric', day: 'numeric' })} {new Date(bet.timestamp).toLocaleTimeString()}</td>
                               <td className="token-cell">{bet.token || bet.assetType || '?'}</td>
                               <td><span className={`side-pill ${bet.side}`}>{bet.side?.toUpperCase()}</span></td>
                               <td>{bet.count || 1}</td>
