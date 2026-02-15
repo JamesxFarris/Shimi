@@ -5837,18 +5837,24 @@ async function _runAutoBetInner(userId = null) {
 
     let fillPrice;
     if (useMaker) {
-      // MAKER ORDER: fetch fresh orderbook and post at bestBid + 1c (rests in book)
-      let bestBid = priceCents - 2; // fallback if orderbook unavailable
+      // MAKER ORDER: post at ask - 1c (undercut the current ask to rest as top-of-book bid)
+      // BUG FIX: Using bestBid+1 fails when bid side is empty/sparse (e.g. NO bestBid=1c, ask=57c)
+      // Instead, post 1c below the ask — saves 1c vs taker and sits at top of bid book
+      let makerAsk = priceCents; // fallback: use market ask
       try {
         const freshOb = await fetchOrderbook(best.ticker, userConfig);
         if (freshOb) {
-          bestBid = best.betSide.toLowerCase() === 'yes' ? (freshOb.bestYesBid || priceCents - 2) : (freshOb.bestNoBid || priceCents - 2);
+          const obAsk = best.betSide.toLowerCase() === 'yes' ? (freshOb.bestYesAsk || priceCents) : (freshOb.bestNoAsk || priceCents);
+          // Only use orderbook ask if reasonable (within 5c of market ask)
+          if (obAsk > 0 && Math.abs(obAsk - priceCents) <= 5) {
+            makerAsk = obAsk;
+          }
         }
       } catch (obErr) {
-        console.log(` Orderbook fetch failed for maker: ${obErr.message}, using fallback bid`);
+        console.log(` Orderbook fetch failed for maker: ${obErr.message}, using market ask`);
       }
-      fillPrice = Math.min(Math.max(bestBid + 1, 1), 99);
-      console.log(` MAKER ORDER: posting at ${fillPrice}c (bestBid=${bestBid}c, ask=${priceCents}c)`);
+      fillPrice = Math.min(Math.max(makerAsk - 1, 1), 99);
+      console.log(` MAKER ORDER: posting at ${fillPrice}c (ask=${makerAsk}c, market=${priceCents}c)`);
     } else {
       // TAKER ORDER: existing logic — limit order above ask to ensure fill
       const baseFillSlippage3 = userConfig.selectivityRules?.fillSlippageCents ?? 3;
@@ -5941,15 +5947,8 @@ async function _runAutoBetInner(userId = null) {
           console.log(` Could not cancel maker order ${order.order_id}:`, cancelErr.message);
         }
       }
-      // Re-fetch orderbook for fresh ask
-      let freshAsk = priceCents;
-      try {
-        const freshOb2 = await fetchOrderbook(best.ticker, userConfig);
-        if (freshOb2) {
-          freshAsk = best.betSide.toLowerCase() === 'yes' ? (freshOb2.bestYesAsk || priceCents) : (freshOb2.bestNoAsk || priceCents);
-        }
-      } catch (e) { /* use original ask */ }
-      const takerPrice = Math.min(freshAsk + 3, 99);
+      // Use original market ask + slippage for taker fallback (orderbook ask can be stale/extreme)
+      const takerPrice = Math.min(priceCents + 3, 99);
       const takerOrderId = `shimi-${best.ticker}-${best.betSide}-taker-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
       const takerRequest = {
         ticker: best.ticker,
