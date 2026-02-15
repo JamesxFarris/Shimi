@@ -1392,41 +1392,6 @@ function App() {
                   </div>
                 </div>
 
-                {/* Open Positions Table */}
-                <div className="positions-section">
-                  <h3 className="section-title">Open Positions</h3>
-                  {betHistory.filter(b => !b.outcome || (b.outcome !== 'won' && b.outcome !== 'lost')).length === 0 ? (
-                    <div className="empty-state-mini">No open positions</div>
-                  ) : (
-                    <table className="positions-table">
-                      <thead>
-                        <tr><th>Token</th><th>Side</th><th>Qty</th><th>Entry</th><th>Current</th><th>P&L</th><th>Time</th></tr>
-                      </thead>
-                      <tbody>
-                        {betHistory.filter(b => !b.outcome || (b.outcome !== 'won' && b.outcome !== 'lost')).map(bet => {
-                          const token = bet.token || bet.assetType || '?'
-                          const closeTime = bet.closeTime ? new Date(bet.closeTime).getTime() : null
-                          const timeLeft = closeTime ? closeTime - tickerTime : null
-                          const unrealizedPnl = bet.profitIfSellNow || 0
-                          return (
-                            <tr key={bet.id}>
-                              <td className="token-cell">{token}</td>
-                              <td><span className={`side-pill ${bet.side}`}>{bet.side?.toUpperCase()}</span></td>
-                              <td>{bet.count || 1}</td>
-                              <td>{bet.price || 0}c</td>
-                              <td>{bet.currentMarketPrice ? `${bet.currentMarketPrice}c` : '--'}</td>
-                              <td className={unrealizedPnl >= 0 ? 'positive' : 'negative'}>
-                                {unrealizedPnl >= 0 ? '+' : ''}{formatCurrency(unrealizedPnl / 100)}
-                              </td>
-                              <td>{timeLeft !== null ? formatCountdown(timeLeft) : '--'}</td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-
                 {/* Recent Trades (last 10) */}
                 <div className="recent-trades-section">
                   <h3 className="section-title">Recent Trades</h3>
