@@ -71,7 +71,7 @@ function isKillSwitchActive() {
 
 // Session drawdown circuit breaker — pause betting if bankroll drops 15% from session peak
 // Per-user: each user has independent drawdown tracking
-const DRAWDOWN_LIMIT_PCT = 15; // Halt if down 15% from session peak
+const DRAWDOWN_LIMIT_PCT = 30; // Halt if down 30% from session peak
 const _drawdownState = new Map(); // userId -> { highWatermark, active }
 
 function _getDrawdownState(userId) {
