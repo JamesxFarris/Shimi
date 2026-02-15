@@ -7200,12 +7200,12 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     adjustedWinRate = 98;
   }
 
-  console.log(` Edge calc: empirical=${empirical.winRate.toFixed(1)}% vs market=${marketImpliedProb.toFixed(0)}% @ distance=${absDistance.toFixed(2)}%`);
-
   // DYNAMIC FEE CALCULATION - Kalshi formula: ceil(0.07 * contracts * price * (1-price))
   // Maker mode: multiplier 1.75 instead of 7 (Kalshi charges ~75% less for resting orders)
   const makerModeConfig = userConfig?.makerMode || {};
   const useMakerFees = makerModeConfig.enabled !== false && timeRemaining >= (makerModeConfig.minTimeForMaker || 3);
+
+  console.log(` Edge calc: win=${adjustedWinRate.toFixed(1)}% vs market=${marketImpliedProb.toFixed(0)}% @ distance=${absDistance.toFixed(2)}% | fees=${useMakerFees ? 'MAKER(1.75x)' : 'TAKER(7x)'} timeLeft=${timeRemaining.toFixed(1)}min`);
   const feeMultiplier = useMakerFees ? 1.75 : 7;
   const feePerContract = Math.min(2, Math.ceil(feeMultiplier * marketPrice * (1 - marketPrice))) / 100;
   const feePct = (feePerContract / marketPrice) * 100;
