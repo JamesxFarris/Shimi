@@ -158,165 +158,11 @@ const TOKEN_CONFIG = {
 
 // Format helpers
 const formatCurrency = (val) => `$${parseFloat(val || 0).toFixed(2)}`
-const formatPercent = (val) => `${parseFloat(val || 0).toFixed(1)}%`
-
-// Format price with proper decimal places
-const formatPrice = (val, token) => {
-  if (!val) return '$0.00'
-  const num = parseFloat(val)
-
-  // Very small prices (SHIB, DOGE etc)
-  if (num < 0.01) return `$${num.toFixed(6)}`
-  if (num < 1) return `$${num.toFixed(4)}`
-  if (num < 100) return `$${num.toFixed(2)}`
-  if (num < 10000) return `$${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-
-  // Large prices (BTC, ETH)
-  return `$${num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-}
 
 // Asset config (crypto only - S&P 500 disabled for now)
 const ASSET_CONFIG = {
   ...TOKEN_CONFIG
 }
-
-// Opportunity Card - Larger stacked design with Mortal Kombat style
-const OpportunityCard = memo(({ opp, onBet, isPlacing }) => {
-  const [qty, setQty] = useState(1)
-  const assetType = opp.assetType || opp.cryptoType || 'Unknown'
-  const config = ASSET_CONFIG[assetType] || { color: '#888', name: assetType, icon: '?' }
-  const isIndex = opp.marketCategory === 'index'
-  const notRecommended = opp.isRecommended === false
-  const isLocked = opp.isLocked === true
-  const isSafe = opp.isSafe === true
-  const isStale = opp.isStale === true
-  const isPlaceholder = opp.isPlaceholder === true
-  const hasActiveMarket = opp.hasActiveMarket !== false
-  const pctFromStrike = parseFloat(opp.pctFromStrike) || 0
-
-  // Determine card state for styling
-  const isActionable = hasActiveMarket && opp.isRecommended && !isLocked && !isStale
-  const isWaiting = isPlaceholder || !hasActiveMarket
-
-  return (
-    <div className={`opp-card ${opp.isObviousBet ? 'safe-bet' : ''} ${isIndex ? 'index-market' : ''} ${notRecommended && !isPlaceholder ? 'no-edge' : ''} ${isLocked ? 'locked' : ''} ${isSafe ? 'safe' : ''} ${isStale ? 'stale' : ''} ${isPlacing ? 'placing' : ''} ${isPlaceholder ? 'placeholder' : ''} ${isActionable ? 'actionable' : ''}`}>
-      {/* Loading overlay when placing bet */}
-      {isPlacing && (
-        <div className="placing-overlay">
-          <div className="placing-spinner"></div>
-          <span className="placing-text">Placing bet...</span>
-        </div>
-      )}
-
-      {/* ACTIONABLE badge - ready to bet */}
-      {isActionable && !isLocked && (
-        <div className="safe-badge actionable-badge">
-          <span className="safe-icon">⚡</span>
-          <span className="safe-text">READY</span>
-        </div>
-      )}
-
-      {/* SAFE badge for auto-bet eligible */}
-      {isSafe && !isActionable && !isLocked && (
-        <div className="safe-badge">
-          <span className="safe-icon">✓</span>
-          <span className="safe-text">AUTO</span>
-        </div>
-      )}
-
-      {/* Waiting/Placeholder overlay */}
-      {isWaiting && (
-        <div className="waiting-overlay">
-          <div className="waiting-pulse"></div>
-          <div className="waiting-icon">⏳</div>
-          <div className="waiting-text">WAITING FOR MARKET</div>
-        </div>
-      )}
-
-      {/* Locked overlay - shows all filter reasons */}
-      {isLocked && !isWaiting && (
-        <div className="locked-overlay">
-          <div className="smoke-effect"></div>
-          <div className="locked-icon">🔒</div>
-          <div className="locked-reasons">
-            {(opp.filterReasons && opp.filterReasons.length > 0 ? opp.filterReasons : [opp.filterReason || 'NO EDGE']).map((r, i) => (
-              <div key={i} className="locked-reason-item">{r}</div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* NO EDGE badge for non-recommended markets */}
-      {notRecommended && !isLocked && !isWaiting && (
-        <div className="no-edge-badge">
-          <span className="no-edge-icon">⊘</span>
-          <span className="no-edge-text">{opp.filterReason || 'NO EDGE'}</span>
-        </div>
-      )}
-
-      {/* Header: Token + Time */}
-      <div className="opp-header">
-        <div className="opp-token">
-          <div className="token-icon" style={{ background: `${config.color}20`, color: config.color }}>
-            {config.icon}
-          </div>
-          <div className="token-info">
-            <span className="token-symbol">{assetType}</span>
-            <span className="token-name">{config.name}</span>
-          </div>
-        </div>
-        <div className="opp-meta">
-          {opp.isObviousBet && !notRecommended && <span className="high-conf-dot" title="High Confidence"></span>}
-          <span className="time-badge">{opp.timeRemainingFormatted || 'Scanning...'}</span>
-        </div>
-      </div>
-
-      {/* Stacked Stats */}
-      <div className="stacked-stats">
-        {/* Win Probability - Most Important */}
-        <div className="stat-row win-prob">
-          <span className="stat-label">Win Probability</span>
-          <span className="stat-value">{opp.winProbability || '--'}%</span>
-        </div>
-
-        {/* Edge */}
-        <div className={`stat-row edge ${opp.edge >= 0 ? 'positive' : 'negative'}`}>
-          <span className="stat-label">Your Edge</span>
-          <span className="stat-value">{opp.edge >= 0 ? '+' : ''}{formatPercent(opp.edge || 0)}</span>
-        </div>
-
-        {/* Price vs Strike */}
-        <div className={`stat-row distance ${pctFromStrike >= 0 ? 'above' : 'below'}`}>
-          <span className="stat-label">Distance from Strike</span>
-          <span className="stat-value">{pctFromStrike >= 0 ? '+' : ''}{opp.pctFromStrike || '0.00'}%</span>
-        </div>
-
-        {/* Current → Strike */}
-        <div className="stat-row prices">
-          <span className="stat-label">Current Price</span>
-          <span className="stat-value price-comparison">
-            {formatPrice(opp.currentPrice, opp.cryptoType)}
-          </span>
-        </div>
-      </div>
-
-      {/* Action Button */}
-      <div className="bet-action-row">
-        <button
-          className={`bet-btn ${isPlacing ? 'loading' : ''} ${opp.betSide?.toLowerCase()} ${notRecommended && !isWaiting ? 'disabled-no-edge' : ''} ${isWaiting ? 'waiting' : ''} ${isActionable ? 'actionable' : ''}`}
-          onClick={() => onBet(opp, qty)}
-          disabled={isPlacing || notRecommended || isLocked || isWaiting}
-        >
-          {isPlacing ? 'Placing...' :
-           isWaiting ? '⏳ Waiting for market...' :
-           isLocked ? (opp.filterReason || 'No signal') :
-           notRecommended ? `${opp.filterReason}` :
-           `BET ${opp.betSide} @ ${opp.betPriceCents || Math.round(opp.betPrice * 100)}¢`}
-        </button>
-      </div>
-    </div>
-  )
-})
 
 // Format countdown time
 const formatCountdown = (ms) => {
@@ -1471,51 +1317,98 @@ function App() {
                 )}
               </div>
 
-              {/* Top Opportunities */}
-              <div className="top-opportunities">
-                <div className="section-header">
-                  <h3 className="section-title">
-                    Top Opportunities
-                    {marketStats.totalAnalyzed > 0 && (
-                      <span className="market-stats-inline">
-                        ({marketStats.recommended} of {marketStats.totalAnalyzed} have edge)
-                      </span>
-                    )}
-                  </h3>
+              {/* P&L Dashboard */}
+              <div className="pnl-dashboard">
+                {/* Session P&L Summary */}
+                <div className="pnl-summary-row">
+                  <div className="pnl-stat">
+                    <span className="pnl-label">Today P&L</span>
+                    <span className={`pnl-value ${(betStats.totalProfit || 0) >= 0 ? 'positive' : 'negative'}`}>
+                      {(betStats.totalProfit || 0) >= 0 ? '+' : ''}{formatCurrency(Math.abs(betStats.totalProfit || 0) / 100)}
+                    </span>
+                  </div>
+                  <div className="pnl-stat">
+                    <span className="pnl-label">Win Rate</span>
+                    <span className="pnl-value">{betStats.wins || 0}W / {betStats.losses || 0}L</span>
+                  </div>
+                  <div className="pnl-stat">
+                    <span className="pnl-label">Maker Saves</span>
+                    <span className="pnl-value positive">+${scanStatus?.makerFeeSavings?.totalDollars || '0.00'}</span>
+                  </div>
+                  <div className="pnl-stat">
+                    <span className="pnl-label">Markets</span>
+                    <span className="pnl-value">{marketStats.recommended}/{marketStats.totalAnalyzed} edge</span>
+                  </div>
                 </div>
 
-                {loading && opportunities.length === 0 ? (
-                  <div className="loading-state">
-                    <div className="spinner"></div>
-                    <p>Scanning crypto markets...</p>
-                  </div>
-                ) : opportunities.length === 0 ? (
-                  <div className="empty-state">
-                    <span className="empty-icon">🔍</span>
-                    <h3>Waiting for markets</h3>
-                    <p>No active markets found - waiting for next 15-minute cycle...</p>
-                  </div>
-                ) : (
-                  <div className="opportunities-wrapper">
-                    <div className="opportunities-grid">
-                      {opportunities.map(opp => (
-                        <OpportunityCard
-                          key={opp.ticker}
-                          opp={opp}
-                          onBet={placeBet}
-                          isPlacing={placingBet === opp.ticker}
-                        />
-                      ))}
-                    </div>
-                    <div className="shimi-brand-side">
-                      <div className="shimi-vertical">
-                        <span className="shimi-slash">//</span>
-                        <span className="shimi-text">SHIMI</span>
-                      </div>
-                      <div className="shimi-tagline">NEURAL TRADING</div>
-                    </div>
-                  </div>
-                )}
+                {/* Open Positions Table */}
+                <div className="positions-section">
+                  <h3 className="section-title">Open Positions</h3>
+                  {betHistory.filter(b => !b.outcome || (b.outcome !== 'won' && b.outcome !== 'lost')).length === 0 ? (
+                    <div className="empty-state-mini">No open positions</div>
+                  ) : (
+                    <table className="positions-table">
+                      <thead>
+                        <tr><th>Token</th><th>Side</th><th>Qty</th><th>Entry</th><th>Current</th><th>P&L</th><th>Time</th></tr>
+                      </thead>
+                      <tbody>
+                        {betHistory.filter(b => !b.outcome || (b.outcome !== 'won' && b.outcome !== 'lost')).map(bet => {
+                          const token = bet.token || bet.assetType || '?'
+                          const closeTime = bet.closeTime ? new Date(bet.closeTime).getTime() : null
+                          const timeLeft = closeTime ? closeTime - tickerTime : null
+                          const unrealizedPnl = bet.profitIfSellNow || 0
+                          return (
+                            <tr key={bet.id}>
+                              <td className="token-cell">{token}</td>
+                              <td><span className={`side-pill ${bet.side}`}>{bet.side?.toUpperCase()}</span></td>
+                              <td>{bet.count || 1}</td>
+                              <td>{bet.price || 0}c</td>
+                              <td>{bet.currentMarketPrice ? `${bet.currentMarketPrice}c` : '--'}</td>
+                              <td className={unrealizedPnl >= 0 ? 'positive' : 'negative'}>
+                                {unrealizedPnl >= 0 ? '+' : ''}{formatCurrency(unrealizedPnl / 100)}
+                              </td>
+                              <td>{timeLeft !== null ? formatCountdown(timeLeft) : '--'}</td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+
+                {/* Recent Trades (last 10) */}
+                <div className="recent-trades-section">
+                  <h3 className="section-title">Recent Trades</h3>
+                  {betHistory.filter(b => b.outcome === 'won' || b.outcome === 'lost').length === 0 ? (
+                    <div className="empty-state-mini">No completed trades yet</div>
+                  ) : (
+                    <table className="trades-table">
+                      <thead>
+                        <tr><th>Time</th><th>Token</th><th>Side</th><th>Qty</th><th>Price</th><th>Result</th><th>P&L</th></tr>
+                      </thead>
+                      <tbody>
+                        {betHistory.filter(b => b.outcome === 'won' || b.outcome === 'lost').slice(0, 10).map(bet => {
+                          const profitCents = bet.profit || (bet.outcome === 'lost' ? -(bet.totalCost || bet.count * bet.price || 0) : 0)
+                          return (
+                            <tr key={bet.id} className={bet.outcome}>
+                              <td>{new Date(bet.timestamp).toLocaleTimeString()}</td>
+                              <td className="token-cell">{bet.token || bet.assetType || '?'}</td>
+                              <td><span className={`side-pill ${bet.side}`}>{bet.side?.toUpperCase()}</span></td>
+                              <td>{bet.count || 1}</td>
+                              <td>{bet.price || 0}c</td>
+                              <td className={bet.outcome === 'won' ? 'positive' : 'negative'}>
+                                {bet.outcome === 'won' ? 'W' : 'L'}
+                              </td>
+                              <td className={profitCents >= 0 ? 'positive' : 'negative'}>
+                                {profitCents >= 0 ? '+' : ''}{formatCurrency(Math.abs(profitCents) / 100)}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
               </div>
             </div>
           )}

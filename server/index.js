@@ -200,6 +200,13 @@ const DEFAULT_CONFIG = {
       threshold: 25 // Used by active monitoring for take-profit threshold
     }
   },
+  // Maker order mode: post resting orders to avoid taker fees (~3.5% savings)
+  makerMode: {
+    enabled: true,        // ON by default — saves ~3.5% in fees
+    fallbackToTaker: true, // Fall back if maker unfilled
+    makerPollTimeMs: 10000, // 10s wait for maker fill
+    minTimeForMaker: 3    // Below 3 min remaining → use taker directly
+  },
   // Active monitoring settings (runs every 15 seconds when auto-bet is on)
   activeMonitoring: {
     stopLossEnabled: false, // Cut losses at threshold (disabled by default)
@@ -411,6 +418,12 @@ const DEFAULT_EMPIRICAL_TABLES = {
   },
   yesNoBias: {
     global: { yesWinRate: 50, noWinRate: 50, noBias: 0, sampleSize: 0 }
+  },
+  // Cross-token correlation pairs: leader → followers with correlation strength (0-1)
+  correlationPairs: {
+    BTC: { ETH: 0.85, SOL: 0.70, XRP: 0.65 },
+    ETH: { BTC: 0.80, SOL: 0.60, XRP: 0.55 }
+    // SOL and XRP are followers, rarely leaders
   },
   probabilityThresholds: {
     autoMinProbability: 62, // Raised from 60 based on analysis
@@ -3707,6 +3720,15 @@ function calculateKalshiFee(contracts, priceInDollars) {
   return Math.round(totalFeeDollars * 100); // Return in cents
 }
 
+function calculateKalshiMakerFee(contracts, priceInDollars) {
+  // Kalshi maker fee: ceil(0.0175 * price * (1-price)), capped at 2c
+  // At 50c: ~0.44c vs taker 1.75c. At most prices: effectively zero after rounding.
+  const price = Math.min(1, Math.max(0, priceInDollars));
+  const feePerContract = Math.ceil(0.0175 * price * (1 - price) * 100) / 100;
+  const cappedFeePerContract = Math.min(0.02, feePerContract);
+  return Math.round(cappedFeePerContract * contracts * 100); // cents
+}
+
 function formatTimeRemaining(ms) {
   if (!ms || ms < 0) return 'Expired';
   const minutes = Math.floor(ms / 60000);
@@ -5064,6 +5086,9 @@ let lastScanStatus = {
   blockedReasons: [] // Track why bets weren't placed
 };
 
+// Maker fee savings tracker: accumulates taker-maker fee difference on each maker fill
+let makerFeeSavings = { totalCents: 0, fillCount: 0, fallbackCount: 0 };
+
 // Track insufficient balance to avoid spamming Kalshi API
 let insufficientBalanceUntil = 0; // timestamp when we can try again
 // Concurrency guard: prevent overlapping runAutoBet() calls that bypass risk limits
@@ -5272,6 +5297,10 @@ async function _runAutoBetInner(userId = null) {
       lastScanStatus.blockedReasons = globalSitOut.reasons;
       console.log('========================================\n');
       return;
+    }
+
+    if (isOffPeakHours()) {
+      console.log(` OFF-PEAK MODE: Trading cautiously (higher thresholds, 50% position size, +2c slippage)`);
     }
 
     // Analyze crypto opportunities with EMPIRICAL evaluation
@@ -5645,15 +5674,19 @@ async function _runAutoBetInner(userId = null) {
                              sampleSize >= 50  ? 0.65 :
                              sampleSize >= 20  ? 0.45 : 0.25;
     const kellyBet = Math.max(0, Math.round(kellyFraction * bankroll * confidenceScale));
-    // In low-vol, be more aggressive (1/2 Kelly instead of 3/8) since outcomes are more predictable
+    // In low-vol or strong correlation, be more aggressive (1/2 Kelly instead of 3/8)
     const isLowVol = best.regime === 'low';
-    const aggKellyBet = isLowVol
+    const hasStrongCorrelation = (best.correlationBoost || 0) >= 8;
+    const isOffPeak = isOffPeakHours();
+    const aggKellyBet = (isLowVol || hasStrongCorrelation)
       ? Math.max(0, Math.round(0.5 * (best.edge / 100) / Math.max(0.01, 1 - best.betPrice) * bankroll * confidenceScale))
       : kellyBet;
+    // Off-peak: halve position size (Polymarket-style reduced exposure in thin books)
+    const sizedKellyBet = isOffPeak ? Math.round(aggKellyBet * 0.5) : aggKellyBet;
     // Cap at cycle budget — don't force minimum 1 contract if Kelly says bet is too small
-    const MAX_BET_CENTS = Math.min(hardCapCents, aggKellyBet);
+    const MAX_BET_CENTS = Math.min(hardCapCents, sizedKellyBet);
 
-    console.log(` Bet sizing: Kelly=${(kellyFraction*100).toFixed(1)}% bankroll=$${(bankroll/100).toFixed(2)} kellyBet=$${(aggKellyBet/100).toFixed(2)}${isLowVol ? ' (1/2 low-vol)' : ''} confidence=${(confidenceScale*100).toFixed(0)}% (${sampleSize} samples) capped=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
+    console.log(` Bet sizing: Kelly=${(kellyFraction*100).toFixed(1)}% bankroll=$${(bankroll/100).toFixed(2)} kellyBet=$${(sizedKellyBet/100).toFixed(2)}${isLowVol ? ' (1/2 low-vol)' : ''}${hasStrongCorrelation ? ' (1/2 corr)' : ''}${isOffPeak ? ' (1/2 off-peak)' : ''} confidence=${(confidenceScale*100).toFixed(0)}% (${sampleSize} samples) capped=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
 
     // Calculate contracts but cap total cost
     let count = Math.floor(MAX_BET_CENTS / priceCents);
@@ -5779,11 +5812,32 @@ async function _runAutoBetInner(userId = null) {
       return;
     }
 
-    // Real bet - use limit order slightly above ask to ensure fill
-    // Match edge calc's regime-adjusted slippage: low-vol = calmer books = tighter limit
-    const baseFillSlippage3 = userConfig.selectivityRules?.fillSlippageCents ?? 3;
-    const fillSlippage = best.regime === 'low' ? Math.max(1, baseFillSlippage3 - 2) : baseFillSlippage3;
-    const fillPrice = Math.min(priceCents + fillSlippage, 99);
+    // Determine maker vs taker mode for this order
+    const makerCfg = userConfig.makerMode || {};
+    const useMaker = makerCfg.enabled !== false && (best.timeRemaining || 15) >= (makerCfg.minTimeForMaker || 3);
+
+    let fillPrice;
+    if (useMaker) {
+      // MAKER ORDER: fetch fresh orderbook and post at bestBid + 1c (rests in book)
+      let bestBid = priceCents - 2; // fallback if orderbook unavailable
+      try {
+        const freshOb = await fetchOrderbook(best.ticker, userConfig);
+        if (freshOb) {
+          bestBid = best.betSide.toLowerCase() === 'yes' ? (freshOb.bestYesBid || priceCents - 2) : (freshOb.bestNoBid || priceCents - 2);
+        }
+      } catch (obErr) {
+        console.log(` Orderbook fetch failed for maker: ${obErr.message}, using fallback bid`);
+      }
+      fillPrice = Math.min(Math.max(bestBid + 1, 1), 99);
+      console.log(` MAKER ORDER: posting at ${fillPrice}c (bestBid=${bestBid}c, ask=${priceCents}c)`);
+    } else {
+      // TAKER ORDER: existing logic — limit order above ask to ensure fill
+      const baseFillSlippage3 = userConfig.selectivityRules?.fillSlippageCents ?? 3;
+      const offPeakFillBonus = isOffPeakHours() ? 1 : 0;
+      const fillSlippage = (best.regime === 'low' ? Math.max(1, baseFillSlippage3 - 2) : baseFillSlippage3) + offPeakFillBonus;
+      fillPrice = Math.min(priceCents + fillSlippage, 99);
+      console.log(` TAKER ORDER: posting at ${fillPrice}c (ask=${priceCents}c, slippage=${fillSlippage}c)`);
+    }
 
     // Fix 1: Track the attempt BEFORE placing order so side-flip protection works even on unfilled orders
     recentBets.set(runBetKey, {
@@ -5822,22 +5876,20 @@ async function _runAutoBetInner(userId = null) {
     let order = orderResponse.order;
     if (!order) {
       console.error(' No order in response');
-      // Keep side tracking, just mark unfilled (Fix 1)
       const noOrderEntry = recentBets.get(runBetKey);
       if (noOrderEntry) noOrderEntry.unfilled = true;
       console.log('========================================\n');
       return;
     }
 
-    // Check if order was filled - poll if resting (matching engine may need a moment)
+    // Check if order was filled - poll behavior depends on maker vs taker
     let status = order.status;
     let filledCount = order.fill_count || order.filled_count || 0;
+    const maxPolls = useMaker ? 10 : 5; // Maker: 10s, Taker: 5s
 
     if (filledCount === 0 && status === 'resting' && order.order_id) {
-      // Kalshi may return 'resting' before the matching engine fills the order.
-      // Poll up to 5 times with 1s delays (5s total) to give the matching engine time.
-      for (let pollAttempt = 1; pollAttempt <= 5; pollAttempt++) {
-        await sleep(1000); // 1s per poll, 5s total
+      for (let pollAttempt = 1; pollAttempt <= maxPolls; pollAttempt++) {
+        await sleep(1000);
         try {
           const checkResp = await kalshiRequest('GET', `/portfolio/orders/${order.order_id}`, null, userConfig);
           const updated = checkResp.order;
@@ -5849,7 +5901,7 @@ async function _runAutoBetInner(userId = null) {
               order = updated;
               break;
             }
-            if (status !== 'resting') break; // cancelled/expired, stop polling
+            if (status !== 'resting') break;
           }
         } catch (pollErr) {
           console.log(` Poll ${pollAttempt} error:`, pollErr.message);
@@ -5857,9 +5909,73 @@ async function _runAutoBetInner(userId = null) {
       }
     }
 
+    // MAKER->TAKER FALLBACK: if maker unfilled after 10s, cancel and re-place as taker
+    if (filledCount === 0 && useMaker && (makerCfg.fallbackToTaker !== false)) {
+      console.log(` MAKER->TAKER FALLBACK: maker unfilled after ${maxPolls}s, switching to taker`);
+      makerFeeSavings.fallbackCount++;
+      // Cancel maker order
+      if (order.order_id) {
+        try {
+          await kalshiRequest('DELETE', `/portfolio/orders/${order.order_id}`, null, userConfig);
+          console.log(` Cancelled maker order ${order.order_id}`);
+        } catch (cancelErr) {
+          console.log(` Could not cancel maker order ${order.order_id}:`, cancelErr.message);
+        }
+      }
+      // Re-fetch orderbook for fresh ask
+      let freshAsk = priceCents;
+      try {
+        const freshOb2 = await fetchOrderbook(best.ticker, userConfig);
+        if (freshOb2) {
+          freshAsk = best.betSide.toLowerCase() === 'yes' ? (freshOb2.bestYesAsk || priceCents) : (freshOb2.bestNoAsk || priceCents);
+        }
+      } catch (e) { /* use original ask */ }
+      const takerPrice = Math.min(freshAsk + 3, 99);
+      const takerOrderId = `shimi-${best.ticker}-${best.betSide}-taker-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+      const takerRequest = {
+        ticker: best.ticker,
+        client_order_id: takerOrderId,
+        action: 'buy',
+        side: best.betSide.toLowerCase(),
+        type: 'limit',
+        count
+      };
+      if (best.betSide.toLowerCase() === 'yes') {
+        takerRequest.yes_price = takerPrice;
+      } else {
+        takerRequest.no_price = takerPrice;
+      }
+      console.log(` Taker fallback order at ${takerPrice}c: ${JSON.stringify(takerRequest)}`);
+      try {
+        const takerResp = await kalshiRequest('POST', '/portfolio/orders', takerRequest, userConfig);
+        order = takerResp.order;
+        if (order) {
+          status = order.status;
+          filledCount = order.fill_count || order.filled_count || 0;
+          // Poll 3 more times for taker
+          if (filledCount === 0 && status === 'resting' && order.order_id) {
+            for (let p = 1; p <= 3; p++) {
+              await sleep(1000);
+              try {
+                const chk = await kalshiRequest('GET', `/portfolio/orders/${order.order_id}`, null, userConfig);
+                if (chk.order) {
+                  filledCount = chk.order.fill_count || chk.order.filled_count || 0;
+                  status = chk.order.status;
+                  if (filledCount > 0) { order = chk.order; break; }
+                  if (status !== 'resting') break;
+                }
+              } catch (e) { /* ignore */ }
+            }
+          }
+        }
+      } catch (takerErr) {
+        console.log(` Taker fallback failed: ${takerErr.message}`);
+      }
+    }
+
     if (filledCount === 0) {
       // Cancel the unfilled order so it doesn't sit on Kalshi's book
-      if (order.order_id) {
+      if (order && order.order_id) {
         try {
           await kalshiRequest('DELETE', `/portfolio/orders/${order.order_id}`, null, userConfig);
           console.log(` Cancelled unfilled order ${order.order_id}`);
@@ -5868,7 +5984,6 @@ async function _runAutoBetInner(userId = null) {
         }
       }
       console.error(`Order not filled after polling. Status: ${status}. No liquidity at ${fillPrice}c.`);
-      // Keep side tracking, mark unfilled for cooldown (Fix 1)
       const polledEntry = recentBets.get(runBetKey);
       if (polledEntry) polledEntry.unfilled = true;
 
@@ -5885,6 +6000,16 @@ async function _runAutoBetInner(userId = null) {
 
       console.log('========================================\n');
       return;
+    }
+
+    // Track maker fee savings on successful maker fills
+    if (useMaker && filledCount > 0) {
+      const takerFee = calculateKalshiFee(filledCount, fillPrice / 100);
+      const makerFee = calculateKalshiMakerFee(filledCount, fillPrice / 100);
+      const savedCents = takerFee - makerFee;
+      makerFeeSavings.totalCents += savedCents;
+      makerFeeSavings.fillCount++;
+      console.log(` Maker fill saved ${savedCents}c in fees (total: ${makerFeeSavings.totalCents}c / ${makerFeeSavings.fillCount} fills)`);
     }
 
     // EXEC-3: Cancel remaining resting order on partial fills
@@ -6087,6 +6212,11 @@ app.get('/api/auto-bet/status', (req, res) => {
     success: true,
     autoBetEnabled: userConfig.autoBetEnabled,
     intervalRunning: req.userId ? userAutoBetIntervals.has(req.userId) : false,
+    makerFeeSavings: {
+      totalDollars: (makerFeeSavings.totalCents / 100).toFixed(2),
+      fillCount: makerFeeSavings.fillCount,
+      fallbackCount: makerFeeSavings.fallbackCount
+    },
     ...lastScanStatus
   });
 });
@@ -6362,6 +6492,15 @@ function calculateSignalStrength(winRate, edge, sampleSize, regime, timeRemainin
  * @param {string} token - Token to check (optional, for token-specific limits)
  * @returns {object} { sitOut: boolean, reasons: string[] }
  */
+/**
+ * Check if current time is off-peak hours (07:00-13:00 UTC)
+ * During off-peak, the bot trades cautiously instead of sitting out.
+ */
+function isOffPeakHours() {
+  const utcHour = new Date().getUTCHours();
+  return utcHour >= 7 && utcHour < 13;
+}
+
 function shouldSitOut(tables, token = null) {
   const reasons = [];
 
@@ -6392,14 +6531,6 @@ function shouldSitOut(tables, token = null) {
     reasons.push(`Economic event: ${activeEvent.name} (sit out ${activeEvent.sitOutMinutes}min window)`);
   }
 
-  // Low-liquidity hours: 07:00-13:00 UTC (2AM-8AM EST)
-  // Kalshi crypto orderbooks thin out overnight; narrowed from 05:00-14:00 (9 hours)
-  // to 07:00-13:00 (6 hours) so the bot can trade during early morning and afternoon.
-  const utcHour = new Date().getUTCHours();
-  if (utcHour >= 7 && utcHour < 13) {
-    reasons.push(`Low-liquidity hours (${utcHour}:00 UTC — sit out 07:00-13:00 UTC)`);
-  }
-
   // maxBetsPerHour — prevent overtrading in choppy markets
   const maxPerHour = config?.selectivityRules?.maxBetsPerHour ?? 15;
   const oneHourAgo = Date.now() - 3600000;
@@ -6409,6 +6540,18 @@ function shouldSitOut(tables, token = null) {
   }).length;
   if (recentBetCount >= maxPerHour) {
     reasons.push(`${recentBetCount} bets in last hour (max ${maxPerHour})`);
+  }
+
+  // Off-peak hours: 07:00-13:00 UTC (2AM-8AM EST)
+  // Instead of sitting out, we trade cautiously with tighter thresholds (Polymarket-style).
+  // The off-peak flag is checked downstream in evaluateOpportunityEmpirical() and bet sizing.
+  // Reduced maxBetsPerHour during off-peak to limit exposure in thin books.
+  const utcHour = new Date().getUTCHours();
+  if (utcHour >= 7 && utcHour < 13) {
+    const offPeakMaxPerHour = Math.min(8, Math.floor(maxPerHour * 0.5));
+    if (recentBetCount >= offPeakMaxPerHour) {
+      reasons.push(`Off-peak rate cap: ${recentBetCount} bets in last hour (max ${offPeakMaxPerHour} during 07-13 UTC)`);
+    }
   }
 
   return {
@@ -6559,6 +6702,79 @@ function getCalibrationAdjustment(predictedProb, token) {
 
   // Apply 50% of the correction (conservative — don't overcorrect)
   return calibrationError * 0.5;
+}
+
+/**
+ * Cross-token correlation signal: detect when a leader token moves but a follower hasn't repriced
+ * BTC leads, ETH/SOL/XRP follow with 30-120 second lag
+ * @param {string} token - The follower token being evaluated
+ * @returns {object} { hasCorrelationSignal, leaderToken, leaderMove, expectedFollowerMove, actualFollowerMove, signalBoost }
+ */
+function getCorrelationSignal(token) {
+  const noSignal = { hasCorrelationSignal: false, leaderToken: null, leaderMove: 0, expectedFollowerMove: 0, actualFollowerMove: 0, signalBoost: 0 };
+  const corrPairs = learnedParams.correlationPairs || DEFAULT_EMPIRICAL_TABLES.correlationPairs || {};
+
+  // Check each potential leader
+  for (const leader of ['BTC', 'ETH']) {
+    if (leader === token) continue; // can't be your own leader
+    const pairStrength = corrPairs[leader]?.[token];
+    if (!pairStrength) continue;
+
+    const leaderData = cryptoPrices[leader];
+    const followerData = cryptoPrices[token];
+    if (!leaderData || !followerData || leaderData.price <= 0 || followerData.price <= 0) continue;
+
+    // Get leader's price change over last 2 minutes
+    const twoMinAgo = Date.now() - 2 * 60 * 1000;
+    const leaderHistory = leaderData.history || [];
+    let leaderOldPrice = null;
+    for (let i = leaderHistory.length - 1; i >= 0; i--) {
+      const entry = leaderHistory[i];
+      if (entry && entry.time <= twoMinAgo) {
+        leaderOldPrice = entry.price;
+        break;
+      }
+    }
+    if (!leaderOldPrice) continue;
+
+    const leaderMove = (leaderData.price - leaderOldPrice) / leaderOldPrice;
+    if (Math.abs(leaderMove) < 0.003) continue; // Leader must move >0.3% in 2 min
+
+    // Check follower's actual move over same period
+    let followerOldPrice = null;
+    const followerHistory = followerData.history || [];
+    for (let i = followerHistory.length - 1; i >= 0; i--) {
+      const entry = followerHistory[i];
+      if (entry && entry.time <= twoMinAgo) {
+        followerOldPrice = entry.price;
+        break;
+      }
+    }
+    if (!followerOldPrice) continue;
+
+    const actualFollowerMove = (followerData.price - followerOldPrice) / followerOldPrice;
+    const expectedFollowerMove = leaderMove * pairStrength;
+
+    // Signal: follower has moved less than half of expected → lagging, contract mispriced
+    if (Math.abs(actualFollowerMove) < Math.abs(expectedFollowerMove) * 0.5) {
+      // Signal boost: 5-12 points based on magnitude and correlation strength
+      const moveMagnitude = Math.min(1, Math.abs(leaderMove) / 0.01); // 0-1 scale (1% = max)
+      const lagRatio = 1 - (Math.abs(actualFollowerMove) / Math.max(0.0001, Math.abs(expectedFollowerMove)));
+      const signalBoost = Math.round(5 + 7 * moveMagnitude * pairStrength * lagRatio);
+      const clampedBoost = Math.min(12, Math.max(5, signalBoost));
+
+      return {
+        hasCorrelationSignal: true,
+        leaderToken: leader,
+        leaderMove,
+        expectedFollowerMove,
+        actualFollowerMove,
+        signalBoost: clampedBoost
+      };
+    }
+  }
+
+  return noSignal;
 }
 
 /**
@@ -6938,13 +7154,13 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   console.log(` Edge calc: empirical=${empirical.winRate.toFixed(1)}% vs market=${marketImpliedProb.toFixed(0)}% @ distance=${absDistance.toFixed(2)}%`);
 
-  // DYNAMIC FEE CALCULATION - Kalshi formula: ceil(0.07 -- contracts -- price -- (1-price))
-  // Fee is capped at 2c per contract. For edge calculation, use per-contract fee as percentage.
-  // At 50c: fee = 0.07 * 0.50 * 0.50 = 1.75% of contract value
-  // At 65c: fee = 0.07 * 0.65 * 0.35 = 1.59% of contract value
-  // At 75c: fee = 0.07 * 0.75 * 0.25 = 1.31% of contract value
-  const feePerContract = Math.min(2, Math.ceil(7 * marketPrice * (1 - marketPrice))) / 100; // in cents, then to dollars
-  const feePct = (feePerContract / marketPrice) * 100; // fee as % of bet cost
+  // DYNAMIC FEE CALCULATION - Kalshi formula: ceil(0.07 * contracts * price * (1-price))
+  // Maker mode: multiplier 1.75 instead of 7 (Kalshi charges ~75% less for resting orders)
+  const makerModeConfig = userConfig?.makerMode || {};
+  const useMakerFees = makerModeConfig.enabled !== false && timeRemaining >= (makerModeConfig.minTimeForMaker || 3);
+  const feeMultiplier = useMakerFees ? 1.75 : 7;
+  const feePerContract = Math.min(2, Math.ceil(feeMultiplier * marketPrice * (1 - marketPrice))) / 100;
+  const feePct = (feePerContract / marketPrice) * 100;
 
   // Add spread cost penalty if orderbook data available
   // BUG FIX: spread is in cents, convert to percentage of market price
@@ -6952,19 +7168,23 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   if (orderbook) {
     const spread = betSide === 'YES' ? orderbook.yesSpread : orderbook.noSpread;
     if (spread && spread > 0 && spread < 50) {
-      // Spread is in cents - convert to % of price for edge calculation
-      // Half spread paid on entry. Example: 4c spread at 50c = (4/2)/50 * 100 = 4%
       spreadPenalty = (spread / 2) / marketPrice;
     }
   }
 
-  // Account for fill slippage: convert cents to % of market price (same units as feePct/spreadPenalty)
-  // In low-vol regimes, order books are calmer -- reduce slippage assumption
-  const baseSlippageCents = userRules.fillSlippageCents ?? 3;
-  const slippageCents = regime.regime === 'low' ? Math.max(1, baseSlippageCents - 2) : baseSlippageCents;
-  const slippagePct = (slippageCents / (marketPrice * 100)) * 100;
+  // Account for fill slippage: maker orders rest at our price (0 slippage), taker pays crossing spread
+  const offPeak = isOffPeakHours();
+  let slippagePct = 0;
+  if (!useMakerFees) {
+    const baseSlippageCents = userRules.fillSlippageCents ?? 3;
+    const offPeakSlippageBonus = offPeak ? 2 : 0;
+    const slippageCents = regime.regime === 'low' ? Math.max(1, baseSlippageCents - 2) + offPeakSlippageBonus : baseSlippageCents + offPeakSlippageBonus;
+    slippagePct = (slippageCents / (marketPrice * 100)) * 100;
+  }
+  // Maker fill uncertainty: 1% edge discount to compensate for lower fill probability
+  const fillUncertaintyPenalty = useMakerFees ? 1.0 : 0;
   const grossEdge = adjustedWinRate - marketImpliedProb;
-  const netEdge = grossEdge - feePct - spreadPenalty - slippagePct;
+  const netEdge = grossEdge - feePct - spreadPenalty - slippagePct - fillUncertaintyPenalty;
 
   // Calculate signal strength
   const signalStrength = calculateSignalStrength(
@@ -6984,9 +7204,12 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   if (isFavoredSideBet) {
     // Favored bets: standard win rate and edge thresholds
+    // Off-peak: raise floor by +4% (only high-conviction bets in thin books)
+    const baseMinWinRate = rules.minEmpiricalWinRate || 64;
     let effectiveMinWinRate = regime.regime === 'low'
-      ? Math.max(60, (rules.minEmpiricalWinRate || 64) - 4)
-      : (rules.minEmpiricalWinRate || 64);
+      ? Math.max(60, baseMinWinRate - 4)
+      : offPeak ? baseMinWinRate + 4
+      : baseMinWinRate;
 
     // Strong edge override: high edge compensates for borderline win rate
     // Kelly sizes these bets small automatically, limiting downside
@@ -7003,16 +7226,29 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
 
     if (adjustedWinRate < effectiveMinWinRate) {
-      reasons.push(`Win rate ${adjustedWinRate.toFixed(1)}% < ${effectiveMinWinRate}%${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
+      const suffix = regime.regime === 'low' ? ' (low-vol reduced)' : offPeak ? ' (off-peak raised)' : '';
+      reasons.push(`Win rate ${adjustedWinRate.toFixed(1)}% < ${effectiveMinWinRate}%${suffix}`);
     }
 
     // In low vol, outcomes are more predictable - smaller edge is acceptable
     // With 8% base, low-vol reduces to 3% (allows more bets through in calm markets)
+    // Off-peak: raise edge floor by +3% (compensate for wider spreads in thin books)
+    const baseMinEdge = rules.minEdgeAfterFees || 8;
+    // Favorite-longshot bias: scale edge requirement inversely with contract price
+    // High-price contracts (70c+) have low fees + high win rates → base edge sufficient
+    // Mid-range (30-50c) has highest fees → require extra edge. Longshots (<30c) need even more.
+    const priceTierBonus = marketPriceCents >= 70 ? 0
+      : marketPriceCents >= 50 ? 0
+      : marketPriceCents >= 30 ? 3
+      : 5;
     const effectiveMinEdge = regime.regime === 'low'
-      ? Math.max(3.0, (rules.minEdgeAfterFees || 8) - 5)
-      : (rules.minEdgeAfterFees || 8);
+      ? Math.max(3.0, baseMinEdge + priceTierBonus - 5)
+      : offPeak ? baseMinEdge + priceTierBonus + 3
+      : baseMinEdge + priceTierBonus;
     if (netEdge < effectiveMinEdge) {
-      reasons.push(`Edge ${netEdge.toFixed(1)}% < ${effectiveMinEdge}%${regime.regime === 'low' ? ' (low-vol reduced)' : ''}`);
+      const suffix = regime.regime === 'low' ? ' (low-vol reduced)' : offPeak ? ' (off-peak raised)' : '';
+      const tierSuffix = priceTierBonus > 0 ? ` (+${priceTierBonus}% longshot)` : '';
+      reasons.push(`Edge ${netEdge.toFixed(1)}% < ${effectiveMinEdge}%${suffix}${tierSuffix}`);
     }
 
     // Token-specific coin-flip penalty: SOL has 64% coin-flip rate at close distances
@@ -7063,8 +7299,18 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   let adjustedSignalStrength = signalStrength;
   let windowPenalties = [];
 
-  if (!withinPriceWindow) {
-    // Soft penalty for any bet outside price window — favored or unfavored
+  // Favorite-longshot bias: graduated price tiers based on academic evidence (300K+ Kalshi contracts)
+  // Sweet spot: 60-85c contracts have systematic positive returns. Cheap longshots (<20c) lose 60%+
+  if (marketPriceCents >= 60 && marketPriceCents <= 85) {
+    adjustedSignalStrength += 3;
+    windowPenalties.push(`price sweet-spot +3pts (${marketPriceCents}c in 60-85c zone)`);
+  } else if (marketPriceCents >= 40 && marketPriceCents < 55) {
+    adjustedSignalStrength += -3;
+    windowPenalties.push(`price coin-flip -3pts (${marketPriceCents}c in 40-55c zone)`);
+  } else if (marketPriceCents >= 20 && marketPriceCents < 40) {
+    adjustedSignalStrength += -8;
+    windowPenalties.push(`price longshot -8pts (${marketPriceCents}c in 20-40c zone)`);
+  } else if (!withinPriceWindow) {
     const pricePenalty = marketPriceCents < (entryWindows.priceMin || 40) ? -10 : -8;
     adjustedSignalStrength += pricePenalty;
     windowPenalties.push(`price-window ${pricePenalty}pts (${marketPriceCents}c outside [${entryWindows.priceMin || 40}-${entryWindows.priceMax || 95}c])`);
@@ -7193,6 +7439,17 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     windowPenalties.push(`YES-side ${yesPenalty}pts (caution)`);
   }
 
+  // Cross-token correlation: detect when a leader (BTC/ETH) moves but this token's contract hasn't repriced
+  const corrSignal = getCorrelationSignal(token);
+  if (corrSignal.hasCorrelationSignal) {
+    // Verify the correlation direction matches our bet side
+    const leaderDirection = corrSignal.leaderMove > 0 ? 'YES' : 'NO';
+    if (betSide === leaderDirection) {
+      adjustedSignalStrength += corrSignal.signalBoost;
+      windowPenalties.push(`correlation +${corrSignal.signalBoost}pts (${corrSignal.leaderToken} ${corrSignal.leaderMove > 0 ? '+' : ''}${(corrSignal.leaderMove*100).toFixed(2)}%)`);
+    }
+  }
+
   // Same-side saturation: penalize one-sided streaks per token
   // Tokens with high NO bias (like SOL 4.44%) trigger at 2 consecutive YES bets
   const tokenNoBiasForSat = learnedParams.byToken?.[token]?.noBias || 0;
@@ -7209,13 +7466,17 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   }
 
   // Low vol = more predictable outcomes, modest signal reduction allowed
+  // Off-peak: raise signal floor by +8 (only strong signals in thin books)
   const baseMinSignal = rules.minSignalStrength || 58;
-  const effectiveMinSignal = regime.regime === 'low' ? Math.max(46, baseMinSignal - 12) : baseMinSignal;
+  const effectiveMinSignal = regime.regime === 'low' ? Math.max(46, baseMinSignal - 12)
+    : offPeak ? baseMinSignal + 8
+    : baseMinSignal;
 
   // SOL: NO bias and saturation penalties already handle side selection naturally.
   // No extra signal floor or YES hard block — let the penalty system do its job.
   if (adjustedSignalStrength < effectiveMinSignal) {
-    reasons.push(`Signal ${adjustedSignalStrength} < ${effectiveMinSignal}${regime.regime === 'low' ? ' (low-vol reduced)' : ''}${token === 'SOL' ? ' (SOL)' : ''}`);
+    const suffix = regime.regime === 'low' ? ' (low-vol reduced)' : offPeak ? ' (off-peak raised)' : '';
+    reasons.push(`Signal ${adjustedSignalStrength} < ${effectiveMinSignal}${suffix}${token === 'SOL' ? ' (SOL)' : ''}`);
   }
 
   // Final decision
@@ -7278,6 +7539,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     timeRemainingFormatted: formatTimeRemaining(parsed.timeRemaining),
     confidence: adjustedWinRate.toFixed(0) + '%',
     dataPoints: empirical.sampleSize,
+    correlationBoost: corrSignal.hasCorrelationSignal ? corrSignal.signalBoost : 0,
     analysisMethod: 'empirical_unified',
     assetType: token,
     currentPrice,

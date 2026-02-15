@@ -6442,3 +6442,130 @@ body {
   animation: none;
   box-shadow: 0 0 15px rgba(255, 68, 68, 0.5);
 }
+
+/* ============================================
+   P&L DASHBOARD
+   ============================================ */
+
+.pnl-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pnl-summary-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.pnl-stat {
+  background: var(--card-bg, rgba(20, 20, 35, 0.8));
+  border: 1px solid var(--border-color, rgba(255,255,255,0.08));
+  border-radius: 8px;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pnl-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted, rgba(255,255,255,0.5));
+}
+
+.pnl-value {
+  font-size: 18px;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-primary, #fff);
+}
+
+.pnl-value.positive { color: var(--accent-green, #00ff88); }
+.pnl-value.negative { color: var(--accent-red, #ff4444); }
+
+.positions-section,
+.recent-trades-section {
+  background: var(--card-bg, rgba(20, 20, 35, 0.8));
+  border: 1px solid var(--border-color, rgba(255,255,255,0.08));
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.positions-section .section-title,
+.recent-trades-section .section-title {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted, rgba(255,255,255,0.5));
+  margin: 0 0 12px 0;
+}
+
+.empty-state-mini {
+  text-align: center;
+  padding: 16px;
+  color: var(--text-muted, rgba(255,255,255,0.35));
+  font-size: 13px;
+}
+
+.positions-table,
+.trades-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.positions-table th,
+.trades-table th {
+  text-align: left;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted, rgba(255,255,255,0.4));
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.08));
+}
+
+.positions-table td,
+.trades-table td {
+  padding: 8px;
+  color: var(--text-primary, rgba(255,255,255,0.85));
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+
+.positions-table tr:last-child td,
+.trades-table tr:last-child td {
+  border-bottom: none;
+}
+
+.token-cell {
+  font-weight: 600;
+}
+
+.side-pill {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.side-pill.yes, .side-pill.YES {
+  background: rgba(0, 255, 136, 0.15);
+  color: var(--accent-green, #00ff88);
+}
+
+.side-pill.no, .side-pill.NO {
+  background: rgba(255, 68, 68, 0.15);
+  color: var(--accent-red, #ff4444);
+}
+
+.trades-table tr.won td { opacity: 1; }
+.trades-table tr.lost td { opacity: 0.7; }
+
+td.positive { color: var(--accent-green, #00ff88); }
+td.negative { color: var(--accent-red, #ff4444); }
