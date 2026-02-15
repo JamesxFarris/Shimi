@@ -5711,31 +5711,11 @@ async function _runAutoBetInner(userId = null) {
       return;
     }
 
-    // 3/8-Kelly sizing: slightly aggressive, user-requested 2-3x bigger bets
-    const bankroll = userConfig.bankroll || 0;
-    const kellyFraction = bankroll > 0
-      ? 0.375 * (best.edge / 100) / Math.max(0.01, 1 - best.betPrice)
-      : 0;
-    // Confidence scaling: reduce bet size when data is sparse
-    const sampleSize = best.sampleSize || 0;
-    const confidenceScale = sampleSize >= 200 ? 1.0 :
-                             sampleSize >= 100 ? 0.85 :
-                             sampleSize >= 50  ? 0.65 :
-                             sampleSize >= 20  ? 0.45 : 0.25;
-    const kellyBet = Math.max(0, Math.round(kellyFraction * bankroll * confidenceScale));
-    // In low-vol or strong correlation, be more aggressive (1/2 Kelly instead of 3/8)
-    const isLowVol = best.regime === 'low';
-    const hasStrongCorrelation = (best.correlationBoost || 0) >= 8;
-    const isOffPeak = isOffPeakHours();
-    const aggKellyBet = (isLowVol || hasStrongCorrelation)
-      ? Math.max(0, Math.round(0.5 * (best.edge / 100) / Math.max(0.01, 1 - best.betPrice) * bankroll * confidenceScale))
-      : kellyBet;
-    // Off-peak: halve position size (Polymarket-style reduced exposure in thin books)
-    const sizedKellyBet = isOffPeak ? Math.round(aggKellyBet * 0.5) : aggKellyBet;
-    // Cap at cycle budget — don't force minimum 1 contract if Kelly says bet is too small
-    const MAX_BET_CENTS = Math.min(hardCapCents, sizedKellyBet);
+    // Fixed $2 per order, capped at cycle budget
+    const FIXED_BET_CENTS = 200;
+    const MAX_BET_CENTS = Math.min(hardCapCents, FIXED_BET_CENTS);
 
-    console.log(` Bet sizing: Kelly=${(kellyFraction*100).toFixed(1)}% bankroll=$${(bankroll/100).toFixed(2)} kellyBet=$${(sizedKellyBet/100).toFixed(2)}${isLowVol ? ' (1/2 low-vol)' : ''}${hasStrongCorrelation ? ' (1/2 corr)' : ''}${isOffPeak ? ' (1/2 off-peak)' : ''} confidence=${(confidenceScale*100).toFixed(0)}% (${sampleSize} samples) capped=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
+    console.log(` Bet sizing: fixed=$2.00 capped=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
 
     // Calculate contracts but cap total cost
     let count = Math.floor(MAX_BET_CENTS / priceCents);
