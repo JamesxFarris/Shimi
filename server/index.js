@@ -1260,9 +1260,19 @@ async function checkPendingSettlements() {
             const profit = won ? (contracts * 100 - (bet.totalCost || 0)) : 0;
             settleBet(bet.id, won ? 'won' : 'lost', market.market.settlement_value, profit);
             console.log(` Settled bet ${bet.id}: ${won ? 'WON' : 'LOST'} (${bet.side} on ${bet.ticker})`);
+          } else {
+            // Market exists but no result yet — Kalshi hasn't settled it
+            if (!bet._noResultLogCount) bet._noResultLogCount = 0;
+            if (bet._noResultLogCount++ < 3) {
+              console.log(` Market ${bet.ticker} has no result yet — waiting for Kalshi settlement`);
+            }
           }
         } catch (e) {
-          // Market might not exist or API error - try price-based settlement below
+          // Log the error so we can diagnose settlement failures
+          if (!bet._apiErrorLogCount) bet._apiErrorLogCount = 0;
+          if (bet._apiErrorLogCount++ < 3) {
+            console.log(` Settlement API error for ${bet.ticker}: ${e.message}`);
+          }
         }
       }
 
@@ -1292,10 +1302,30 @@ async function checkPendingSettlements() {
             } else if (bet._settlementAttempts === 6) {
               console.log(` Settlement for ${bet.id}: suppressing further logs (waiting for Kalshi API result)`);
             }
-            // After 30 minutes of retries, force-settle as lost (Kalshi API never responded)
+            // After 30 minutes of retries, make one final Kalshi API attempt before giving up
             if (settlementDelay > 30 * 60 * 1000) {
-              console.log(` Settlement TIMEOUT for ${bet.id}: ${(settlementDelay/1000).toFixed(0)}s past expiry — forcing loss`);
-              settleBet(bet.id, 'lost', null, 0);
+              console.log(` Settlement TIMEOUT for ${bet.id}: ${(settlementDelay/1000).toFixed(0)}s past expiry — final API check...`);
+              let finalSettled = false;
+              if (bet.ticker) {
+                try {
+                  const finalMarket = await kalshiRequest('GET', `/markets/${bet.ticker}`, null, userConfig);
+                  if (finalMarket.market?.result) {
+                    const result = finalMarket.market.result;
+                    const won = (bet.side.toLowerCase() === result);
+                    const contracts3 = bet.contracts || Math.floor((bet.totalCost || 0) / (bet.priceCents || 1));
+                    const profit = won ? (contracts3 * 100 - (bet.totalCost || 0)) : 0;
+                    settleBet(bet.id, won ? 'won' : 'lost', finalMarket.market.settlement_value, profit);
+                    console.log(` Final API check SUCCEEDED for ${bet.id}: ${won ? 'WON' : 'LOST'} (${bet.side} on ${bet.ticker})`);
+                    finalSettled = true;
+                  }
+                } catch (e) {
+                  console.log(` Final API check failed for ${bet.id}: ${e.message}`);
+                }
+              }
+              if (!finalSettled) {
+                console.log(` Forcing LOSS for ${bet.id} after all settlement attempts exhausted`);
+                settleBet(bet.id, 'lost', null, 0);
+              }
             }
           } else {
             // Market should have settled - determine outcome from price
