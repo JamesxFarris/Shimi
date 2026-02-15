@@ -5732,8 +5732,9 @@ async function _runAutoBetInner(userId = null) {
       : kellyBet;
     // Off-peak: halve position size (Polymarket-style reduced exposure in thin books)
     const sizedKellyBet = isOffPeak ? Math.round(aggKellyBet * 0.5) : aggKellyBet;
-    // Cap at cycle budget — don't force minimum 1 contract if Kelly says bet is too small
-    const MAX_BET_CENTS = Math.min(hardCapCents, sizedKellyBet);
+    // Floor at $1 minimum so Kelly can always buy at least 1 contract, then cap at cycle budget
+    const MIN_BET_CENTS = 100;
+    const MAX_BET_CENTS = Math.min(hardCapCents, Math.max(MIN_BET_CENTS, sizedKellyBet));
 
     console.log(` Bet sizing: Kelly=${(kellyFraction*100).toFixed(1)}% bankroll=$${(bankroll/100).toFixed(2)} kellyBet=$${(sizedKellyBet/100).toFixed(2)}${isLowVol ? ' (1/2 low-vol)' : ''}${hasStrongCorrelation ? ' (1/2 corr)' : ''}${isOffPeak ? ' (1/2 off-peak)' : ''} confidence=${(confidenceScale*100).toFixed(0)}% (${sampleSize} samples) capped=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
 
