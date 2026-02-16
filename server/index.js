@@ -5087,20 +5087,26 @@ let makerFeeSavings = { totalCents: 0, fillCount: 0, fallbackCount: 0 };
 
 // Track insufficient balance to avoid spamming Kalshi API
 let insufficientBalanceUntil = 0; // timestamp when we can try again
-// Concurrency guard: prevent overlapping runAutoBet() calls that bypass risk limits
-let autoBetRunning = false;
+// Concurrency guard: prevent overlapping runAutoBet() calls that bypass risk limits (per-user)
+const autoBetRunning = new Map(); // userId -> timestamp when lock was acquired
 
 async function runAutoBet(userId = null) {
-  // Prevent concurrent runs — setInterval can fire while previous run is still awaiting API calls
-  if (autoBetRunning) {
-    console.log(' AUTO-BET: Previous cycle still running, skipping');
+  const key = userId || 'default';
+  const now = Date.now();
+  const lockTime = autoBetRunning.get(key);
+  // Prevent concurrent runs for the SAME user — setInterval can fire while previous run is still awaiting API calls
+  // Safety: auto-release lock after 90s to prevent permanent stuck state
+  if (lockTime && (now - lockTime) < 90000) {
     return;
   }
-  autoBetRunning = true;
+  if (lockTime) {
+    console.log(` AUTO-BET: Force-releasing stale lock for ${key} (stuck ${Math.round((now - lockTime)/1000)}s)`);
+  }
+  autoBetRunning.set(key, now);
   try {
   return await _runAutoBetInner(userId);
   } finally {
-    autoBetRunning = false;
+    autoBetRunning.delete(key);
   }
 }
 
