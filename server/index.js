@@ -5671,17 +5671,14 @@ async function _runAutoBetInner(userId = null) {
     // In low-vol or strong correlation, be more aggressive (1/2 Kelly instead of 3/8)
     const isLowVol = best.regime === 'low';
     const hasStrongCorrelation = (best.correlationBoost || 0) >= 8;
-    const isOffPeak = isOffPeakHours();
     const aggKellyBet = (isLowVol || hasStrongCorrelation)
       ? Math.max(0, Math.round(0.5 * (best.edge / 100) / Math.max(0.01, 1 - best.betPrice) * bankroll * confidenceScale))
       : kellyBet;
-    // Off-peak: halve position size (Polymarket-style reduced exposure in thin books)
-    const sizedKellyBet = isOffPeak ? Math.round(aggKellyBet * 0.5) : aggKellyBet;
     // Floor at $2 minimum so Kelly buys a few contracts, then cap at cycle budget
     const MIN_BET_CENTS = 200;
-    const MAX_BET_CENTS = Math.min(hardCapCents, Math.max(MIN_BET_CENTS, sizedKellyBet));
+    const MAX_BET_CENTS = Math.min(hardCapCents, Math.max(MIN_BET_CENTS, aggKellyBet));
 
-    console.log(` Bet sizing: Kelly=${(kellyFraction*100).toFixed(1)}% bankroll=$${(bankroll/100).toFixed(2)} kellyBet=$${(sizedKellyBet/100).toFixed(2)}${isLowVol ? ' (1/2 low-vol)' : ''}${hasStrongCorrelation ? ' (1/2 corr)' : ''}${isOffPeak ? ' (1/2 off-peak)' : ''} confidence=${(confidenceScale*100).toFixed(0)}% (${sampleSize} samples) capped=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
+    console.log(` Bet sizing: Kelly=${(kellyFraction*100).toFixed(1)}% bankroll=$${(bankroll/100).toFixed(2)} kellyBet=$${(aggKellyBet/100).toFixed(2)}${isLowVol ? ' (1/2 low-vol)' : ''}${hasStrongCorrelation ? ' (1/2 corr)' : ''} confidence=${(confidenceScale*100).toFixed(0)}% (${sampleSize} samples) capped=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
 
     // Calculate contracts but cap total cost
     let count = Math.floor(MAX_BET_CENTS / priceCents);
