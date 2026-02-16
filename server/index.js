@@ -4821,6 +4821,19 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
 
     const priceCents = Math.round(best.betPrice * 100);
 
+    // Hard price floor/ceiling — reject extreme prices before sizing
+    const HARD_PRICE_FLOOR = 40; // Never buy below 40c
+    const HARD_PRICE_CEILING = 95; // Never buy above 95c
+    if (priceCents < HARD_PRICE_FLOOR || priceCents > HARD_PRICE_CEILING) {
+      console.log(` Skipping extreme price ${priceCents}c (floor=${HARD_PRICE_FLOOR}c, ceiling=${HARD_PRICE_CEILING}c)`);
+      return res.json({
+        success: true,
+        message: `Price ${priceCents}c outside ${HARD_PRICE_FLOOR}-${HARD_PRICE_CEILING}c range`,
+        bet: null,
+        risk: getRiskByType(req.userState)
+      });
+    }
+
     // Calculate contracts but cap total cost
     let count = Math.floor(MAX_BET_CENTS / priceCents);
     if (count < 1) {
@@ -5637,9 +5650,9 @@ async function _runAutoBetInner(userId = null) {
 
     const priceCents = Math.round(best.betPrice * 100);
 
-    // Guard against extreme prices — penny bets (<15¢) bleed bankroll fast
-    const HARD_PRICE_FLOOR = 15; // Never buy below 15¢ — implies <15% win probability
-    const HARD_PRICE_CEILING = 95; // Never buy above 95¢ — risk/reward too poor
+    // Guard against extreme prices — low-probability bets bleed bankroll
+    const HARD_PRICE_FLOOR = 40; // Never buy below 40c — implies <40% win probability
+    const HARD_PRICE_CEILING = 95; // Never buy above 95c — risk/reward too poor
     if (priceCents < HARD_PRICE_FLOOR || priceCents > HARD_PRICE_CEILING) {
       console.log(` Skipping extreme price ${priceCents}c (floor=${HARD_PRICE_FLOOR}c, ceiling=${HARD_PRICE_CEILING}c)`);
       lastScanStatus.status = 'price_extreme';
@@ -6903,19 +6916,29 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const unfavoredGrossEdge = unfavoredWinRate - (unfavoredPrice * 100);
 
   // Pick the side with higher positive gross edge
-  // Guard rail: skip unfavored if ask price is too low (high risk underdog bet)
+  // Hard 40c minimum price floor — reject any bet below 40c on either side
+  const EVAL_PRICE_FLOOR = 0.40; // 40c minimum — below this is too speculative
+  const unfavoredMinPrice = 0.40; // 40c floor for unfavored side too
   let betSide, marketPrice, isFavoredSideBet;
-  const unfavoredMinPrice = 0.35; // 35c floor: below this you're a <35% underdog, too risky
+  const favoredViable = favoredPrice >= EVAL_PRICE_FLOOR && favoredGrossEdge > 0;
   const unfavoredViable = unfavoredPrice >= unfavoredMinPrice && unfavoredGrossEdge > favoredGrossEdge && unfavoredGrossEdge > 0;
-  if (unfavoredViable) {
+  if (unfavoredViable && favoredViable && unfavoredGrossEdge > favoredGrossEdge) {
     betSide = unfavoredSide;
     marketPrice = unfavoredPrice;
     isFavoredSideBet = false;
     console.log(` Dual-side: unfavored ${betSide} edge ${unfavoredGrossEdge.toFixed(1)}% > favored ${favoredSide} edge ${favoredGrossEdge.toFixed(1)}%`);
-  } else {
+  } else if (unfavoredViable && !favoredViable) {
+    betSide = unfavoredSide;
+    marketPrice = unfavoredPrice;
+    isFavoredSideBet = false;
+    console.log(` Dual-side: only unfavored ${betSide} viable (favored ${favoredSide} price ${(favoredPrice*100).toFixed(0)}c < 40c floor)`);
+  } else if (favoredViable) {
     betSide = favoredSide;
     marketPrice = favoredPrice;
     isFavoredSideBet = true;
+  } else {
+    // Neither side meets 40c floor
+    return earlyExit(`All prices below 40c floor: favored ${favoredSide} ${(favoredPrice*100).toFixed(0)}c, unfavored ${unfavoredSide} ${(unfavoredPrice*100).toFixed(0)}c`);
   }
 
   const marketPriceCents = Math.round(marketPrice * 100);
