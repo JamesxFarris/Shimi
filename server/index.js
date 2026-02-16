@@ -7060,13 +7060,17 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
   }
 
+  // Directional signals: compute momentum & buy pressure for soft penalty scoring (used by all bets)
+  const tokenPriceHistory = cryptoPrices[token]?.history || [];
+  const momSignal = tokenPriceHistory.length >= 10 ? calculateMomentumMultiTimeframe(tokenPriceHistory) : null;
+  const bpSignal = getBuyPressure(token);
+
   // ML MODEL BLENDING: Blend ML prediction with empirical win rate (max 30% weight)
   let mlPrediction = null;
   let mlWeight = 0;
   const mlModelState = getMLModel();
   if (mlModelState.trainedOn >= 200 && mlModelState.performance?.accuracy >= 0.55) {
-    const priceHistory = cryptoPrices[token]?.history || [];
-    const momentum = calculateMomentumMultiTimeframe(priceHistory);
+    const momentum = momSignal || { m1: 0, m5: 0, m15: 0, m60: 0, aligned: false, strength: 0, direction: 'neutral' };
     const spreadVal = orderbook ? (betSide === 'YES' ? orderbook.yesSpread : orderbook.noSpread) || 0 : 0;
 
     // Compute cross-token and advanced features for ML
@@ -7093,7 +7097,6 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       }
     }
 
-    const buyPressure = getBuyPressure(token);
     const features = extractMLFeatures({
       absDistance,
       timeRemaining,
@@ -7107,12 +7110,12 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       btcMomentum1m: (parseFloat(btcMom.m1) || 0) * 100,
       volOfVol,
       orderImbalance,
-      buyPressure1m: buyPressure.pressure1m,
-      buyPressure5m: buyPressure.pressure5m,
+      buyPressure1m: bpSignal.pressure1m,
+      buyPressure5m: bpSignal.pressure5m,
       fundingRate: getFundingRate(token),
       durationRatio: 1,
-      buyPressure15m: buyPressure.pressure15m,
-      buyPressure30m: buyPressure.pressure30m,
+      buyPressure15m: bpSignal.pressure15m,
+      buyPressure30m: bpSignal.pressure30m,
       trajectoryScore: 0,
       crossTimeframeSignal: 0,
     });
@@ -7457,6 +7460,83 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
   }
 
+  // MOMENTUM CONFIRMATION: reward bets aligned with price momentum, penalize opposing
+  let momentumBoost = 0;
+  if (momSignal && momSignal.direction !== 'neutral') {
+    const momAligned = (momSignal.direction === 'bullish' && betSide === 'YES') ||
+                       (momSignal.direction === 'bearish' && betSide === 'NO');
+    if (momAligned) {
+      if (momSignal.aligned && momSignal.strength > 0.3) {
+        momentumBoost = 10;
+      } else if (momSignal.aligned) {
+        momentumBoost = 6;
+      } else {
+        momentumBoost = 3;
+      }
+    } else {
+      // Momentum opposes bet direction
+      if (momSignal.aligned && momSignal.strength > 0.3) {
+        momentumBoost = -8;
+      } else if (momSignal.aligned) {
+        momentumBoost = -6;
+      } else {
+        momentumBoost = -3;
+      }
+    }
+    adjustedSignalStrength += momentumBoost;
+    windowPenalties.push(`momentum ${momentumBoost > 0 ? '+' : ''}${momentumBoost}pts (${momSignal.direction}, str=${momSignal.strength.toFixed(2)}%, aligned=${momSignal.aligned})`);
+  }
+
+  // BINANCE BUY PRESSURE: positive pressure = buy-heavy = YES-aligned, negative = sell-heavy = NO-aligned
+  let buyPressureBoost = 0;
+  const bp5 = bpSignal.pressure5m;
+  const bp1 = bpSignal.pressure1m;
+  if (Math.abs(bp5) >= 0.05) {
+    const bpAligned = (bp5 > 0 && betSide === 'YES') || (bp5 < 0 && betSide === 'NO');
+    if (bpAligned) {
+      if (Math.abs(bp5) >= 0.3) {
+        buyPressureBoost = 8;
+      } else if (Math.abs(bp5) >= 0.15) {
+        buyPressureBoost = 5;
+      } else if (Math.sign(bp1) === Math.sign(bp5)) {
+        buyPressureBoost = 2; // weak but 1m confirms
+      }
+    } else {
+      // Pressure opposes bet direction
+      if (Math.abs(bp5) >= 0.3) {
+        buyPressureBoost = -5;
+      } else if (Math.abs(bp5) >= 0.15) {
+        buyPressureBoost = -3;
+      } else {
+        buyPressureBoost = -2;
+      }
+    }
+    if (buyPressureBoost !== 0) {
+      adjustedSignalStrength += buyPressureBoost;
+      windowPenalties.push(`buyPressure ${buyPressureBoost > 0 ? '+' : ''}${buyPressureBoost}pts (5m=${bp5.toFixed(2)})`);
+    }
+  }
+
+  // BTC-LEADS-ALTS: BTC momentum predicts alt direction (ETH, SOL, XRP only)
+  let btcLeadsBoost = 0;
+  if (token !== 'BTC') {
+    const btcHistoryForLeads = cryptoPrices['BTC']?.history || [];
+    if (btcHistoryForLeads.length >= 10) {
+      const btcMomSignal = calculateMomentumMultiTimeframe(btcHistoryForLeads);
+      if (btcMomSignal.direction !== 'neutral') {
+        const btcAligned = (btcMomSignal.direction === 'bullish' && betSide === 'YES') ||
+                           (btcMomSignal.direction === 'bearish' && betSide === 'NO');
+        if (btcAligned) {
+          btcLeadsBoost = (btcMomSignal.aligned && btcMomSignal.strength > 0.2) ? 7 : 3;
+        } else {
+          btcLeadsBoost = (btcMomSignal.aligned && btcMomSignal.strength > 0.2) ? -5 : -2;
+        }
+        adjustedSignalStrength += btcLeadsBoost;
+        windowPenalties.push(`btcLeads ${btcLeadsBoost > 0 ? '+' : ''}${btcLeadsBoost}pts (BTC ${btcMomSignal.direction}, str=${btcMomSignal.strength.toFixed(2)}%)`);
+      }
+    }
+  }
+
   // Same-side saturation: penalize one-sided streaks per token
   // Tokens with high NO bias (like SOL 4.44%) trigger at 2 consecutive YES bets
   const tokenNoBiasForSat = learnedParams.byToken?.[token]?.noBias || 0;
@@ -7547,6 +7627,9 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     confidence: adjustedWinRate.toFixed(0) + '%',
     dataPoints: empirical.sampleSize,
     correlationBoost: corrSignal.hasCorrelationSignal ? corrSignal.signalBoost : 0,
+    momentumBoost,
+    buyPressureBoost,
+    btcLeadsBoost,
     analysisMethod: 'empirical_unified',
     assetType: token,
     currentPrice,
