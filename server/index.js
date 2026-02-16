@@ -2131,13 +2131,31 @@ function getTokenFromTicker(ticker) {
 }
 
 // Check if a market ticker has expired (settled + 5 min grace period)
+// Kalshi tickers use Eastern Time (ET), not UTC
 function isTickerExpired(ticker) {
   if (!ticker) return false;
   const match = ticker.match(/(\d{2})([A-Z]{3})(\d{2})(\d{2})(\d{2})/);
   if (!match) return false;
   const [, yearSuffix, monthStr, day, hour, minute] = match;
   const months = { JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5, JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11 };
-  const expiry = new Date(Date.UTC(2000 + parseInt(yearSuffix), months[monthStr] || 0, parseInt(day), parseInt(hour), parseInt(minute)));
+  const year = 2000 + parseInt(yearSuffix);
+  const mon = months[monthStr] || 0;
+  const d = parseInt(day);
+  // Determine ET→UTC offset (EST=5h, EDT=4h)
+  // US DST: 2nd Sunday of March → 1st Sunday of November
+  let isDST = false;
+  if (mon > 2 && mon < 10) isDST = true; // Apr-Oct: always EDT
+  else if (mon === 2) { // March: EDT after 2nd Sunday
+    const firstDow = new Date(year, 2, 1).getDay();
+    const secondSun = firstDow === 0 ? 8 : 15 - firstDow;
+    isDST = d >= secondSun;
+  } else if (mon === 10) { // November: EDT before 1st Sunday
+    const firstDow = new Date(year, 10, 1).getDay();
+    const firstSun = firstDow === 0 ? 1 : 8 - firstDow;
+    isDST = d < firstSun;
+  }
+  const etOffset = isDST ? 4 : 5;
+  const expiry = new Date(Date.UTC(year, mon, d, parseInt(hour) + etOffset, parseInt(minute)));
   return Date.now() > expiry.getTime() + 5 * 60 * 1000;
 }
 
