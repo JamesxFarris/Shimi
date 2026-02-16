@@ -6569,3 +6569,12 @@ body {
 
 td.positive { color: var(--accent-green, #00ff88); }
 td.negative { color: var(--accent-red, #ff4444); }
+
+.home-trades-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+@media (max-width: 700px) {
+  .home-trades-grid { grid-template-columns: 1fr; }
+}

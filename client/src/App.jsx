@@ -1388,37 +1388,17 @@ function App() {
                   </div>
                 </div>
 
-                {/* Recent Trades (last 10) */}
+                {/* Recent Trades — card grid */}
                 <div className="recent-trades-section">
                   <h3 className="section-title">Recent Trades</h3>
-                  {betHistory.filter(b => b.outcome === 'won' || b.outcome === 'lost').length === 0 ? (
-                    <div className="empty-state-mini">No completed trades yet</div>
+                  {betHistory.length === 0 ? (
+                    <div className="empty-state-mini">No trades yet</div>
                   ) : (
-                    <table className="trades-table">
-                      <thead>
-                        <tr><th>Time</th><th>Token</th><th>Side</th><th>Qty</th><th>Price</th><th>Result</th><th>P&L</th></tr>
-                      </thead>
-                      <tbody>
-                        {betHistory.filter(b => b.outcome === 'won' || b.outcome === 'lost').slice(0, 10).map(bet => {
-                          const profitCents = bet.profit || (bet.outcome === 'lost' ? -(bet.totalCost || bet.count * bet.price || 0) : 0)
-                          return (
-                            <tr key={bet.id} className={bet.outcome}>
-                              <td>{new Date(bet.timestamp).toLocaleDateString([], { month: 'numeric', day: 'numeric' })} {new Date(bet.timestamp).toLocaleTimeString()}</td>
-                              <td className="token-cell">{bet.token || bet.assetType || (bet.ticker && bet.ticker.match(/BTC|ETH|SOL|XRP|DOGE|ADA|AVAX|DOT|LINK|MATIC|SHIB|UNI|LTC|BCH|ATOM/i)?.[0]?.toUpperCase()) || '?'}</td>
-                              <td><span className={`side-pill ${bet.side}`}>{bet.side?.toUpperCase()}</span></td>
-                              <td>{bet.count || 1}</td>
-                              <td>{bet.price || 0}c</td>
-                              <td className={bet.outcome === 'won' ? 'positive' : 'negative'}>
-                                {bet.outcome === 'won' ? 'W' : 'L'}
-                              </td>
-                              <td className={profitCents >= 0 ? 'positive' : 'negative'}>
-                                {profitCents >= 0 ? '+' : ''}{formatCurrency(Math.abs(profitCents) / 100)}
-                              </td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
+                    <div className="home-trades-grid">
+                      {betHistory.slice(0, 8).map(bet => (
+                        <HistoryItem key={bet.id} bet={bet} currentTime={tickerTime} />
+                      ))}
+                    </div>
                   )}
                 </div>
               </div>
@@ -1430,6 +1410,24 @@ function App() {
           {tab === 'history' && (
             <div className="history-page-wrapper">
               <div className="history-page">
+                {/* Session P&L Summary */}
+                <div className="pnl-summary-row" style={{ marginBottom: 16 }}>
+                  <div className="pnl-stat">
+                    <span className="pnl-label">Today P&L</span>
+                    <span className={`pnl-value ${(betStats.totalProfit || 0) >= 0 ? 'positive' : 'negative'}`}>
+                      {(betStats.totalProfit || 0) >= 0 ? '+' : ''}{formatCurrency(Math.abs(betStats.totalProfit || 0))}
+                    </span>
+                  </div>
+                  <div className="pnl-stat">
+                    <span className="pnl-label">Win Rate</span>
+                    <span className="pnl-value">{betStats.wins || 0}W / {betStats.losses || 0}L</span>
+                  </div>
+                  <div className="pnl-stat">
+                    <span className="pnl-label">Markets</span>
+                    <span className="pnl-value">{marketStats.recommended}/{marketStats.totalAnalyzed} edge</span>
+                  </div>
+                </div>
+
                 {/* Overall Bot Stats - from performance tracking */}
                 {performance && performance.summary && (
                   <div className="overall-stats-banner">
