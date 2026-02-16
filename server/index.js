@@ -69,47 +69,6 @@ function isKillSwitchActive() {
   return false;
 }
 
-// Session drawdown circuit breaker — pause betting if bankroll drops 15% from session peak
-// Per-user: each user has independent drawdown tracking
-const DRAWDOWN_LIMIT_PCT = 30; // Halt if down 30% from session peak
-const _drawdownState = new Map(); // userId -> { highWatermark, active }
-
-function _getDrawdownState(userId) {
-  const key = userId || '_global';
-  if (!_drawdownState.has(key)) {
-    _drawdownState.set(key, { highWatermark: 0, active: false });
-  }
-  return _drawdownState.get(key);
-}
-
-function updateSessionHighWatermark(bankrollCents, userId) {
-  const state = _getDrawdownState(userId);
-  if (bankrollCents > state.highWatermark) {
-    state.highWatermark = bankrollCents;
-  }
-}
-
-function checkDrawdownBreaker(bankrollCents, userId) {
-  const state = _getDrawdownState(userId);
-  if (state.highWatermark <= 0) return false;
-  const drawdownPct = ((state.highWatermark - bankrollCents) / state.highWatermark) * 100;
-  if (drawdownPct >= DRAWDOWN_LIMIT_PCT) {
-    if (!state.active) {
-      console.error(` DRAWDOWN BREAKER [${userId || 'global'}]: Bankroll $${(bankrollCents/100).toFixed(2)} is ${drawdownPct.toFixed(1)}% below session peak $${(state.highWatermark/100).toFixed(2)} — halting auto-bet`);
-    }
-    state.active = true;
-    return true;
-  }
-  state.active = false;
-  return false;
-}
-
-function resetDrawdownBreaker(userId) {
-  const key = userId || '_global';
-  _drawdownState.set(key, { highWatermark: 0, active: false });
-  console.log(` Drawdown breaker reset [${userId || 'global'}]`);
-}
-
 // ============================================
 // DISCORD ALERTS — fire-and-forget with 2s rate limit
 // ============================================
@@ -5206,22 +5165,6 @@ async function _runAutoBetInner(userId = null) {
         status: 'bankroll_floor',
         statusMessage: `Balance too low ($${((userConfig.bankroll || 0)/100).toFixed(2)} < $${(minBankroll/100).toFixed(2)} min)`,
         blockedReasons: ['Bankroll below minimum floor']
-      };
-      console.log('========================================\n');
-      return;
-    }
-
-    // SAFETY CHECK 1b: Session drawdown circuit breaker
-    const currentBankroll = userConfig.bankroll || 0;
-    updateSessionHighWatermark(currentBankroll, userId);
-    if (checkDrawdownBreaker(currentBankroll, userId)) {
-      const userDrawdown = _getDrawdownState(userId);
-      lastScanStatus = {
-        ...lastScanStatus,
-        timestamp: new Date().toISOString(),
-        status: 'drawdown_breaker',
-        statusMessage: `Drawdown breaker: $${(currentBankroll/100).toFixed(2)} is ${(((userDrawdown.highWatermark - currentBankroll) / userDrawdown.highWatermark) * 100).toFixed(1)}% below peak $${(userDrawdown.highWatermark/100).toFixed(2)}`,
-        blockedReasons: [`Session drawdown >${DRAWDOWN_LIMIT_PCT}%`]
       };
       console.log('========================================\n');
       return;
@@ -10570,31 +10513,6 @@ app.get('/api/economic-calendar', (req, res) => {
 // Daily P&L endpoint
 app.get('/api/daily-pnl', (req, res) => {
   res.json({ today: dailyStats, history: dailyPnlHistory });
-});
-
-// Drawdown breaker endpoints (per-user)
-app.get('/api/drawdown-breaker/status', (req, res) => {
-  const bankroll = req.userState?.config?.bankroll || 0;
-  const state = _getDrawdownState(req.userId);
-  const drawdownPct = state.highWatermark > 0
-    ? ((state.highWatermark - bankroll) / state.highWatermark) * 100
-    : 0;
-  res.json({
-    active: state.active,
-    sessionHighWatermark: state.highWatermark,
-    currentBankroll: bankroll,
-    drawdownPct: parseFloat(drawdownPct.toFixed(1)),
-    limitPct: DRAWDOWN_LIMIT_PCT
-  });
-});
-
-app.post('/api/drawdown-breaker/reset', (req, res) => {
-  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
-  resetDrawdownBreaker(req.userId);
-  // Re-seed watermark with current bankroll
-  const bankroll = req.userState?.config?.bankroll || 0;
-  updateSessionHighWatermark(bankroll, req.userId);
-  res.json({ success: true, message: 'Drawdown breaker reset', newHighWatermark: bankroll });
 });
 
 // Debug endpoint to see raw Kalshi data (uses global server credentials)
