@@ -1375,7 +1375,7 @@ function App() {
                   <div className="pnl-stat">
                     <span className="pnl-label">Today P&L</span>
                     <span className={`pnl-value ${(betStats.totalProfit || 0) >= 0 ? 'positive' : 'negative'}`}>
-                      {(betStats.totalProfit || 0) >= 0 ? '+' : ''}{formatCurrency(Math.abs(betStats.totalProfit || 0) / 100)}
+                      {(betStats.totalProfit || 0) >= 0 ? '+' : ''}{formatCurrency(Math.abs(betStats.totalProfit || 0))}
                     </span>
                   </div>
                   <div className="pnl-stat">
