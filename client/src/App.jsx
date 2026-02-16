@@ -1383,10 +1383,6 @@ function App() {
                     <span className="pnl-value">{betStats.wins || 0}W / {betStats.losses || 0}L</span>
                   </div>
                   <div className="pnl-stat">
-                    <span className="pnl-label">Maker Saves</span>
-                    <span className="pnl-value positive">+${scanStatus?.makerFeeSavings?.totalDollars || '0.00'}</span>
-                  </div>
-                  <div className="pnl-stat">
                     <span className="pnl-label">Markets</span>
                     <span className="pnl-value">{marketStats.recommended}/{marketStats.totalAnalyzed} edge</span>
                   </div>
