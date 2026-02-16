@@ -5656,10 +5656,10 @@ async function _runAutoBetInner(userId = null) {
       return;
     }
 
-    // 3/8-Kelly sizing: slightly aggressive, user-requested 2-3x bigger bets
+    // 1/2-Kelly sizing: moderately aggressive, user-requested bigger bets
     const bankroll = userConfig.bankroll || 0;
     const kellyFraction = bankroll > 0
-      ? 0.375 * (best.edge / 100) / Math.max(0.01, 1 - best.betPrice)
+      ? 0.5 * (best.edge / 100) / Math.max(0.01, 1 - best.betPrice)
       : 0;
     // Confidence scaling: reduce bet size when data is sparse
     const sampleSize = best.sampleSize || 0;
@@ -5677,8 +5677,8 @@ async function _runAutoBetInner(userId = null) {
       : kellyBet;
     // Off-peak: halve position size (Polymarket-style reduced exposure in thin books)
     const sizedKellyBet = isOffPeak ? Math.round(aggKellyBet * 0.5) : aggKellyBet;
-    // Floor at $1 minimum so Kelly can always buy at least 1 contract, then cap at cycle budget
-    const MIN_BET_CENTS = 100;
+    // Floor at $2 minimum so Kelly buys a few contracts, then cap at cycle budget
+    const MIN_BET_CENTS = 200;
     const MAX_BET_CENTS = Math.min(hardCapCents, Math.max(MIN_BET_CENTS, sizedKellyBet));
 
     console.log(` Bet sizing: Kelly=${(kellyFraction*100).toFixed(1)}% bankroll=$${(bankroll/100).toFixed(2)} kellyBet=$${(sizedKellyBet/100).toFixed(2)}${isLowVol ? ' (1/2 low-vol)' : ''}${hasStrongCorrelation ? ' (1/2 corr)' : ''}${isOffPeak ? ' (1/2 off-peak)' : ''} confidence=${(confidenceScale*100).toFixed(0)}% (${sampleSize} samples) capped=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
