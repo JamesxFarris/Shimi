@@ -7463,10 +7463,11 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // MOMENTUM CONFIRMATION: reward bets aligned with price momentum, penalize opposing
   let momentumBoost = 0;
   if (momSignal && momSignal.direction !== 'neutral') {
+    const momStr = parseFloat(momSignal.strength) || 0;
     const momAligned = (momSignal.direction === 'bullish' && betSide === 'YES') ||
                        (momSignal.direction === 'bearish' && betSide === 'NO');
     if (momAligned) {
-      if (momSignal.aligned && momSignal.strength > 0.3) {
+      if (momSignal.aligned && momStr > 0.3) {
         momentumBoost = 10;
       } else if (momSignal.aligned) {
         momentumBoost = 6;
@@ -7475,7 +7476,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       }
     } else {
       // Momentum opposes bet direction
-      if (momSignal.aligned && momSignal.strength > 0.3) {
+      if (momSignal.aligned && momStr > 0.3) {
         momentumBoost = -8;
       } else if (momSignal.aligned) {
         momentumBoost = -6;
@@ -7484,7 +7485,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       }
     }
     adjustedSignalStrength += momentumBoost;
-    windowPenalties.push(`momentum ${momentumBoost > 0 ? '+' : ''}${momentumBoost}pts (${momSignal.direction}, str=${momSignal.strength.toFixed(2)}%, aligned=${momSignal.aligned})`);
+    windowPenalties.push(`momentum ${momentumBoost > 0 ? '+' : ''}${momentumBoost}pts (${momSignal.direction}, str=${momStr.toFixed(2)}%, aligned=${momSignal.aligned})`);
   }
 
   // BINANCE BUY PRESSURE: positive pressure = buy-heavy = YES-aligned, negative = sell-heavy = NO-aligned
@@ -7524,15 +7525,16 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     if (btcHistoryForLeads.length >= 10) {
       const btcMomSignal = calculateMomentumMultiTimeframe(btcHistoryForLeads);
       if (btcMomSignal.direction !== 'neutral') {
+        const btcStr = parseFloat(btcMomSignal.strength) || 0;
         const btcAligned = (btcMomSignal.direction === 'bullish' && betSide === 'YES') ||
                            (btcMomSignal.direction === 'bearish' && betSide === 'NO');
         if (btcAligned) {
-          btcLeadsBoost = (btcMomSignal.aligned && btcMomSignal.strength > 0.2) ? 7 : 3;
+          btcLeadsBoost = (btcMomSignal.aligned && btcStr > 0.2) ? 7 : 3;
         } else {
-          btcLeadsBoost = (btcMomSignal.aligned && btcMomSignal.strength > 0.2) ? -5 : -2;
+          btcLeadsBoost = (btcMomSignal.aligned && btcStr > 0.2) ? -5 : -2;
         }
         adjustedSignalStrength += btcLeadsBoost;
-        windowPenalties.push(`btcLeads ${btcLeadsBoost > 0 ? '+' : ''}${btcLeadsBoost}pts (BTC ${btcMomSignal.direction}, str=${btcMomSignal.strength.toFixed(2)}%)`);
+        windowPenalties.push(`btcLeads ${btcLeadsBoost > 0 ? '+' : ''}${btcLeadsBoost}pts (BTC ${btcMomSignal.direction}, str=${btcStr.toFixed(2)}%)`);
       }
     }
   }
