@@ -2240,20 +2240,10 @@ function getMaxTotalPerCycle(userConfig = null) {
 
 // Get total rolling spend across ALL tokens in the cycle window
 function getRollingTotalSpend(userId = null, windowMs = CYCLE_WINDOW_MS) {
-  const cutoff = Date.now() - windowMs;
-
-  // In-memory tracker
-  const key = userId || 'default';
-  const entries = rollingSpendTracker.get(key) || [];
-  const memorySpend = entries.filter(e => e.timestamp > cutoff)
-    .reduce((sum, e) => sum + e.amount, 0);
-
-  // betHistory (source of truth)
+  // betHistory is source of truth — only counts pending (unsettled) bets
   const userState = userId ? userStates.get(userId) : null;
   const userBetHistory = userState?.betHistory || betHistory;
-  const historySpend = computeRollingSpendFromHistory(userBetHistory, null, windowMs);
-
-  return Math.max(memorySpend, historySpend);
+  return computeRollingSpendFromHistory(userBetHistory, null, windowMs);
 }
 
 // Get remaining total budget for the cycle
@@ -2335,9 +2325,8 @@ function getExposureForTicker(ticker, userState = null) {
   return exposure;
 }
 
-// Rolling spend tracker prevents exposure reset after 15-min market expiry
-// CRITICAL: Also derives from betHistory so it survives server restarts.
-// The in-memory tracker is a fast cache; betHistory is the source of truth.
+// Legacy in-memory spend tracker (kept for trackSpend calls but no longer used for budget checks)
+// Budget is now computed solely from betHistory, counting only pending (unsettled) bets
 const rollingSpendTracker = new Map(); // userId -> [{amount, token, timestamp}]
 
 function trackSpend(userId, amountCents, token) {
@@ -2346,49 +2335,28 @@ function trackSpend(userId, amountCents, token) {
   rollingSpendTracker.get(key).push({ amount: amountCents, token: token || null, timestamp: Date.now() });
 }
 
-// Compute rolling spend from BOTH in-memory tracker AND betHistory (survives restarts)
+// Compute rolling spend from betHistory (source of truth, survives restarts)
+// Only counts pending (unsettled) bets — settled bets free up budget immediately
 function getRollingSpend(userId, windowMs = 2 * 60 * 60 * 1000) {
-  const cutoff = Date.now() - windowMs;
-
-  // In-memory tracker (fast path, covers bets placed this session)
-  const key = userId || 'default';
-  const entries = rollingSpendTracker.get(key) || [];
-  const recent = entries.filter(e => e.timestamp > cutoff);
-  rollingSpendTracker.set(key, recent);
-  const memorySpend = recent.reduce((sum, e) => sum + e.amount, 0);
-
-  // betHistory (source of truth, survives restarts)
   const userState = userId ? userStates.get(userId) : null;
   const userBetHistory = userState?.betHistory || betHistory;
-  const historySpend = computeRollingSpendFromHistory(userBetHistory, null, windowMs);
-
-  // Use whichever is higher memory tracker might have bets not yet in history,
-  // history has bets from before this server session
-  return Math.max(memorySpend, historySpend);
+  return computeRollingSpendFromHistory(userBetHistory, null, windowMs);
 }
 
 function getRollingSpendByToken(userId, token, windowMs = 2 * 60 * 60 * 1000) {
-  const cutoff = Date.now() - windowMs;
-
-  // In-memory tracker
-  const key = userId || 'default';
-  const entries = rollingSpendTracker.get(key) || [];
-  const memorySpend = entries.filter(e => e.timestamp > cutoff && e.token === token)
-    .reduce((sum, e) => sum + e.amount, 0);
-
-  // betHistory (source of truth)
+  // betHistory is source of truth — only counts pending (unsettled) bets
   const userState = userId ? userStates.get(userId) : null;
   const userBetHistory = userState?.betHistory || betHistory;
-  const historySpend = computeRollingSpendFromHistory(userBetHistory, token, windowMs);
-
-  return Math.max(memorySpend, historySpend);
+  return computeRollingSpendFromHistory(userBetHistory, token, windowMs);
 }
 
 // Derive rolling spend from betHistory this is restart-proof
+// Only counts PENDING (unsettled) bets — settled bets no longer represent active exposure
 function computeRollingSpendFromHistory(betHistoryArr, token, windowMs = 2 * 60 * 60 * 1000) {
   const cutoff = Date.now() - windowMs;
   let total = 0;
   for (const bet of betHistoryArr) {
+    if (bet.outcome === 'won' || bet.outcome === 'lost') continue; // Settled, exposure resolved
     const ts = new Date(bet.timestamp).getTime();
     if (ts < cutoff) continue; // Old bet, skip
     if (token) {
