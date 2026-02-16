@@ -1303,16 +1303,6 @@ function App() {
                 <h3 className="section-title">Quick Actions</h3>
                 <div className="action-buttons">
                   <button
-                    className={`action-btn primary ${placingBet === 'auto' ? 'loading' : ''}`}
-                    onClick={placeAutoBet}
-                    disabled={opportunities.length === 0 || placingBet}
-                  >
-                    <span className="action-icon">⚡</span>
-                    <span className="action-text">
-                      {placingBet === 'auto' ? 'Placing...' : 'Place Best Bet Now'}
-                    </span>
-                  </button>
-                  <button
                     className={`action-btn ${autoBetEnabled ? 'danger' : 'secondary'}`}
                     onClick={toggleAutoBet}
                   >
