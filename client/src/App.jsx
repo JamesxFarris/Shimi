@@ -1408,7 +1408,7 @@ function App() {
                           return (
                             <tr key={bet.id} className={bet.outcome}>
                               <td>{new Date(bet.timestamp).toLocaleDateString([], { month: 'numeric', day: 'numeric' })} {new Date(bet.timestamp).toLocaleTimeString()}</td>
-                              <td className="token-cell">{bet.token || bet.assetType || '?'}</td>
+                              <td className="token-cell">{bet.token || bet.assetType || (bet.ticker && bet.ticker.match(/BTC|ETH|SOL|XRP|DOGE|ADA|AVAX|DOT|LINK|MATIC|SHIB|UNI|LTC|BCH|ATOM/i)?.[0]?.toUpperCase()) || '?'}</td>
                               <td><span className={`side-pill ${bet.side}`}>{bet.side?.toUpperCase()}</span></td>
                               <td>{bet.count || 1}</td>
                               <td>{bet.price || 0}c</td>
