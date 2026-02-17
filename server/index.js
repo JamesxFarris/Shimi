@@ -1212,18 +1212,19 @@ async function checkPendingSettlements() {
         try {
           // Try with user config if available, otherwise use global
           const market = await kalshiRequest('GET', `/markets/${bet.ticker}`, null, userConfig);
-          if (market.market?.result) {
-            const result = market.market.result; // 'yes' or 'no'
+          const mkt = market.market || {};
+          const result = mkt.result || mkt.market_result;
+          if (result) {
             const won = (bet.side.toLowerCase() === result);
             const contracts = bet.contracts || Math.floor((bet.totalCost || 0) / (bet.priceCents || 1));
             const profit = won ? (contracts * 100 - (bet.totalCost || 0)) : 0;
-            settleBet(bet.id, won ? 'won' : 'lost', market.market.settlement_value, profit);
-            console.log(` Settled bet ${bet.id}: ${won ? 'WON' : 'LOST'} (${bet.side} on ${bet.ticker})`);
+            settleBet(bet.id, won ? 'won' : 'lost', mkt.settlement_value || mkt.expiration_value, profit);
+            console.log(` Settled bet ${bet.id}: ${won ? 'WON' : 'LOST'} (${bet.side} on ${bet.ticker}, result=${result})`);
           } else {
             // Market exists but no result yet — Kalshi hasn't settled it
             if (!bet._noResultLogCount) bet._noResultLogCount = 0;
             if (bet._noResultLogCount++ < 3) {
-              console.log(` Market ${bet.ticker} has no result yet — waiting for Kalshi settlement`);
+              console.log(` Market ${bet.ticker} has no result yet — waiting for Kalshi settlement (status=${mkt.status}, keys=${Object.keys(mkt).filter(k => k.includes('result') || k.includes('settle') || k.includes('status')).join(',')})`);
             }
           }
         } catch (e) {
@@ -1268,14 +1269,17 @@ async function checkPendingSettlements() {
               if (bet.ticker) {
                 try {
                   const finalMarket = await kalshiRequest('GET', `/markets/${bet.ticker}`, null, userConfig);
-                  if (finalMarket.market?.result) {
-                    const result = finalMarket.market.result;
-                    const won = (bet.side.toLowerCase() === result);
+                  const fmkt = finalMarket.market || {};
+                  const finalResult = fmkt.result || fmkt.market_result;
+                  if (finalResult) {
+                    const won = (bet.side.toLowerCase() === finalResult);
                     const contracts3 = bet.contracts || Math.floor((bet.totalCost || 0) / (bet.priceCents || 1));
                     const profit = won ? (contracts3 * 100 - (bet.totalCost || 0)) : 0;
-                    settleBet(bet.id, won ? 'won' : 'lost', finalMarket.market.settlement_value, profit);
-                    console.log(` Final API check SUCCEEDED for ${bet.id}: ${won ? 'WON' : 'LOST'} (${bet.side} on ${bet.ticker})`);
+                    settleBet(bet.id, won ? 'won' : 'lost', fmkt.settlement_value || fmkt.expiration_value, profit);
+                    console.log(` Final API check SUCCEEDED for ${bet.id}: ${won ? 'WON' : 'LOST'} (${bet.side} on ${bet.ticker}, result=${finalResult})`);
                     finalSettled = true;
+                  } else {
+                    console.log(` Final API check: no result field (status=${fmkt.status}, keys=${Object.keys(fmkt).slice(0, 10).join(',')})`);
                   }
                 } catch (e) {
                   console.log(` Final API check failed for ${bet.id}: ${e.message}`);
@@ -8156,7 +8160,7 @@ async function fetchBulkHistoricalDataLegacy(token = 'all', maxPages = 1000, use
               token: t,
               strikePrice: market.floor_strike,
               settlementPrice: parseFloat(market.expiration_value),
-              result: market.result,
+              result: market.result || market.market_result,
               closeTime: market.close_time,
               volume: market.volume || 0
             });
