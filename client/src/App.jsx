@@ -429,6 +429,17 @@ function App() {
   const [marketStats, setMarketStats] = useState({ totalAnalyzed: 0, recommended: 0, filteredNoEdge: 0, filteredLowProb: 0 })
   // Performance tracking
   const [performance, setPerformance] = useState(null)
+  // Low-cost mode state
+  const [lowCostMode, setLowCostMode] = useState({
+    enabled: false,
+    minPrice: 1,
+    maxPrice: 9,
+    takeProfitPercent: 50,
+    stopLossPercent: -50,
+    timeStopMinutes: 5,
+    maxPositions: 5,
+    maxPerPosition: 500
+  })
 
   // Copy trading state
   const [copyStatus, setCopyStatus] = useState({ running: false, leaders: [], recentActivity: [], stats: { totalLeaders: 0, activeLeaders: 0, totalCopied: 0 } })
@@ -631,6 +642,7 @@ function App() {
     fetchAutoBetStatus()  // Get current auto-bet state
     fetchRiskSettings()     // Get saved risk settings
     fetchScaleInSettings()  // Get saved scale-in settings
+    fetchLowCostSettings()  // Get saved low-cost mode settings
     fetchModelMonitoring()  // Get prospective data, selectivity rules
     checkAuth()
 
@@ -909,6 +921,56 @@ function App() {
     } catch (err) {
       console.error('Error fetching scale-in settings:', err)
     }
+  }
+
+  // Fetch low-cost mode settings from server
+  const fetchLowCostSettings = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/low-cost/settings`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      if (data.success && data.lowCostMode) {
+        setLowCostMode(data.lowCostMode)
+      }
+    } catch (err) {
+      console.error('Error fetching low-cost settings:', err)
+    }
+  }
+
+  // Toggle low-cost mode
+  const toggleLowCostMode = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/low-cost/toggle`, {
+        method: 'POST',
+        body: JSON.stringify({ enabled: !lowCostMode.enabled })
+      })
+      const data = await res.json()
+      if (data.success && data.lowCostMode) {
+        setLowCostMode(data.lowCostMode)
+      }
+    } catch (err) {
+      console.error('Error toggling low-cost mode:', err)
+    }
+  }
+
+  // Save low-cost mode settings
+  const saveLowCostSettings = async () => {
+    setSettingsSaving(true)
+    try {
+      const res = await authFetch(`${API_BASE}/api/low-cost/settings`, {
+        method: 'POST',
+        body: JSON.stringify(lowCostMode)
+      })
+      const data = await res.json()
+      if (data.success && data.lowCostMode) {
+        setLowCostMode(data.lowCostMode)
+        setSettingsSavedSection('lowcost')
+        setTimeout(() => setSettingsSavedSection(null), 3000)
+      }
+    } catch (err) {
+      console.error('Error saving low-cost settings:', err)
+    }
+    setSettingsSaving(false)
   }
 
   // Update local risk settings state (doesn't save until Save clicked)
@@ -2528,6 +2590,12 @@ function App() {
                         {isAuthenticated ? 'Live' : 'Simulation'}
                       </span>
                     </div>
+                    <div className="settings-item">
+                      <span className="settings-label">Low-Cost Mode</span>
+                      <span className={`settings-value ${lowCostMode.enabled ? 'active' : ''}`}>
+                        {lowCostMode.enabled ? `Active (${lowCostMode.minPrice}-${lowCostMode.maxPrice}c)` : 'Off'}
+                      </span>
+                    </div>
                   </div>
                 </div>
 
@@ -2560,6 +2628,93 @@ function App() {
 
                 {/* Scale-In Settings - hidden from UI, logic still active server-side */}
 
+                {/* Low-Cost Mode */}
+                <div className="settings-card">
+                  <h3 className="settings-card-title">Low-Cost Token Strategy</h3>
+                  <p className="settings-description">
+                    Buy 1-9c contracts and flip at +{lowCostMode.takeProfitPercent || 50}% gain. High risk, asymmetric payoff.
+                  </p>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                    <button
+                      className={`action-btn ${lowCostMode.enabled ? 'danger' : 'secondary'}`}
+                      onClick={toggleLowCostMode}
+                      style={{ padding: '8px 16px', fontSize: '13px' }}
+                    >
+                      {lowCostMode.enabled ? 'Disable' : 'Enable'} Low-Cost Mode
+                    </button>
+                    <span style={{ fontSize: '12px', color: lowCostMode.enabled ? '#2ecc71' : '#888' }}>
+                      {lowCostMode.enabled ? 'Active' : 'Inactive'}
+                      {lowCostMode.enabled && !autoBetEnabled ? ' (start auto-bet to scan)' : ''}
+                    </span>
+                  </div>
+
+                  <div className="threshold-controls-grid">
+                    <div className="threshold-control">
+                      <label style={{ fontSize: '12px', color: '#888' }}>Price Range</label>
+                      <div className="threshold-controls">
+                        <button className="threshold-btn" onClick={() => setLowCostMode(prev => ({ ...prev, minPrice: Math.max(1, prev.minPrice - 1) }))}>-</button>
+                        <span className="threshold-value">{lowCostMode.minPrice}-{lowCostMode.maxPrice}c</span>
+                        <button className="threshold-btn" onClick={() => setLowCostMode(prev => ({ ...prev, maxPrice: Math.min(25, prev.maxPrice + 1) }))}>+</button>
+                      </div>
+                      <span style={{ fontSize: '10px', color: '#666' }}>Contract buy range</span>
+                    </div>
+                    <div className="threshold-control">
+                      <label style={{ fontSize: '12px', color: '#888' }}>Take Profit</label>
+                      <div className="threshold-controls">
+                        <button className="threshold-btn" onClick={() => setLowCostMode(prev => ({ ...prev, takeProfitPercent: Math.max(10, prev.takeProfitPercent - 10) }))}>-</button>
+                        <span className="threshold-value">+{lowCostMode.takeProfitPercent}%</span>
+                        <button className="threshold-btn" onClick={() => setLowCostMode(prev => ({ ...prev, takeProfitPercent: Math.min(200, prev.takeProfitPercent + 10) }))}>+</button>
+                      </div>
+                      <span style={{ fontSize: '10px', color: '#666' }}>Exit when up this %</span>
+                    </div>
+                    <div className="threshold-control">
+                      <label style={{ fontSize: '12px', color: '#888' }}>Stop Loss</label>
+                      <div className="threshold-controls">
+                        <button className="threshold-btn" onClick={() => setLowCostMode(prev => ({ ...prev, stopLossPercent: Math.max(-90, prev.stopLossPercent - 10) }))}>-</button>
+                        <span className="threshold-value">{lowCostMode.stopLossPercent}%</span>
+                        <button className="threshold-btn" onClick={() => setLowCostMode(prev => ({ ...prev, stopLossPercent: Math.min(-10, prev.stopLossPercent + 10) }))}>+</button>
+                      </div>
+                      <span style={{ fontSize: '10px', color: '#666' }}>Cut loss at this %</span>
+                    </div>
+                    <div className="threshold-control">
+                      <label style={{ fontSize: '12px', color: '#888' }}>Time Stop</label>
+                      <div className="threshold-controls">
+                        <button className="threshold-btn" onClick={() => setLowCostMode(prev => ({ ...prev, timeStopMinutes: Math.max(1, prev.timeStopMinutes - 1) }))}>-</button>
+                        <span className="threshold-value">{lowCostMode.timeStopMinutes}min</span>
+                        <button className="threshold-btn" onClick={() => setLowCostMode(prev => ({ ...prev, timeStopMinutes: Math.min(14, prev.timeStopMinutes + 1) }))}>+</button>
+                      </div>
+                      <span style={{ fontSize: '10px', color: '#666' }}>Exit if flat after N min</span>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: '12px' }}>
+                    <DollarStepper
+                      label="Max per position"
+                      value={Math.round((lowCostMode.maxPerPosition || 500) / 100)}
+                      onChange={(v) => setLowCostMode(prev => ({ ...prev, maxPerPosition: v * 100 }))}
+                      min={1}
+                      max={50}
+                    />
+                  </div>
+
+                  <div className="threshold-control" style={{ marginTop: '8px' }}>
+                    <label style={{ fontSize: '12px', color: '#888' }}>Max Positions</label>
+                    <div className="threshold-controls">
+                      <button className="threshold-btn" onClick={() => setLowCostMode(prev => ({ ...prev, maxPositions: Math.max(1, prev.maxPositions - 1) }))}>-</button>
+                      <span className="threshold-value">{lowCostMode.maxPositions}</span>
+                      <button className="threshold-btn" onClick={() => setLowCostMode(prev => ({ ...prev, maxPositions: Math.min(10, prev.maxPositions + 1) }))}>+</button>
+                    </div>
+                  </div>
+
+                  <button
+                    className={`save-settings-btn ${settingsSavedSection === 'lowcost' ? 'saved' : ''}`}
+                    onClick={saveLowCostSettings}
+                    style={{ marginTop: '16px' }}
+                  >
+                    {settingsSavedSection === 'lowcost' ? '✓ Saved' : 'Save Low-Cost Settings'}
+                  </button>
+                </div>
 
                 {/* How It Works */}
                 <div className="settings-card wide">

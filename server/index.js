@@ -186,6 +186,21 @@ const DEFAULT_CONFIG = {
     easyProfitThreshold: 12, // Near expiry (<5min): take 12%+ profit (accounts for fees)
     coinFlipPreventionEnabled: true // Exit coin-flip positions near expiry (can disable to ride it out)
     // Note: Early exits (>5min left) require 18%+ profit to justify fees
+  },
+  // Low-cost token strategy: buy 1-9c contracts and flip at 40-50% gain
+  lowCostMode: {
+    enabled: false,
+    minPrice: 1,           // Minimum contract price in cents
+    maxPrice: 9,           // Maximum contract price in cents
+    takeProfitPercent: 50, // Sell when price rises this % above entry (e.g., 5c -> 7.5c)
+    stopLossPercent: -50,  // Cut loss if contract drops this % below entry
+    timeStopMinutes: 5,    // Exit if no movement after this many minutes
+    maxPositions: 5,       // Max simultaneous low-cost positions
+    maxPerPosition: 500,   // Max cents per position ($5.00)
+    preferMaker: true,     // Use maker orders to save on fees
+    minLiquidity: 5,       // Minimum contracts on book at target price
+    requireVolatility: true, // Prefer entering during higher volatility
+    scanIntervalMs: 10000  // How often to scan for low-cost opportunities
   }
 };
 
@@ -694,6 +709,8 @@ const userStates = new Map();
 
 // Auto-bet intervals per user
 const userAutoBetIntervals = new Map();
+// Low-cost strategy intervals per user
+const userLowCostIntervals = new Map();
 
 // Create default user state
 function createDefaultUserState() {
@@ -6159,11 +6176,23 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
     }
     userAutoBetIntervals.set(req.userId, setInterval(() => runAutoBet(req.userId), intervalSeconds * 1000));
 
-    // AUTO-SELL REMOVED: No take-profit/stop-loss scanning — positions ride to expiry
+    // Start low-cost scanning if lowCostMode is enabled
+    if (userConfig.lowCostMode?.enabled) {
+      const lcInterval = userConfig.lowCostMode.scanIntervalMs || 10000;
+      if (userLowCostIntervals.has(req.userId)) {
+        clearInterval(userLowCostIntervals.get(req.userId));
+      }
+      runLowCostAutoBet(req.userId);
+      userLowCostIntervals.set(req.userId, setInterval(() => {
+        runLowCostAutoBet(req.userId);
+        monitorLowCostPositions(userConfig, userPortfolio, req.userId);
+      }, lcInterval));
+      console.log(` Low-cost scanning enabled for user ${req.userId} (every ${lcInterval/1000}s)`);
+    }
 
     res.json({
       success: true,
-      message: `Auto-betting enabled (every ${intervalSeconds}s)`,
+      message: `Auto-betting enabled (every ${intervalSeconds}s)${userConfig.lowCostMode?.enabled ? ' + low-cost mode' : ''}`,
       autoBetEnabled: true
     });
   } else if (!enabled && userConfig.autoBetEnabled) {
@@ -6180,8 +6209,15 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
       autoBetInterval = null;
     }
 
+    // Stop low-cost scanning
+    if (userLowCostIntervals.has(req.userId)) {
+      clearInterval(userLowCostIntervals.get(req.userId));
+      userLowCostIntervals.delete(req.userId);
+    }
+
     // NOTE: Do NOT stop take-profit scanning when auto-bet is disabled
     // Position protection (stop-loss) should always run to protect open positions
+    // Low-cost monitoring continues for existing positions even when new bets stop
     // stopTakeProfitScanning(req.userId); // REMOVED - keep monitoring active
 
     res.json({ success: true, message: 'Auto-betting disabled (position monitoring still active)', autoBetEnabled: false });
@@ -6206,13 +6242,27 @@ app.get('/api/auto-bet/status', (req, res) => {
     runAutoBet(req.userId);
     userAutoBetIntervals.set(req.userId, setInterval(() => runAutoBet(req.userId), 10000));
 
-    // AUTO-SELL REMOVED: No take-profit/stop-loss scanning
+    // Restore low-cost scanning if enabled
+    if (userConfig.lowCostMode?.enabled && !userLowCostIntervals.has(req.userId)) {
+      const lcInterval = userConfig.lowCostMode.scanIntervalMs || 10000;
+      console.log(` Restoring low-cost interval for user ${req.userId}`);
+      runLowCostAutoBet(req.userId);
+      userLowCostIntervals.set(req.userId, setInterval(() => {
+        runLowCostAutoBet(req.userId);
+        monitorLowCostPositions(userConfig, userPortfolio, req.userId);
+      }, lcInterval));
+    }
   }
 
   res.json({
     success: true,
     autoBetEnabled: userConfig.autoBetEnabled,
     intervalRunning: req.userId ? userAutoBetIntervals.has(req.userId) : false,
+    lowCostMode: {
+      enabled: userConfig.lowCostMode?.enabled || false,
+      intervalRunning: req.userId ? userLowCostIntervals.has(req.userId) : false,
+      settings: userConfig.lowCostMode || DEFAULT_CONFIG.lowCostMode
+    },
     makerFeeSavings: {
       totalDollars: (makerFeeSavings.totalCents / 100).toFixed(2),
       fillCount: makerFeeSavings.fillCount,
@@ -7655,6 +7705,688 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       noLiquidity: orderbook.noLiquidityAtBest
     } : null
   };
+}
+
+// ============================================
+// LOW-COST TOKEN STRATEGY
+// Buy 1-9c contracts and flip at 40-50% gain
+// ============================================
+
+/**
+ * Evaluate a market for low-cost scalping opportunity.
+ * Unlike the empirical strategy (which bets on likely outcomes at 55-92c),
+ * this looks for cheap contracts (1-9c) with enough liquidity and volatility
+ * to potentially spike 40-50% for a quick flip.
+ *
+ * Key differences from the main strategy:
+ * - We DON'T care about win probability (these are unlikely events)
+ * - We DO care about: liquidity, volatility, spread, and time remaining
+ * - We exit on price movement, NOT at settlement
+ */
+function evaluateLowCostOpportunity(parsed, currentPrice, orderbook, userConfig = null) {
+  const cfg = userConfig || config;
+  const lcMode = cfg.lowCostMode || DEFAULT_CONFIG.lowCostMode;
+  const token = parsed.cryptoType;
+  const ticker = parsed.ticker || '';
+  const timeRemaining = parsed.timeRemainingMinutes || 15;
+
+  function earlyExit(reason) {
+    return {
+      shouldBet: false,
+      reasons: [reason],
+      filterReason: reason,
+      side: '--',
+      betSide: '--',
+      marketPrice: 0,
+      marketPriceCents: 0,
+      betPrice: 0,
+      betPriceCents: 0,
+      signalStrength: 0,
+      edge: 0,
+      winProbability: '0',
+      token,
+      timeRemaining,
+      currentPrice,
+      assetType: token,
+      lowCost: true
+    };
+  }
+
+  if (!token || !parsed.strikePrice || !currentPrice) {
+    return earlyExit('Missing required data');
+  }
+
+  // Price staleness check
+  const priceAge = Date.now() - (cryptoPrices[token]?.timestamp || 0);
+  if (priceAge > 60000) {
+    return earlyExit(`Stale price (${Math.round(priceAge / 1000)}s old)`);
+  }
+
+  // Need enough time remaining for price to move and for us to exit
+  // Too little time = can't exit; too much time = contract hasn't decayed to cheap levels yet
+  if (timeRemaining < 2) {
+    return earlyExit(`Too close to expiry: ${timeRemaining.toFixed(1)}min`);
+  }
+  if (timeRemaining > 12) {
+    return earlyExit(`Too far from expiry: ${timeRemaining.toFixed(1)}min (contracts not cheap yet)`);
+  }
+
+  // Evaluate BOTH sides for cheap contracts
+  const yesPrice = Math.round((parsed.yesAsk || 0) * 100);
+  const noPrice = Math.round((parsed.noAsk || 0) * 100);
+
+  const minP = lcMode.minPrice || 1;
+  const maxP = lcMode.maxPrice || 9;
+
+  // Find which side(s) have contracts in our target price range
+  const candidates = [];
+
+  if (yesPrice >= minP && yesPrice <= maxP) {
+    candidates.push({
+      side: 'YES',
+      price: yesPrice,
+      priceFraction: parsed.yesAsk,
+      liquidity: orderbook?.yesLiquidityAtBest || 0,
+      spread: orderbook?.yesSpread || 0,
+      totalDepth: orderbook?.yesTotalDepth || 0
+    });
+  }
+
+  if (noPrice >= minP && noPrice <= maxP) {
+    candidates.push({
+      side: 'NO',
+      price: noPrice,
+      priceFraction: parsed.noAsk,
+      liquidity: orderbook?.noLiquidityAtBest || 0,
+      spread: orderbook?.noSpread || 0,
+      totalDepth: orderbook?.noTotalDepth || 0
+    });
+  }
+
+  if (candidates.length === 0) {
+    return earlyExit(`No contracts in ${minP}-${maxP}c range (YES=${yesPrice}c, NO=${noPrice}c)`);
+  }
+
+  // Score each candidate
+  const minLiquidity = lcMode.minLiquidity || 5;
+  const scored = candidates.map(c => {
+    let score = 50; // Base score
+    const reasons = [];
+
+    // Liquidity scoring: more depth = easier to enter AND exit
+    if (c.liquidity < minLiquidity) {
+      score -= 30;
+      reasons.push(`Low liquidity: ${c.liquidity} contracts (need ${minLiquidity})`);
+    } else {
+      score += Math.min(15, c.liquidity / 2); // Up to +15 for deep books
+    }
+
+    // Spread scoring: tighter = better
+    if (c.spread > 5) {
+      score -= 20;
+      reasons.push(`Wide spread: ${c.spread}c`);
+    } else if (c.spread <= 2) {
+      score += 10;
+    }
+
+    // Price scoring: cheaper is better for asymmetry (1-3c > 7-9c)
+    if (c.price <= 3) {
+      score += 10; // Max asymmetry
+    } else if (c.price <= 5) {
+      score += 5;
+    }
+
+    // Volatility scoring: higher vol = more likely to see price spikes on the contract
+    const regime = detectVolatilityRegime(token);
+    if (regime.regime === 'high') {
+      score += 15; // High vol = cheap contracts can spike
+      reasons.push('High volatility (good for spikes)');
+    } else if (regime.regime === 'medium') {
+      score += 5;
+    } else if (regime.regime === 'low') {
+      score -= 10; // Low vol = contracts stay flat
+      reasons.push('Low volatility (contracts may not move)');
+    } else if (regime.regime === 'spike') {
+      score += 20; // Spikes create the biggest opportunities for cheap contracts
+      reasons.push('Volatility spike (max opportunity)');
+    }
+
+    // Time scoring: sweet spot is 3-8 minutes remaining
+    if (timeRemaining >= 3 && timeRemaining <= 8) {
+      score += 10;
+    } else if (timeRemaining > 8) {
+      score += 5; // Still okay, contracts getting cheaper
+    }
+
+    // Momentum: if price is moving TOWARD the strike, cheap contracts spike
+    const priceHistory = cryptoPrices[token]?.history || [];
+    if (priceHistory.length >= 10) {
+      const momentum = calculateMomentumMultiTimeframe(priceHistory);
+      const pctFromStrike = ((currentPrice - parsed.strikePrice) / parsed.strikePrice) * 100;
+
+      // YES contract is cheap when price is below strike (for 'above' markets)
+      // If momentum is pushing price toward strike, YES contracts will spike
+      if (c.side === 'YES' && parsed.marketType === 'above') {
+        // YES wins if price >= strike. It's cheap because price is below strike.
+        // Bullish momentum = price moving toward strike = good
+        if (momentum.direction === 'bullish') {
+          score += 15;
+          reasons.push('Momentum toward strike (bullish)');
+        }
+      } else if (c.side === 'NO' && parsed.marketType === 'above') {
+        // NO is cheap when price is above strike.
+        // Bearish momentum = price moving toward strike from above = good
+        if (momentum.direction === 'bearish') {
+          score += 15;
+          reasons.push('Momentum toward strike (bearish)');
+        }
+      } else if (c.side === 'YES' && parsed.marketType === 'below') {
+        // YES wins if price < strike. Cheap when price is above strike.
+        if (momentum.direction === 'bearish') {
+          score += 15;
+          reasons.push('Momentum toward strike (bearish)');
+        }
+      } else if (c.side === 'NO' && parsed.marketType === 'below') {
+        if (momentum.direction === 'bullish') {
+          score += 15;
+          reasons.push('Momentum toward strike (bullish)');
+        }
+      }
+    }
+
+    // Total depth on our side: more contracts = more exit liquidity
+    if (c.totalDepth >= 50) {
+      score += 5;
+    }
+
+    return { ...c, score, reasons };
+  });
+
+  // Pick the best candidate
+  scored.sort((a, b) => b.score - a.score);
+  const best = scored[0];
+
+  // Minimum score threshold to bet
+  const shouldBet = best.score >= 55 && best.liquidity >= minLiquidity;
+
+  // Calculate potential profit for display
+  const takeProfitPct = lcMode.takeProfitPercent || 50;
+  const targetPrice = Math.ceil(best.price * (1 + takeProfitPct / 100));
+  const maxContracts = Math.floor((lcMode.maxPerPosition || 500) / best.price);
+
+  return {
+    shouldBet,
+    reasons: best.reasons,
+    filterReason: shouldBet ? null : (best.reasons[0] || 'Score too low'),
+    side: best.side,
+    betSide: best.side,
+    marketPrice: best.priceFraction,
+    marketPriceCents: best.price,
+    betPrice: best.priceFraction,
+    betPriceCents: best.price,
+    signalStrength: best.score,
+    edge: takeProfitPct, // "Edge" here means our target flip percentage
+    winProbability: best.price.toString(), // Implied prob = price
+    token,
+    timeRemaining,
+    currentPrice,
+    assetType: token,
+    title: parsed.title,
+    ticker,
+    strikePrice: parsed.strikePrice,
+    cryptoType: token,
+    lowCost: true,
+    targetExitPrice: targetPrice,
+    maxContracts,
+    liquidity: best.liquidity,
+    spread: best.spread,
+    totalDepth: best.totalDepth,
+    candidateCount: scored.length,
+    regime: detectVolatilityRegime(token).regime,
+    // For compatibility with bet placement
+    isScaleIn: false,
+    isFavoredSideBet: false
+  };
+}
+
+/**
+ * Run the low-cost auto-bet scan loop.
+ * Separate from main runAutoBet to keep strategies cleanly isolated.
+ */
+async function runLowCostAutoBet(userId = null) {
+  const key = `lowcost:${userId || 'default'}`;
+  const now = Date.now();
+  const lockTime = autoBetRunning.get(key);
+  if (lockTime && (now - lockTime) < 90000) return;
+  if (lockTime) {
+    console.log(` LOW-COST: Force-releasing stale lock for ${key}`);
+  }
+  autoBetRunning.set(key, now);
+  try {
+    return await _runLowCostAutoBetInner(userId);
+  } finally {
+    autoBetRunning.delete(key);
+  }
+}
+
+async function _runLowCostAutoBetInner(userId = null) {
+  if (isKillSwitchActive()) return;
+
+  const userState = userId ? await getUserStateAsync(userId) : null;
+  const userConfig = userState?.config || config;
+  const userPortfolio = userState?.portfolio || portfolio;
+  const userBetHistory = userState?.betHistory || betHistory;
+  const lcMode = userConfig.lowCostMode || DEFAULT_CONFIG.lowCostMode;
+
+  if (!lcMode.enabled) return;
+
+  console.log('\n--- ========== LOW-COST SCAN ==========');
+  if (userId) console.log(` User: ${userId}`);
+
+  // Refresh balance
+  if (userConfig.isAuthenticated) {
+    try {
+      const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
+      userPortfolio.balance = balanceData.balance || 0;
+      userConfig.bankroll = userPortfolio.balance;
+      console.log(` Balance: $${(userPortfolio.balance / 100).toFixed(2)}`);
+    } catch (e) {
+      console.log(' Could not refresh balance:', e.message);
+    }
+  }
+
+  // Bankroll floor
+  if (isBankrollTooLow(userConfig)) {
+    console.log(` LOW-COST: Balance too low, skipping`);
+    console.log('==========================================\n');
+    return;
+  }
+
+  // Check how many low-cost positions we already have
+  const maxPositions = lcMode.maxPositions || 5;
+  const openPositions = (userPortfolio.positions || []).filter(p => Math.abs(p.position || 0) > 0);
+
+  // Count positions that are low-cost (average_price <= maxPrice)
+  const lowCostPositions = openPositions.filter(p => {
+    const avgPrice = p.average_price || 0;
+    return avgPrice > 0 && avgPrice <= (lcMode.maxPrice || 9);
+  });
+
+  if (lowCostPositions.length >= maxPositions) {
+    console.log(` LOW-COST: Position cap reached (${lowCostPositions.length}/${maxPositions})`);
+    console.log('==========================================\n');
+    return;
+  }
+
+  // Fetch markets
+  const cryptoMarkets = await fetchCryptoMarkets();
+  console.log(` Fetched: ${cryptoMarkets.length} markets`);
+
+  // Analyze each market for low-cost opportunities
+  const opportunities = [];
+  for (const m of cryptoMarkets) {
+    const parsed = parseMarket(m);
+    if (!parsed.cryptoType || !parsed.strikePrice) continue;
+
+    const priceData = cryptoPrices[parsed.cryptoType];
+    if (!priceData?.price) continue;
+    if (Date.now() - priceData.timestamp > 60000) continue;
+
+    // Fetch orderbook — critical for low-cost strategy (need liquidity data)
+    let orderbook = null;
+    try {
+      orderbook = await fetchOrderbook(m.ticker, userConfig);
+    } catch (e) {
+      continue; // Can't evaluate without orderbook
+    }
+
+    const result = evaluateLowCostOpportunity(parsed, priceData.price, orderbook, userConfig);
+    if (result.shouldBet) {
+      opportunities.push(result);
+    }
+  }
+
+  if (opportunities.length === 0) {
+    console.log(` No low-cost opportunities found`);
+    console.log('==========================================\n');
+    return;
+  }
+
+  // Sort by score (signal strength) descending
+  opportunities.sort((a, b) => b.signalStrength - a.signalStrength);
+  const best = opportunities[0];
+
+  console.log(` Best: ${best.betSide} on ${best.ticker} @ ${best.betPriceCents}c | Score: ${best.signalStrength} | Liquidity: ${best.liquidity} | Target: ${best.targetExitPrice}c`);
+  if (best.reasons.length > 0) {
+    console.log(` Signals: ${best.reasons.join(', ')}`);
+  }
+
+  // Check if we already have a position on this ticker
+  const betKey = `${userId ?? 'default'}:${best.ticker}`;
+  if (recentBets.has(betKey)) {
+    console.log(` Already have bet on ${best.ticker}, skipping`);
+    console.log('==========================================\n');
+    return;
+  }
+
+  // Size the position
+  const maxPerPosition = lcMode.maxPerPosition || 500;
+  const count = Math.min(
+    Math.floor(maxPerPosition / best.betPriceCents),
+    best.maxContracts
+  );
+  if (count < 1) {
+    console.log(` Position size too small`);
+    console.log('==========================================\n');
+    return;
+  }
+
+  const totalCost = count * best.betPriceCents;
+
+  const betRecord = {
+    id: Date.now().toString(),
+    ticker: best.ticker,
+    title: best.title,
+    marketCategory: 'crypto',
+    token: best.cryptoType,
+    assetType: best.cryptoType,
+    side: best.betSide.toLowerCase(),
+    count,
+    price: best.betPriceCents,
+    totalCost,
+    edge: best.edge,
+    winProbability: best.winProbability,
+    timestamp: new Date().toISOString(),
+    status: userConfig.isAuthenticated ? 'pending' : 'simulated',
+    auto: true,
+    lowCost: true,
+    targetExitPrice: best.targetExitPrice,
+    isScaleIn: false
+  };
+
+  // Track the bet
+  recentBets.set(betKey, {
+    timestamp: now,
+    side: best.betSide,
+    probability: best.betPriceCents,
+    betCount: 1,
+    lowCost: true
+  });
+
+  if (!userConfig.isAuthenticated) {
+    // Simulated bet
+    betRecord.orderId = 'SIM-LC-' + Date.now();
+    userBetHistory.unshift(betRecord);
+    userConfig.bankroll -= betRecord.totalCost;
+    trackSpend(userId, betRecord.totalCost, best.cryptoType);
+
+    if (userId) saveUserState(userId);
+
+    sendDiscordAlert({
+      title: `LOW-COST SIM: ${betRecord.side} on ${best.cryptoType}`,
+      color: 0x9b59b6,
+      fields: [
+        { name: 'Ticker', value: best.ticker, inline: true },
+        { name: 'Contracts', value: `${count} @ ${best.betPriceCents}c`, inline: true },
+        { name: 'Cost', value: `$${(totalCost / 100).toFixed(2)}`, inline: true },
+        { name: 'Target Exit', value: `${best.targetExitPrice}c (+${lcMode.takeProfitPercent}%)`, inline: true },
+        { name: 'Score', value: `${best.signalStrength}`, inline: true },
+      ],
+    });
+
+    console.log(`\n LOW-COST SIM BET PLACED:`);
+    console.log(` ${betRecord.side.toUpperCase()} on ${best.cryptoType} @ ${best.betPriceCents}c`);
+    console.log(` ${count} contracts = $${(totalCost / 100).toFixed(2)}`);
+    console.log(` Target exit: ${best.targetExitPrice}c (+${lcMode.takeProfitPercent}%)`);
+    console.log(` Balance: $${(userConfig.bankroll / 100).toFixed(2)}`);
+    console.log('==========================================\n');
+    return;
+  }
+
+  // Real bet — use maker order (post below ask)
+  const useMaker = lcMode.preferMaker !== false;
+  let fillPrice;
+
+  if (useMaker) {
+    // Post at ask - 1c to rest as maker
+    fillPrice = Math.max(1, best.betPriceCents - 1);
+    console.log(` LOW-COST MAKER ORDER: posting at ${fillPrice}c (ask=${best.betPriceCents}c)`);
+  } else {
+    // Taker: at ask price
+    fillPrice = best.betPriceCents;
+    console.log(` LOW-COST TAKER ORDER: posting at ${fillPrice}c`);
+  }
+
+  const orderRequest = {
+    ticker: best.ticker,
+    action: 'buy',
+    side: best.betSide.toLowerCase(),
+    type: 'limit',
+    count
+  };
+
+  if (best.betSide.toLowerCase() === 'yes') {
+    orderRequest.yes_price = fillPrice;
+  } else {
+    orderRequest.no_price = fillPrice;
+  }
+
+  console.log(` Placing order: ${JSON.stringify(orderRequest)}`);
+
+  try {
+    const orderResponse = await kalshiRequest('POST', '/portfolio/orders', orderRequest, userConfig);
+    const order = orderResponse.order;
+    if (!order) {
+      console.log(' No order in response');
+      console.log('==========================================\n');
+      return;
+    }
+
+    const filledCount = order.filled_count || 0;
+
+    if (filledCount === 0) {
+      // Cancel unfilled order
+      if (order.order_id) {
+        try {
+          await kalshiRequest('DELETE', `/portfolio/orders/${order.order_id}`, null, userConfig);
+          console.log(` Cancelled unfilled low-cost order ${order.order_id}`);
+        } catch (cancelErr) {
+          console.log(` Could not cancel: ${cancelErr.message}`);
+        }
+      }
+      recentBets.delete(betKey);
+      console.log(' Order not filled (no liquidity)');
+      console.log('==========================================\n');
+      return;
+    }
+
+    // Update bet record
+    betRecord.status = order.status === 'filled' ? 'filled' : 'partial';
+    betRecord.orderId = order.order_id;
+    betRecord.filledCount = filledCount;
+    betRecord.avgPrice = order.average_fill_price || fillPrice;
+    betRecord.totalCost = filledCount * (order.average_fill_price || fillPrice);
+    userBetHistory.unshift(betRecord);
+    trackSpend(userId, betRecord.totalCost, best.cryptoType);
+
+    // Refresh balance
+    try {
+      const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
+      userPortfolio.balance = balanceData.balance || 0;
+      userConfig.bankroll = userPortfolio.balance;
+    } catch (e) {
+      console.log(' Could not refresh balance:', e.message);
+    }
+
+    if (userId) saveUserState(userId);
+
+    sendDiscordAlert({
+      title: `LOW-COST BET: ${betRecord.side} on ${best.cryptoType}`,
+      color: 0x9b59b6,
+      fields: [
+        { name: 'Ticker', value: best.ticker, inline: true },
+        { name: 'Filled', value: `${filledCount} @ ${betRecord.avgPrice}c`, inline: true },
+        { name: 'Cost', value: `$${(betRecord.totalCost / 100).toFixed(2)}`, inline: true },
+        { name: 'Target Exit', value: `${best.targetExitPrice}c (+${lcMode.takeProfitPercent}%)`, inline: true },
+      ],
+    });
+
+    console.log(`\n LOW-COST BET PLACED:`);
+    console.log(` ${betRecord.side.toUpperCase()} on ${best.cryptoType}`);
+    console.log(` ${filledCount} contracts @ ${betRecord.avgPrice}c = $${(betRecord.totalCost / 100).toFixed(2)}`);
+    console.log(` Target exit: ${best.targetExitPrice}c`);
+    console.log('==========================================\n');
+
+  } catch (orderError) {
+    console.error(' Low-cost order error:', orderError.message);
+    recentBets.delete(betKey);
+    console.log('==========================================\n');
+  }
+}
+
+/**
+ * Monitor low-cost positions for take-profit exits.
+ * Runs on the same position scan interval. Checks if any low-cost position
+ * has reached the target gain and sells if so.
+ */
+async function monitorLowCostPositions(userConfig = null, userPortfolio = null, userId = null) {
+  const cfg = userConfig || config;
+  const pf = userPortfolio || portfolio;
+  const lcMode = cfg.lowCostMode || DEFAULT_CONFIG.lowCostMode;
+
+  if (!lcMode.enabled) return;
+
+  const positions = (pf.positions || []).filter(p => Math.abs(p.position || 0) > 0);
+  if (positions.length === 0) return;
+
+  const takeProfitPct = lcMode.takeProfitPercent || 50;
+  const stopLossPct = lcMode.stopLossPercent || -50;
+  const timeStopMin = lcMode.timeStopMinutes || 5;
+
+  for (const position of positions) {
+    const avgCost = position.average_price || 0;
+    const contracts = Math.abs(position.position || 0);
+
+    // Only monitor low-cost positions (avg entry <= maxPrice threshold)
+    if (avgCost <= 0 || avgCost > (lcMode.maxPrice || 9)) continue;
+
+    const ticker = position.ticker;
+
+    // Fetch orderbook for current bid
+    let orderbook;
+    try {
+      orderbook = await fetchOrderbook(ticker, cfg);
+    } catch (e) {
+      continue;
+    }
+
+    const side = position.side || (position.position > 0 ? 'yes' : 'no');
+    let currentBid = side === 'yes' ? orderbook.bestYesBid : orderbook.bestNoBid;
+
+    // Infer from opposite side if needed
+    if (!currentBid || currentBid <= 0) {
+      const oppositeAsk = side === 'yes' ? orderbook.bestNoAsk : orderbook.bestYesAsk;
+      if (oppositeAsk && oppositeAsk > 0) {
+        currentBid = 100 - oppositeAsk;
+      } else {
+        continue; // No liquidity
+      }
+    }
+
+    const profitPercent = ((currentBid - avgCost) / avgCost) * 100;
+
+    // Check time remaining on the market
+    const marketsData = marketCache.data || [];
+    const market = marketsData.find(m => m.ticker === ticker);
+    const timeRemaining = market?.close_time
+      ? (new Date(market.close_time).getTime() - Date.now()) / 60000
+      : null;
+
+    // Check entry time from bet history
+    const userBetHistory = (userId ? (await getUserStateAsync(userId))?.betHistory : null) || betHistory;
+    const betEntry = userBetHistory.find(b => b.ticker === ticker && b.lowCost);
+    const entryTime = betEntry ? new Date(betEntry.timestamp).getTime() : null;
+    const minutesSinceEntry = entryTime ? (Date.now() - entryTime) / 60000 : null;
+
+    let shouldExit = false;
+    let exitReason = '';
+
+    // TAKE-PROFIT: Exit if target gain reached
+    if (profitPercent >= takeProfitPct) {
+      shouldExit = true;
+      exitReason = `TAKE-PROFIT: +${profitPercent.toFixed(1)}% (target: +${takeProfitPct}%)`;
+    }
+    // STOP-LOSS: Exit if dropped too far
+    else if (profitPercent <= stopLossPct) {
+      shouldExit = true;
+      exitReason = `STOP-LOSS: ${profitPercent.toFixed(1)}% (threshold: ${stopLossPct}%)`;
+    }
+    // TIME STOP: Exit if no movement after threshold
+    else if (minutesSinceEntry !== null && minutesSinceEntry >= timeStopMin && profitPercent < 10) {
+      shouldExit = true;
+      exitReason = `TIME-STOP: ${minutesSinceEntry.toFixed(1)}min since entry, only ${profitPercent.toFixed(1)}% gain`;
+    }
+    // EXPIRY STOP: Exit if < 1 minute to expiry (don't gamble on settlement)
+    else if (timeRemaining !== null && timeRemaining < 1) {
+      shouldExit = true;
+      exitReason = `EXPIRY-STOP: <1min to settlement, exiting at ${profitPercent.toFixed(1)}%`;
+    }
+
+    if (shouldExit) {
+      console.log(`\n [LOW-COST EXIT] ${ticker}: ${exitReason}`);
+
+      // Execute sell
+      const sellPrice = Math.max(1, currentBid);
+      const sellOrder = {
+        ticker,
+        action: 'sell',
+        side,
+        type: 'limit',
+        count: contracts
+      };
+
+      if (side === 'yes') {
+        sellOrder.yes_price = sellPrice;
+      } else {
+        sellOrder.no_price = sellPrice;
+      }
+
+      try {
+        const response = await kalshiRequest('POST', '/portfolio/orders', sellOrder, cfg);
+        const filledCount = response.order?.filled_count || 0;
+        const fillP = response.order?.average_fill_price || sellPrice;
+        const realizedPnl = (fillP - avgCost) * filledCount;
+
+        console.log(` Sold ${filledCount}/${contracts} @ ${fillP}c | P&L: ${realizedPnl >= 0 ? '+' : ''}$${(realizedPnl / 100).toFixed(2)}`);
+
+        sendDiscordAlert({
+          title: `LOW-COST EXIT: ${ticker}`,
+          color: realizedPnl >= 0 ? 0x2ecc71 : 0xe74c3c,
+          fields: [
+            { name: 'Reason', value: exitReason, inline: false },
+            { name: 'Sold', value: `${filledCount} @ ${fillP}c`, inline: true },
+            { name: 'Entry', value: `${avgCost}c`, inline: true },
+            { name: 'P&L', value: `${realizedPnl >= 0 ? '+' : ''}$${(realizedPnl / 100).toFixed(2)}`, inline: true },
+          ],
+        });
+
+        // Update bet history entry
+        if (betEntry) {
+          betEntry.status = 'settled';
+          betEntry.exitPrice = fillP;
+          betEntry.exitReason = exitReason;
+          betEntry.pnl = realizedPnl;
+        }
+
+        if (userId) saveUserState(userId);
+
+      } catch (sellError) {
+        console.error(` Low-cost sell error for ${ticker}:`, sellError.message);
+      }
+    } else {
+      console.log(`[LOW-COST] ${ticker}: holding @ ${avgCost}c, bid=${currentBid}c (${profitPercent >= 0 ? '+' : ''}${profitPercent.toFixed(1)}%)${timeRemaining ? ` ${timeRemaining.toFixed(1)}min left` : ''}`);
+    }
+  }
 }
 
 /**
@@ -9401,6 +10133,95 @@ app.post('/api/momentum/settings', (req, res) => {
 });
 
 // ============================================
+// LOW-COST MODE API ENDPOINTS
+// ============================================
+
+app.get('/api/low-cost/settings', (req, res) => {
+  const userConfig = req.userState?.config || config;
+  res.json({
+    success: true,
+    lowCostMode: userConfig.lowCostMode || DEFAULT_CONFIG.lowCostMode
+  });
+});
+
+app.post('/api/low-cost/settings', (req, res) => {
+  if (!req.userId) {
+    return res.status(401).json({ success: false, error: 'Please login first' });
+  }
+
+  const userConfig = req.userState.config;
+  const updates = req.body;
+
+  // Merge updates into low-cost settings
+  userConfig.lowCostMode = {
+    ...(userConfig.lowCostMode || DEFAULT_CONFIG.lowCostMode),
+    ...updates
+  };
+
+  // Clamp values to safe ranges
+  const lc = userConfig.lowCostMode;
+  lc.minPrice = Math.max(1, Math.min(20, lc.minPrice || 1));
+  lc.maxPrice = Math.max(lc.minPrice, Math.min(25, lc.maxPrice || 9));
+  lc.takeProfitPercent = Math.max(10, Math.min(200, lc.takeProfitPercent || 50));
+  lc.stopLossPercent = Math.max(-90, Math.min(-10, lc.stopLossPercent || -50));
+  lc.timeStopMinutes = Math.max(1, Math.min(14, lc.timeStopMinutes || 5));
+  lc.maxPositions = Math.max(1, Math.min(10, lc.maxPositions || 5));
+  lc.maxPerPosition = Math.max(100, Math.min(5000, lc.maxPerPosition || 500));
+
+  saveUserState(req.userId);
+
+  res.json({
+    success: true,
+    message: 'Low-cost mode settings updated',
+    lowCostMode: userConfig.lowCostMode
+  });
+});
+
+app.post('/api/low-cost/toggle', (req, res) => {
+  if (!req.userId) {
+    return res.status(401).json({ success: false, error: 'Please login first' });
+  }
+
+  const userConfig = req.userState.config;
+  const userPortfolio = req.userState.portfolio;
+  const { enabled } = req.body;
+
+  if (!userConfig.lowCostMode) {
+    userConfig.lowCostMode = { ...DEFAULT_CONFIG.lowCostMode };
+  }
+
+  userConfig.lowCostMode.enabled = !!enabled;
+  saveUserState(req.userId);
+
+  // Start/stop low-cost interval based on toggle AND autobet state
+  if (enabled && userConfig.autoBetEnabled) {
+    const lcInterval = userConfig.lowCostMode.scanIntervalMs || 10000;
+    if (userLowCostIntervals.has(req.userId)) {
+      clearInterval(userLowCostIntervals.get(req.userId));
+    }
+    runLowCostAutoBet(req.userId);
+    userLowCostIntervals.set(req.userId, setInterval(() => {
+      runLowCostAutoBet(req.userId);
+      monitorLowCostPositions(userConfig, userPortfolio, req.userId);
+    }, lcInterval));
+    console.log(` Low-cost mode ENABLED for user ${req.userId}`);
+  } else {
+    if (userLowCostIntervals.has(req.userId)) {
+      clearInterval(userLowCostIntervals.get(req.userId));
+      userLowCostIntervals.delete(req.userId);
+    }
+    console.log(` Low-cost mode DISABLED for user ${req.userId}`);
+  }
+
+  res.json({
+    success: true,
+    enabled: userConfig.lowCostMode.enabled,
+    message: `Low-cost mode ${userConfig.lowCostMode.enabled ? 'enabled' : 'disabled'}`,
+    lowCostMode: userConfig.lowCostMode
+  });
+});
+
+// ============================================
 // USER AUTHENTICATION (Email/Password)
 // ============================================
 
@@ -10316,6 +11137,11 @@ app.post('/api/kill-switch/activate', (req, res) => {
     for (const [uid, interval] of userAutoBetIntervals) {
       clearInterval(interval);
       userAutoBetIntervals.delete(uid);
+    }
+    // Stop all low-cost intervals
+    for (const [uid, interval] of userLowCostIntervals) {
+      clearInterval(interval);
+      userLowCostIntervals.delete(uid);
     }
     console.error(` KILL SWITCH ACTIVATED by ${req.userId}`);
     res.json({ success: true, message: 'Kill switch activated all betting halted' });
