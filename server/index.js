@@ -17,7 +17,9 @@ import {
 } from './mlModel.js';
 import {
   normalCDF, calculateVolatility, calculateMomentum,
-  calculateMomentumMultiTimeframe
+  calculateMomentumMultiTimeframe,
+  monteCarloWinProb, updateBrierTracker, computeBrierContribution,
+  calculateCorrelatedPortfolioRisk, calculateDynamicCorrelations
 } from './statistics.js';
 import * as sentiment from './sentiment.js';
 import { kalshiRequest, setDefaultConfig as setKalshiDefaultConfig, KALSHI_API_BASE } from './kalshiAPI.js';
@@ -377,7 +379,15 @@ const DEFAULT_EMPIRICAL_TABLES = {
       high: { bets: 0, wins: 0 }
     },
     calibrationError: 0, // Difference between predicted and actual
-    lastCalibrationUpdate: null
+    lastCalibrationUpdate: null,
+    // Brier Score tracking (lower = better calibrated, 0.25 = coin flip)
+    brierTracker: {
+      scores: [],    // Rolling window of (predicted - actual)^2
+      avgBrier: 0,   // Current rolling average Brier score
+      count: 0,      // Total predictions tracked
+      lastUpdated: null
+    },
+    brierByToken: {}  // Per-token Brier scores: { BTC: { scores, avgBrier, count }, ... }
   },
 
   // Legacy compatibility fields
@@ -594,7 +604,7 @@ function recordPriceSnapshot(market, currentPrice, token) {
     strikePrice,
     pctFromStrike: parseFloat(pctFromStrike.toFixed(4)),
     timeToSettlement: parseFloat(timeToSettlement.toFixed(2)),
-    marketDuration, // 15 or 60 minutes — enables duration-aware table building
+    marketDuration: 15, // 15-minute crypto markets (only type we trade)
     vol5m: vol5m !== null ? parseFloat(vol5m.toFixed(6)) : null, // Volatility at snapshot time
     settledResult: null // Will be filled when market settles
   });
@@ -950,6 +960,10 @@ function rolloverDailyStats() {
   console.log(` DAILY P&L SUMMARY (${summary.date}): ${summary.wins}W/${summary.losses}L (${winRate}%) P&L: $${pnlDollar}`);
 
   // Discord summary
+  const brierData = learnedParams.performanceTracking?.brierTracker;
+  const brierField = brierData?.count >= 5
+    ? [{ name: 'Brier Score', value: `${brierData.avgBrier.toFixed(3)} (${brierData.avgBrier < 0.15 ? 'Good' : brierData.avgBrier < 0.22 ? 'OK' : 'Poor'})`, inline: true }]
+    : [];
   sendDiscordAlert({
     title: `Daily P&L Summary — ${summary.date}`,
     color: summary.netPnlCents >= 0 ? 0x2ecc71 : 0xe74c3c,
@@ -958,6 +972,7 @@ function rolloverDailyStats() {
       { name: 'Win Rate', value: `${winRate}%`, inline: true },
       { name: 'Net P&L', value: `$${pnlDollar}`, inline: true },
       { name: 'Wagered', value: `$${(summary.totalWageredCents / 100).toFixed(2)}`, inline: true },
+      ...brierField,
       ...(summary.bestBet ? [{ name: 'Best', value: `${summary.bestBet.ticker} +${(summary.bestBet.pnlCents / 100).toFixed(2)}`, inline: true }] : []),
       ...(summary.worstBet ? [{ name: 'Worst', value: `${summary.worstBet.ticker} ${(summary.worstBet.pnlCents / 100).toFixed(2)}`, inline: true }] : []),
     ],
@@ -1076,6 +1091,40 @@ function settleBet(betId, outcome, settlementPrice, actualProfit) {
   } else {
     performanceData.byMarketType[mktType].losses++;
     performanceData.byMarketType[mktType].profit -= bet.totalCost;
+  }
+
+  // Brier Score tracking: measure prediction calibration quality
+  if (bet.predictedProb > 0) {
+    const actualWin = outcome === 'won';
+    // Update global Brier tracker
+    if (!learnedParams.performanceTracking.brierTracker) {
+      learnedParams.performanceTracking.brierTracker = { scores: [], avgBrier: 0, count: 0 };
+    }
+    updateBrierTracker(learnedParams.performanceTracking.brierTracker, bet.predictedProb, actualWin);
+
+    // Update per-token Brier tracker
+    if (!learnedParams.performanceTracking.brierByToken) {
+      learnedParams.performanceTracking.brierByToken = {};
+    }
+    if (!learnedParams.performanceTracking.brierByToken[token]) {
+      learnedParams.performanceTracking.brierByToken[token] = { scores: [], avgBrier: 0, count: 0 };
+    }
+    updateBrierTracker(learnedParams.performanceTracking.brierByToken[token], bet.predictedProb, actualWin);
+
+    // Update calibrationError with actual Brier score (replaces the always-0 placeholder)
+    learnedParams.performanceTracking.calibrationError = learnedParams.performanceTracking.brierTracker.avgBrier;
+
+    const avgBrier = learnedParams.performanceTracking.brierTracker.avgBrier;
+    const tokenBrier = learnedParams.performanceTracking.brierByToken[token]?.avgBrier || 0;
+    console.log(` Brier: predicted=${bet.predictedProb.toFixed(1)}% actual=${actualWin ? 'WIN' : 'LOSS'} | global=${avgBrier.toFixed(4)} ${token}=${tokenBrier.toFixed(4)} (${avgBrier < 0.15 ? 'GOOD' : avgBrier < 0.20 ? 'OK' : 'POOR'})`);
+
+    // If Brier score is degrading, flag it
+    if (avgBrier > 0.22 && learnedParams.performanceTracking.brierTracker.count >= 20) {
+      console.warn(` CALIBRATION WARNING: Brier ${avgBrier.toFixed(3)} > 0.22 — model predictions may be miscalibrated`);
+    }
+
+    // Save updated Brier scores
+    saveLearnedParams();
   }
 
   // Recalculate summary stats
@@ -1216,7 +1265,7 @@ async function checkPendingSettlements() {
           const result = mkt.result || mkt.market_result;
           if (result) {
             const won = (bet.side.toLowerCase() === result);
-            const contracts = bet.contracts || Math.floor((bet.totalCost || 0) / (bet.priceCents || 1));
+            const contracts = bet.contracts || Math.floor((bet.totalCost || 0) / (bet.price || 1));
             const profit = won ? (contracts * 100 - (bet.totalCost || 0)) : 0;
             settleBet(bet.id, won ? 'won' : 'lost', mkt.settlement_value || mkt.expiration_value, profit);
             console.log(` Settled bet ${bet.id}: ${won ? 'WON' : 'LOST'} (${bet.side} on ${bet.ticker}, result=${result})`);
@@ -1273,7 +1322,7 @@ async function checkPendingSettlements() {
                   const finalResult = fmkt.result || fmkt.market_result;
                   if (finalResult) {
                     const won = (bet.side.toLowerCase() === finalResult);
-                    const contracts3 = bet.contracts || Math.floor((bet.totalCost || 0) / (bet.priceCents || 1));
+                    const contracts3 = bet.contracts || Math.floor((bet.totalCost || 0) / (bet.price || 1));
                     const profit = won ? (contracts3 * 100 - (bet.totalCost || 0)) : 0;
                     settleBet(bet.id, won ? 'won' : 'lost', fmkt.settlement_value || fmkt.expiration_value, profit);
                     console.log(` Final API check SUCCEEDED for ${bet.id}: ${won ? 'WON' : 'LOST'} (${bet.side} on ${bet.ticker}, result=${finalResult})`);
@@ -1295,7 +1344,7 @@ async function checkPendingSettlements() {
             const isAbove = currentPrice >= bet.strikePrice;
             const won = (bet.side.toLowerCase() === 'yes' && isAbove) ||
                         (bet.side.toLowerCase() === 'no' && !isAbove);
-            const contracts2 = bet.contracts || Math.floor((bet.totalCost || 0) / (bet.priceCents || 1));
+            const contracts2 = bet.contracts || Math.floor((bet.totalCost || 0) / (bet.price || 1));
             const profit = won ? (contracts2 * 100 - (bet.totalCost || 0)) : 0;
             settleBet(bet.id, won ? 'won' : 'lost', currentPrice, profit);
             console.log(` Settled bet ${bet.id} via price: ${won ? 'WON' : 'LOST'} (${bet.side} ${bet.token} @ strike $${bet.strikePrice}, current $${currentPrice}, delay=${(settlementDelay/1000).toFixed(0)}s)`);
@@ -1821,6 +1870,32 @@ Object.keys(TRACKED_TOKENS).forEach(token => {
   priceHistoryExtended[token] = [];
 });
 
+// Dynamic cross-token correlations (updated every 5 minutes from price history)
+let dynamicCorrelations = null;
+let lastCorrelationUpdate = 0;
+const CORRELATION_UPDATE_INTERVAL = 5 * 60 * 1000; // 5 minutes
+
+function updateDynamicCorrelationsIfNeeded() {
+  const now = Date.now();
+  if (now - lastCorrelationUpdate < CORRELATION_UPDATE_INTERVAL) return;
+
+  // Need at least 20 data points per token
+  const hasEnoughData = Object.values(priceHistoryExtended).every(h => h.length >= 20);
+  if (!hasEnoughData) return;
+
+  dynamicCorrelations = calculateDynamicCorrelations(priceHistoryExtended, 60);
+  lastCorrelationUpdate = now;
+
+  // Log significant correlation changes
+  const pairs = ['BTC-ETH', 'BTC-SOL', 'BTC-XRP', 'ETH-SOL'];
+  const changes = pairs
+    .filter(p => dynamicCorrelations[p] !== undefined)
+    .map(p => `${p}=${dynamicCorrelations[p].toFixed(2)}`);
+  if (changes.length > 0) {
+    console.log(` Dynamic correlations updated: ${changes.join(', ')}`);
+  }
+}
+
 // Start price tracking: WebSocket primary, REST fallback every 5s
 fetchCryptoPrices(); // Immediate fetch on startup (WebSocket takes a moment to connect)
 let priceInterval = setInterval(() => {
@@ -2294,6 +2369,39 @@ function validateBetWontExceedLimits(ticker, betCostCents, userState, userConfig
     const tokenRollingCap = getMaxPerTokenPerCycle(userConfig) * 8;
     if (tokenRollingSpend + betCostCents > tokenRollingCap) {
       return { valid: false, reason: `Rolling ${token} spend $${((tokenRollingSpend + betCostCents)/100).toFixed(2)} would exceed 2hr cap $${(tokenRollingCap/100).toFixed(2)}` };
+    }
+  }
+
+  // Check 4: Correlation-adjusted portfolio risk
+  // Crypto assets crash together — treating positions as independent understates risk
+  // Use diversificationRatio to tighten the total budget when positions are highly correlated
+  if (token) {
+    const currentExposure = getExposureByToken(userState);
+    // Only check when exposed to 2+ tokens (single-token has no correlation risk)
+    const activeTokens = Object.keys(currentExposure).filter(t => currentExposure[t] > 0);
+    if (activeTokens.length >= 1 && !activeTokens.includes(token)) {
+      // Adding a NEW token — check correlation impact
+      const projectedExposure = { ...currentExposure };
+      projectedExposure[token] = (projectedExposure[token] || 0) + betCostCents;
+
+      updateDynamicCorrelationsIfNeeded();
+      const riskAnalysis = calculateCorrelatedPortfolioRisk(projectedExposure, dynamicCorrelations);
+
+      // If diversification ratio > 0.85 (highly correlated), reduce effective total budget
+      // At ratio=1.0 (perfectly correlated), budget drops to 70% of max
+      // At ratio=0.5 (low correlation), no reduction
+      if (riskAnalysis.diversificationRatio > 0.85) {
+        const budgetReduction = Math.max(0.70, 1.15 - riskAnalysis.diversificationRatio * 0.45);
+        const adjustedMaxTotal = Math.round(getMaxTotalPerCycle(userConfig) * budgetReduction);
+        const totalExposure = Object.values(projectedExposure).reduce((s, v) => s + v, 0);
+
+        if (totalExposure > adjustedMaxTotal) {
+          return {
+            valid: false,
+            reason: `Correlation-adjusted budget: total $${(totalExposure/100).toFixed(2)} > adjusted cap $${(adjustedMaxTotal/100).toFixed(2)} (${(riskAnalysis.diversificationRatio * 100).toFixed(0)}% correlated, budget=${(budgetReduction * 100).toFixed(0)}%)`
+          };
+        }
+      }
     }
   }
 
@@ -7050,6 +7158,45 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
   }
 
+  // MONTE CARLO SIMULATION: Dynamic probability from simulated GBM price paths
+  // Uses current volatility + momentum to compute condition-aware win probability
+  // Blended with empirical win rate (MC adapts to unusual conditions; empirical anchors to history)
+  const currentVol = cryptoPrices[token]?.volatility || 0.02;
+  if (priceHistory.length >= 10 && timeRemaining > 0.5) {
+    // Extract momentum drift from recent price trend
+    const momData = calculateMomentum(priceHistory, 5);
+    const momentumDriftPerMin = (momData.trend || 0) / 100; // convert pct/min to decimal/min
+
+    const mc = monteCarloWinProb(currentPrice, strikePrice, timeRemaining, currentVol, momentumDriftPerMin, 1000);
+
+    // MC gives P(price > strike); adjust for bet side
+    let mcWinRate;
+    if (parsed.marketType === 'above') {
+      mcWinRate = betSide === 'YES' ? mc.winProb : 100 - mc.winProb;
+    } else {
+      // below market: YES wins if price < strike
+      mcWinRate = betSide === 'YES' ? 100 - mc.winProb : mc.winProb;
+    }
+
+    // Blend MC with current adjustedWinRate
+    // MC weight: 20-35% depending on data quality and confidence
+    // Higher weight when we have good vol data and MC confidence is high
+    let mcWeight = 0.20 + (mc.confidence * 0.15); // 20-35%
+
+    // Reduce MC weight if empirical sample size is very large (empirical tables more trustworthy)
+    if (empirical.sampleSize > 500) {
+      mcWeight *= 0.7; // defer more to empirical data
+    }
+
+    // Don't let MC dominate — cap at 35%
+    mcWeight = Math.min(0.35, mcWeight);
+
+    const preBlend = adjustedWinRate;
+    adjustedWinRate = adjustedWinRate * (1 - mcWeight) + mcWinRate * mcWeight;
+
+    console.log(` Monte Carlo: mc=${mcWinRate.toFixed(1)}% (${mc.simPaths} paths, confidence=${mc.confidence.toFixed(2)}) weight=${(mcWeight*100).toFixed(0)}% | was=${preBlend.toFixed(1)}% now=${adjustedWinRate.toFixed(1)}%`);
+  }
+
   // Apply regime multiplier for BOTH directions
   // Skip if theoretical model already handled volatility (theoreticalWeight > 0 means vol was blended in)
   if (regime.multiplier && regime.multiplier !== 1 && theoreticalWeight === 0) {
@@ -7255,14 +7402,24 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       : marketPriceCents >= 50 ? 0
       : marketPriceCents >= 30 ? 3
       : 5;
-    const effectiveMinEdge = regime.regime === 'low'
+    // Brier-based edge tightening: if calibration is poor, require more edge to compensate
+    const brierPenalty = (() => {
+      const bt = learnedParams.performanceTracking?.brierTracker;
+      if (!bt || bt.count < 20) return 0; // not enough data
+      if (bt.avgBrier > 0.22) return 3;   // poor calibration → +3% edge required
+      if (bt.avgBrier > 0.18) return 1;   // fair calibration → +1% edge buffer
+      return 0;
+    })();
+    let effectiveMinEdge = regime.regime === 'low'
       ? Math.max(3.0, baseMinEdge + priceTierBonus - 3)
       : offPeak ? baseMinEdge + priceTierBonus + 3
       : baseMinEdge + priceTierBonus;
+    effectiveMinEdge += brierPenalty;
     if (netEdge < effectiveMinEdge) {
       const suffix = regime.regime === 'low' ? ' (low-vol reduced)' : offPeak ? ' (off-peak raised)' : '';
       const tierSuffix = priceTierBonus > 0 ? ` (+${priceTierBonus}% longshot)` : '';
-      reasons.push(`Edge ${netEdge.toFixed(1)}% < ${effectiveMinEdge}%${suffix}${tierSuffix}`);
+      const brierSuffix = brierPenalty > 0 ? ` (+${brierPenalty}% Brier penalty)` : '';
+      reasons.push(`Edge ${netEdge.toFixed(1)}% < ${effectiveMinEdge}%${suffix}${tierSuffix}${brierSuffix}`);
     }
 
     // Token-specific coin-flip penalty: SOL has 64% coin-flip rate at close distances
@@ -10231,13 +10388,32 @@ app.get('/api/performance/calibration', (req, res) => {
       calibration.reduce((sum, c) => sum + c.bets, 0)
     : 0;
 
+  // Include Brier score data
+  const brierTracker = learnedParams.performanceTracking?.brierTracker || {};
+  const brierByToken = learnedParams.performanceTracking?.brierByToken || {};
+
   res.json({
     success: true,
     calibration,
     calibrationScore: calibrationScore.toFixed(1),
     interpretation: calibrationScore < 5 ? 'Excellent' :
                     calibrationScore < 10 ? 'Good' :
-                    calibrationScore < 15 ? 'Fair' : 'Needs improvement'
+                    calibrationScore < 15 ? 'Fair' : 'Needs improvement',
+    brierScore: {
+      global: brierTracker.avgBrier ? parseFloat(brierTracker.avgBrier.toFixed(4)) : null,
+      count: brierTracker.count || 0,
+      quality: brierTracker.avgBrier < 0.12 ? 'Excellent' :
+               brierTracker.avgBrier < 0.18 ? 'Good' :
+               brierTracker.avgBrier < 0.22 ? 'Fair' :
+               brierTracker.avgBrier < 0.25 ? 'Poor' : 'Worse than coin flip',
+      byToken: Object.fromEntries(
+        Object.entries(brierByToken).map(([t, tracker]) => [t, {
+          avgBrier: tracker.avgBrier ? parseFloat(tracker.avgBrier.toFixed(4)) : null,
+          count: tracker.count || 0
+        }])
+      )
+    },
+    dynamicCorrelations: dynamicCorrelations || null
   });
 });
 
