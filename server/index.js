@@ -256,10 +256,10 @@ const DEFAULT_EMPIRICAL_TABLES = {
   // Volatility regime tables (key insight from domain analysis)
   volatilityRegimes: {
     low: {
-      description: 'Calm market, predictable movements',
+      description: 'Low volatility - sit out (empirical tables unreliable in near-zero movement)',
       winRateMultiplier: 1.05, // Slightly boost confidence
       coinFlipThreshold: 0.1, // Smaller moves matter
-      sitOut: false
+      sitOut: true // Sit out: model edge unreliable in low-vol, consistent losses observed
     },
     medium: {
       description: 'Normal market conditions',
@@ -6970,7 +6970,10 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   // Check for sit-out conditions
   if (regime.sitOut) {
-    return { ...earlyExit(`Volatility spike: ${regime.reason}`), regime: regime.regime };
+    const sitOutReason = regime.regime === 'low'
+      ? `Low volatility: ${regime.reason} (sitting out — edge unreliable in low-vol)`
+      : `Volatility spike: ${regime.reason}`;
+    return { ...earlyExit(sitOutReason), regime: regime.regime };
   }
 
   // Look up empirical win rate
@@ -7380,16 +7383,18 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       : baseMinWinRate;
 
     // Strong edge override: high edge compensates for borderline win rate
-    // Kelly sizes these bets small automatically, limiting downside
+    // Disabled in low-vol: high estimated edge in low-vol is noise, not signal
     const edgeOverrides = rules.edgeOverrideThresholds || [
       { minEdge: 15, minWinRate: 52 },
       { minEdge: 10, minWinRate: 55 },
     ];
-    for (const ov of edgeOverrides) {
-      if (netEdge >= ov.minEdge && effectiveMinWinRate > ov.minWinRate) {
-        console.log(` EDGE OVERRIDE: edge=${netEdge.toFixed(1)}% >= ${ov.minEdge}% → winRate floor ${effectiveMinWinRate}% → ${ov.minWinRate}%`);
-        effectiveMinWinRate = ov.minWinRate;
-        break;
+    if (regime.regime !== 'low') {
+      for (const ov of edgeOverrides) {
+        if (netEdge >= ov.minEdge && effectiveMinWinRate > ov.minWinRate) {
+          console.log(` EDGE OVERRIDE: edge=${netEdge.toFixed(1)}% >= ${ov.minEdge}% → winRate floor ${effectiveMinWinRate}% → ${ov.minWinRate}%`);
+          effectiveMinWinRate = ov.minWinRate;
+          break;
+        }
       }
     }
 
@@ -7634,6 +7639,10 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     const momStr = parseFloat(momSignal.strength) || 0;
     const momAligned = (momSignal.direction === 'bullish' && betSide === 'YES') ||
                        (momSignal.direction === 'bearish' && betSide === 'NO');
+    // Hard block: never bet against aligned momentum unless signal is very high
+    if (!momAligned && momSignal.aligned && adjustedSignalStrength < 85) {
+      reasons.push(`Momentum opposes bet (${momSignal.direction}, str=${momStr.toFixed(2)}%) — signal ${adjustedSignalStrength} < 85 required to override`);
+    }
     if (momAligned) {
       if (momSignal.aligned && momStr > 0.3) {
         momentumBoost = 10;
