@@ -3544,10 +3544,11 @@ async function scanTakeProfitOpportunities(userConfig = null, userPortfolio = nu
   const settings = cfg.takeProfitSettings || {};
   const limitSettings = cfg.limitOrderSettings || {};
 
-  // If take-profit is disabled AND stop-loss is disabled, nothing to do
+  // If take-profit is disabled AND stop-loss is disabled AND coin-flip prevention is disabled, nothing to do
   const takeProfitEnabled = settings.enabled !== false; // default true for backwards compat
   const stopLossEnabled = cfg.activeMonitoring?.stopLossEnabled === true;
-  if (!takeProfitEnabled && !stopLossEnabled) {
+  const coinFlipPreventionEnabled = cfg.activeMonitoring?.coinFlipPreventionEnabled !== false; // default true
+  if (!takeProfitEnabled && !stopLossEnabled && !coinFlipPreventionEnabled) {
     return [];
   }
 
@@ -6267,7 +6268,9 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
     }
     userAutoBetIntervals.set(req.userId, setInterval(() => runAutoBet(req.userId), intervalSeconds * 1000));
 
-    // AUTO-SELL REMOVED: No take-profit/stop-loss scanning — positions ride to expiry
+    // Start active position monitoring (coin-flip prevention, easy profit, stop-loss)
+    const monitorIntervalMs = userConfig.takeProfitSettings?.scanIntervalMs || 15000;
+    startTakeProfitScanning(monitorIntervalMs, req.userId, userConfig, userPortfolio);
 
     res.json({
       success: true,
@@ -6314,7 +6317,11 @@ app.get('/api/auto-bet/status', (req, res) => {
     runAutoBet(req.userId);
     userAutoBetIntervals.set(req.userId, setInterval(() => runAutoBet(req.userId), 10000));
 
-    // AUTO-SELL REMOVED: No take-profit/stop-loss scanning
+    // Restore active position monitoring (coin-flip prevention, easy profit, stop-loss)
+    if (!userTakeProfitIntervals.has(req.userId)) {
+      const monitorIntervalMs = userConfig.takeProfitSettings?.scanIntervalMs || 15000;
+      startTakeProfitScanning(monitorIntervalMs, req.userId, userConfig, userPortfolio);
+    }
   }
 
   res.json({
@@ -7030,7 +7037,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // Pick the side with higher positive gross edge
   // Hard 40c minimum price floor — reject any bet below 40c on either side
   const EVAL_PRICE_FLOOR = 0.40; // 40c minimum — below this is too speculative
-  const unfavoredMinPrice = 0.40; // 40c floor for unfavored side too
+  const unfavoredMinPrice = 0.20; // 20c floor for unfavored side (20-40c is the valid range)
   let betSide, marketPrice, isFavoredSideBet;
   const favoredViable = favoredPrice >= EVAL_PRICE_FLOOR && favoredGrossEdge > 0;
   const unfavoredViable = unfavoredPrice >= unfavoredMinPrice && unfavoredGrossEdge > favoredGrossEdge && unfavoredGrossEdge > 0;
