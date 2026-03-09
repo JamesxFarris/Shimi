@@ -34,7 +34,10 @@ const ML_FEATURE_NAMES = [
   'buyPressure15m',     // Longer aggTrade window
   'buyPressure30m',     // 30-min aggTrade window
   'trajectoryScore',    // Reserved (always 0)
-  'crossTimeframeSignal', // Reserved (always 0)
+  'crossTimeframeSignal', // Recent 15M settlement direction for this token
+  // v3.3 features
+  'hourSin',            // sin(2π·hour/24) — smooth periodic hour encoding
+  'hourCos',            // cos(2π·hour/24) — smooth periodic hour encoding
 ];
 
 let mlModel = {
@@ -157,6 +160,9 @@ function extractMLFeatures(params) {
     buyPressure30m,
     trajectoryScore,
     crossTimeframeSignal: crossTimeframeSignal / 5,
+    // Smooth hour encoding (replaces coarse 4-bucket binary flags)
+    hourSin: Math.sin(2 * Math.PI * hour / 24),
+    hourCos: Math.cos(2 * Math.PI * hour / 24),
   };
 }
 
@@ -207,7 +213,7 @@ function treePredictOne(tree, features) {
  * Find the best split for a set of data points
  * Uses gradient/hessian formulation for binary classification (log-loss)
  */
-function findBestSplit(indices, gradients, hessians, allFeatures, featureNames, minSamplesLeaf, lambda) {
+function findBestSplit(indices, gradients, hessians, allFeatures, featureNames, minSamplesLeaf, lambda, colsampleRate = 1.0) {
   let bestGain = 0;
   let bestFeature = null;
   let bestThreshold = null;
@@ -217,7 +223,14 @@ function findBestSplit(indices, gradients, hessians, allFeatures, featureNames, 
   const totalGrad = indices.reduce((s, i) => s + gradients[i], 0);
   const totalHess = indices.reduce((s, i) => s + hessians[i], 0);
 
-  for (const feat of featureNames) {
+  // Column subsampling: randomly select a subset of features per split point
+  let featSubset = featureNames;
+  if (colsampleRate < 1.0) {
+    const nCols = Math.max(3, Math.floor(featureNames.length * colsampleRate));
+    featSubset = [...featureNames].sort(() => Math.random() - 0.5).slice(0, nCols);
+  }
+
+  for (const feat of featSubset) {
     // Get unique sorted values for this feature
     const vals = indices.map(i => ({ idx: i, val: allFeatures[i][feat] ?? 0 }));
     vals.sort((a, b) => a.val - b.val);
@@ -260,7 +273,7 @@ function findBestSplit(indices, gradients, hessians, allFeatures, featureNames, 
 /**
  * Build a single decision tree (depth-limited)
  */
-function buildTree(indices, gradients, hessians, allFeatures, featureNames, depth, maxDepth, minSamplesLeaf, lambda) {
+function buildTree(indices, gradients, hessians, allFeatures, featureNames, depth, maxDepth, minSamplesLeaf, lambda, colsampleRate = 1.0) {
   // Leaf value = -sum(gradients) / (sum(hessians) + lambda)
   const sumGrad = indices.reduce((s, i) => s + gradients[i], 0);
   const sumHess = indices.reduce((s, i) => s + hessians[i], 0);
@@ -270,14 +283,14 @@ function buildTree(indices, gradients, hessians, allFeatures, featureNames, dept
     return createLeafNode(leafValue);
   }
 
-  const split = findBestSplit(indices, gradients, hessians, allFeatures, featureNames, minSamplesLeaf, lambda);
+  const split = findBestSplit(indices, gradients, hessians, allFeatures, featureNames, minSamplesLeaf, lambda, colsampleRate);
 
   if (!split.feature || split.gain <= 0) {
     return createLeafNode(leafValue);
   }
 
-  const left = buildTree(split.leftIdx, gradients, hessians, allFeatures, featureNames, depth + 1, maxDepth, minSamplesLeaf, lambda);
-  const right = buildTree(split.rightIdx, gradients, hessians, allFeatures, featureNames, depth + 1, maxDepth, minSamplesLeaf, lambda);
+  const left = buildTree(split.leftIdx, gradients, hessians, allFeatures, featureNames, depth + 1, maxDepth, minSamplesLeaf, lambda, colsampleRate);
+  const right = buildTree(split.rightIdx, gradients, hessians, allFeatures, featureNames, depth + 1, maxDepth, minSamplesLeaf, lambda, colsampleRate);
 
   return createSplitNode(split.feature, split.threshold, left, right);
 }
@@ -291,6 +304,41 @@ function countFeatureUsage(tree, counts = {}) {
   countFeatureUsage(tree.left, counts);
   countFeatureUsage(tree.right, counts);
   return counts;
+}
+
+/**
+ * Fit Platt scaling to calibrate GBDT probability outputs.
+ * GBDTs push probabilities toward extremes; Platt scaling corrects this via
+ * a learned sigmoid: P_calibrated = sigmoid(A * rawLogOdds + B).
+ * A and B are fit via gradient descent on the held-out validation set.
+ */
+function fitPlattScaling(trees, basePrediction, lr, calData) {
+  if (!calData || calData.length < 20) return { A: 1.0, B: 0.0 };
+
+  const rawLogits = calData.map(dp => {
+    let logOdds = basePrediction;
+    for (const tree of trees) logOdds += lr * treePredictOne(tree, dp.features);
+    return { logit: logOdds, outcome: dp.outcome };
+  });
+
+  let A = 1.0, B = 0.0;
+  const stepSize = 0.05;
+  for (let iter = 0; iter < 400; iter++) {
+    let gradA = 0, gradB = 0;
+    for (const { logit, outcome } of rawLogits) {
+      const p = sigmoid(A * logit + B);
+      const err = p - outcome;
+      gradA += err * logit;
+      gradB += err;
+    }
+    A -= stepSize * gradA / rawLogits.length;
+    B -= stepSize * gradB / rawLogits.length;
+    // Keep in reasonable range
+    A = Math.max(0.1, Math.min(5.0, A));
+    B = Math.max(-5.0, Math.min(5.0, B));
+  }
+
+  return { A, B };
 }
 
 // ============================================
@@ -310,6 +358,10 @@ function mlPredict(features) {
     const lr = mlModel.learningRate || 0.1;
     for (const tree of mlModel.trees) {
       logOdds += lr * treePredictOne(tree, features);
+    }
+    // Apply Platt scaling if fitted (corrects GBDT probability miscalibration)
+    if (mlModel.plattA !== undefined && mlModel.plattB !== undefined) {
+      return sigmoid(mlModel.plattA * logOdds + mlModel.plattB);
     }
     return sigmoid(logOdds);
   }
@@ -383,14 +435,17 @@ function evaluateEnsemble(trees, basePrediction, lr, dataPoints) {
 /**
  * Train a GBDT ensemble on a training set
  */
-function trainGBDTOnData(trainData, featureNames, params = {}) {
+function trainGBDTOnData(trainData, featureNames, params = {}, earlyStopData = null) {
   const {
-    nTrees = 50,
+    nTrees = 80,
     maxDepth = 4,         // Shallow trees — prevent overfitting on our small data
     minSamplesLeaf = 10,
-    learningRate = 0.1,
+    learningRate = 0.08,  // Lower LR to pair with early stopping + more tree budget
     lambda = 1.0,         // L2 regularization on leaf weights
     subsampleRate = 0.8,  // Row subsampling per tree
+    colsampleRate = 0.7,  // Column subsampling per split — reduces inter-tree correlation
+    earlyStopRounds = 20, // Stop if val loss doesn't improve for N trees
+    earlyStopFreq = 5,    // Check val loss every N trees
   } = params;
 
   // Base prediction: log(p / (1-p)) where p = positive rate
@@ -405,6 +460,9 @@ function trainGBDTOnData(trainData, featureNames, params = {}) {
   // Current predictions (log-odds space)
   const predictions = new Float64Array(n).fill(basePrediction);
   const trees = [];
+
+  let bestEarlyLoss = Infinity;
+  let earlyStopNoImprov = 0;
 
   for (let t = 0; t < nTrees; t++) {
     // Compute gradients and hessians for log-loss
@@ -426,13 +484,28 @@ function trainGBDTOnData(trainData, featureNames, params = {}) {
       indices = Array.from({ length: n }, (_, i) => i);
     }
 
-    // Build tree
-    const tree = buildTree(indices, gradients, hessians, allFeatures, featureNames, 0, maxDepth, minSamplesLeaf, lambda);
+    // Build tree with column subsampling
+    const tree = buildTree(indices, gradients, hessians, allFeatures, featureNames, 0, maxDepth, minSamplesLeaf, lambda, colsampleRate);
     trees.push(tree);
 
     // Update predictions
     for (let i = 0; i < n; i++) {
       predictions[i] += learningRate * treePredictOne(tree, allFeatures[i]);
+    }
+
+    // Early stopping: evaluate on held-out data every earlyStopFreq trees
+    if (earlyStopData && earlyStopData.length >= 20 && (t + 1) % earlyStopFreq === 0) {
+      const esEval = evaluateEnsemble(trees, basePrediction, learningRate, earlyStopData);
+      if (esEval.logLoss < bestEarlyLoss - 0.0002) {
+        bestEarlyLoss = esEval.logLoss;
+        earlyStopNoImprov = 0;
+      } else {
+        earlyStopNoImprov++;
+        if (earlyStopNoImprov * earlyStopFreq >= earlyStopRounds) {
+          console.log(` Early stopping at tree ${t + 1}/${nTrees}: val_loss=${esEval.logLoss.toFixed(4)}, no improvement for ${earlyStopRounds} trees`);
+          break;
+        }
+      }
     }
   }
 
@@ -477,13 +550,16 @@ function trainMLModel(dataPoints) {
     if (trainSlice.length < 100 || valSlice.length < 30) continue;
 
     const { trees, basePrediction, learningRate: lr } = trainGBDTOnData(trainSlice, activeFeatures, {
-      nTrees: 40,
+      nTrees: 60,
       maxDepth: 4,
       minSamplesLeaf: Math.max(5, Math.floor(trainSlice.length * 0.02)),
-      learningRate: 0.1,
+      learningRate: 0.08,
       lambda: 1.0,
-      subsampleRate: 0.8
-    });
+      subsampleRate: 0.8,
+      colsampleRate: 0.7,
+      earlyStopRounds: 15,
+      earlyStopFreq: 5,
+    }, valSlice);
 
     const valResult = evaluateEnsemble(trees, basePrediction, lr, valSlice);
     walkForwardScores.push({
@@ -510,19 +586,26 @@ function trainMLModel(dataPoints) {
   const valData = dataPoints.slice(splitIdx);
 
   const params = {
-    nTrees: 50,
+    nTrees: 100,
     maxDepth: 4,
     minSamplesLeaf: Math.max(5, Math.floor(trainData.length * 0.02)),
-    learningRate: 0.1,
+    learningRate: 0.08,
     lambda: 1.0,
-    subsampleRate: 0.8
+    subsampleRate: 0.8,
+    colsampleRate: 0.7,
+    earlyStopRounds: 20,
+    earlyStopFreq: 5,
   };
 
-  const { trees, basePrediction, learningRate: lr } = trainGBDTOnData(trainData, activeFeatures, params);
+  const { trees, basePrediction, learningRate: lr } = trainGBDTOnData(trainData, activeFeatures, params, valData);
 
   // Evaluate on both sets
   const trainResult = evaluateEnsemble(trees, basePrediction, lr, trainData);
   const valResult = evaluateEnsemble(trees, basePrediction, lr, valData);
+
+  // Fit Platt scaling on validation set to calibrate GBDT probability outputs
+  const { A: plattA, B: plattB } = fitPlattScaling(trees, basePrediction, lr, valData);
+  console.log(` Platt scaling fitted: A=${plattA.toFixed(4)}, B=${plattB.toFixed(4)} (calibrates probability outputs)`);
 
   // Compute feature importance
   const featureCounts = {};
@@ -558,6 +641,8 @@ function trainMLModel(dataPoints) {
     trees,
     basePrediction,
     learningRate: lr,
+    plattA,
+    plattB,
     featureImportance,
     performance: {
       accuracy: valResult.accuracy,
@@ -579,7 +664,7 @@ function trainMLModel(dataPoints) {
   saveMLModel();
 
   console.log(` ML GBDT: Training complete!`);
-  console.log(` ${trees.length} trees, max depth ${params.maxDepth}`);
+  console.log(` ${trees.length} trees (of ${params.nTrees} budget), max depth ${params.maxDepth}`);
   console.log(` Train accuracy: ${(trainResult.accuracy * 100).toFixed(1)}% | Val accuracy: ${(valResult.accuracy * 100).toFixed(1)}%`);
   console.log(` Walk-forward accuracy: ${(avgWFAccuracy * 100).toFixed(1)}%`);
   console.log(` Log loss: ${valResult.logLoss.toFixed(4)}`);

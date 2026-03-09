@@ -1035,6 +1035,10 @@ function trackBet(betInfo) {
   return bet;
 }
 
+// Track recent settlement directions per token for crossTimeframeSignal ML feature
+const recentTokenSettlements = { BTC: [], ETH: [], SOL: [] };
+const MAX_RECENT_SETTLEMENTS_SIGNAL = 5;
+
 // Update bet with settlement outcome
 function settleBet(betId, outcome, settlementPrice, actualProfit) {
   const bet = performanceData.bets.find(b => b.id === betId);
@@ -1044,6 +1048,16 @@ function settleBet(betId, outcome, settlementPrice, actualProfit) {
   bet.settlementPrice = settlementPrice;
   bet.actualProfit = actualProfit;
   bet.settledAt = new Date().toISOString();
+
+  // Track settlement direction per token for crossTimeframeSignal ML feature
+  const settlementToken = bet.token || 'UNKNOWN';
+  if (recentTokenSettlements[settlementToken]) {
+    const yesWon = (outcome === 'won') === (bet.side?.toUpperCase() === 'YES');
+    recentTokenSettlements[settlementToken].push({ yesWon, time: Date.now() });
+    if (recentTokenSettlements[settlementToken].length > MAX_RECENT_SETTLEMENTS_SIGNAL) {
+      recentTokenSettlements[settlementToken].shift();
+    }
+  }
 
   // Update summary
   performanceData.summary.pending--;
@@ -6795,6 +6809,17 @@ function lookupEmpiricalWinRate(pctFromStrike, token = null) {
  * @param {string} token - Token (BTC, ETH, SOL, XRP)
  * @returns {number} Calibration adjustment (negative = was overconfident)
  */
+/**
+ * Returns cross-timeframe signal from recent 15M settlement results for a token.
+ * Value in [-5, 5]: positive = YES has been winning, negative = NO winning.
+ * Divided by 5 in extractMLFeatures to normalize to [-1, 1].
+ */
+function getCrossTimeframeSignal(token) {
+  const recent = recentTokenSettlements[token] || [];
+  if (recent.length === 0) return 0;
+  return recent.reduce((sum, s) => sum + (s.yesWon ? 1 : -1), 0);
+}
+
 function getCalibrationAdjustment(predictedProb, token) {
   const settled = performanceData.bets.filter(b =>
     b.outcome !== 'pending' && b.token === token
@@ -7278,7 +7303,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
       buyPressure15m: bpSignal.pressure15m,
       buyPressure30m: bpSignal.pressure30m,
       trajectoryScore: 0,
-      crossTimeframeSignal: 0,
+      crossTimeframeSignal: getCrossTimeframeSignal(token),
     });
 
     mlPrediction = mlPredict(features);
