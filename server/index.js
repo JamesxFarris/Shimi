@@ -1663,27 +1663,7 @@ function updateTokenPrice(token, price, now, source) {
   const RAPID_SCAN_COOLDOWN_MS = 90000; // 90s cooldown per token (avoid hammering API)
   if (!cryptoPrices[token].lastRapidScanAt) cryptoPrices[token].lastRapidScanAt = 0;
 
-  if (now - cryptoPrices[token].lastRapidScanAt > RAPID_SCAN_COOLDOWN_MS) {
-    const hist = cryptoPrices[token].history;
-    const ninetySecsAgo = now - 90000;
-    const oldEntry = hist.find(h => h.time <= ninetySecsAgo + 5000);
-    if (oldEntry && oldEntry.price > 0) {
-      const movePct = Math.abs(price - oldEntry.price) / oldEntry.price;
-      if (movePct >= RAPID_MOVE_THRESHOLD) {
-        cryptoPrices[token].lastRapidScanAt = now;
-        const dir = price > oldEntry.price ? '▲' : '▼';
-        console.log(`⚡ RAPID SCAN: ${token} moved ${dir}${(movePct * 100).toFixed(2)}% in 90s — scanning all users immediately`);
-        // Trigger immediate scan for all users with auto-bet active
-        // setImmediate ensures it runs after current event loop tick (non-blocking)
-        for (const [uid] of userAutoBetIntervals) {
-          const userState = getUserState(uid);
-          if (userState?.config?.autoBetEnabled) {
-            setImmediate(() => runAutoBet(uid).catch(() => {}));
-          }
-        }
-      }
-    }
-  }
+  // Rapid scan trigger removed — crypto auto-bet disabled
 }
 
 // Kraken WebSocket state
@@ -2105,8 +2085,7 @@ function getFundingRate(token) {
 }
 
 // Poll funding rates every 60s
-fetchFundingRates();
-setInterval(fetchFundingRates, 60000);
+// fetchFundingRates disabled — crypto trading removed
 
 // ============================================
 // RISK MANAGEMENT
@@ -6325,65 +6304,12 @@ async function _runAutoBetInner(userId = null) {
 }
 
 app.post('/api/crypto/auto-bet/toggle', (req, res) => {
-  const { enabled, intervalSeconds = 10 } = req.body; // Check every 10 seconds for faster reaction
-
-  // Require authentication for auto-bet
-  if (!req.userId) {
-    return res.status(401).json({ success: false, error: 'Please login first' });
+  // Crypto auto-betting has been removed. Weather betting is used instead.
+  const { enabled } = req.body;
+  if (enabled) {
+    return res.status(410).json({ success: false, error: 'Crypto auto-betting has been disabled. Use weather betting instead.' });
   }
-
-  const userConfig = req.userState.config;
-  const userPortfolio = req.userState.portfolio;
-
-  if (enabled && !userConfig.autoBetEnabled) {
-    userConfig.autoBetEnabled = true;
-    saveUserState(req.userId);
-
-    // For now, auto-bet still uses the user's state through the middleware
-    // TODO: Implement per-user auto-bet intervals
-    runAutoBet(req.userId);
-
-    // Store interval per user
-    if (userAutoBetIntervals.has(req.userId)) {
-      clearInterval(userAutoBetIntervals.get(req.userId));
-    }
-    userAutoBetIntervals.set(req.userId, setInterval(() => runAutoBet(req.userId), intervalSeconds * 1000));
-
-    // Start active position monitoring (coin-flip prevention, easy profit, stop-loss)
-    const monitorIntervalMs = userConfig.takeProfitSettings?.scanIntervalMs || 15000;
-    startTakeProfitScanning(monitorIntervalMs, req.userId, userConfig, userPortfolio);
-
-    res.json({
-      success: true,
-      message: `Auto-betting enabled (every ${intervalSeconds}s)`,
-      autoBetEnabled: true
-    });
-  } else if (!enabled && userConfig.autoBetEnabled) {
-    userConfig.autoBetEnabled = false;
-    saveUserState(req.userId);
-
-    // Clear user's auto-bet interval
-    if (userAutoBetIntervals.has(req.userId)) {
-      clearInterval(userAutoBetIntervals.get(req.userId));
-      userAutoBetIntervals.delete(req.userId);
-    }
-    if (autoBetInterval) {
-      clearInterval(autoBetInterval);
-      autoBetInterval = null;
-    }
-
-    // NOTE: Do NOT stop take-profit scanning when auto-bet is disabled
-    // Position protection (stop-loss) should always run to protect open positions
-    // stopTakeProfitScanning(req.userId); // REMOVED - keep monitoring active
-
-    res.json({ success: true, message: 'Auto-betting disabled (position monitoring still active)', autoBetEnabled: false });
-  } else {
-    res.json({
-      success: true,
-      message: `Auto-betting ${userConfig.autoBetEnabled ? 'running' : 'stopped'}`,
-      autoBetEnabled: userConfig.autoBetEnabled
-    });
-  }
+  res.json({ success: true, message: 'Crypto auto-betting is disabled', autoBetEnabled: false });
 });
 
 // ── WEATHER BETTING API ENDPOINTS ──────────────────────────────────────────

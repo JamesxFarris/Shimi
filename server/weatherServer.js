@@ -30,7 +30,7 @@ const DEFAULT_CONFIG = {
   apiKeyId: null,
   privateKey: null,
   weatherBetting: {
-    enabled: false,
+    enabled: true,
     minEdge: 0.10,
     minLiquidity: 500,
     maxHoursToClose: 30,
