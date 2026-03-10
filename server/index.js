@@ -356,11 +356,11 @@ const DEFAULT_EMPIRICAL_TABLES = {
   // Selectivity rules (learned thresholds for when to bet)
   selectivityRules: {
     minSignalStrength: 58, // 0-100 score required to bet (raised from 50: only clear signals)
-    minEmpiricalWinRate: 64, // Minimum win rate from lookup tables (lowered from 68: allow borderline high-edge bets)
-    minEdgeAfterFees: 6, // 6% minimum edge after fees (lowered from 8: allows more bets in efficient markets)
-    minUnfavoredEdge: 8, // 8% minimum net edge for unfavored-side bets (raised from 5: long shots need bigger edge)
+    minEmpiricalWinRate: 70, // Raised from 64: only bet when model has genuine high conviction
+    minEdgeAfterFees: 10, // Raised from 6: Kalshi markets are efficient — marginal edge is noise, not signal
+    minUnfavoredEdge: 12, // 12% minimum net edge for unfavored-side bets (raised from 8: long shots are high-risk)
     maxBetsPerToken: 3, // Per-token concentration limit
-    maxBetsPerHour: 15, // Maximum bets placed in a rolling 1-hour window
+    maxBetsPerHour: 10, // Maximum bets per rolling hour — quality over quantity
     requireRegimeCheck: true, // Must pass volatility regime check
     strongSignalMinSignal: 70, // Signal threshold for "too early" bypass
     strongSignalMinEdge: 6, // Edge threshold for "too early" bypass
@@ -1637,6 +1637,36 @@ function updateTokenPrice(token, price, now, source) {
 
   // Calculate volatility
   cryptoPrices[token].volatility = calculateVolatility(cryptoPrices[token].history, token);
+
+  // RAPID SCAN TRIGGER: Detect sudden price moves (>0.25% in 90 seconds)
+  // When crypto moves sharply, Kalshi market prices lag 30-90 seconds behind.
+  // This creates a brief window where empirical win rates genuinely exceed market prices.
+  // Immediately triggering a scan catches this repricing window before it closes.
+  const RAPID_MOVE_THRESHOLD = 0.0025; // 0.25% move = meaningful directional signal
+  const RAPID_SCAN_COOLDOWN_MS = 90000; // 90s cooldown per token (avoid hammering API)
+  if (!cryptoPrices[token].lastRapidScanAt) cryptoPrices[token].lastRapidScanAt = 0;
+
+  if (now - cryptoPrices[token].lastRapidScanAt > RAPID_SCAN_COOLDOWN_MS) {
+    const hist = cryptoPrices[token].history;
+    const ninetySecsAgo = now - 90000;
+    const oldEntry = hist.find(h => h.time <= ninetySecsAgo + 5000);
+    if (oldEntry && oldEntry.price > 0) {
+      const movePct = Math.abs(price - oldEntry.price) / oldEntry.price;
+      if (movePct >= RAPID_MOVE_THRESHOLD) {
+        cryptoPrices[token].lastRapidScanAt = now;
+        const dir = price > oldEntry.price ? '▲' : '▼';
+        console.log(`⚡ RAPID SCAN: ${token} moved ${dir}${(movePct * 100).toFixed(2)}% in 90s — scanning all users immediately`);
+        // Trigger immediate scan for all users with auto-bet active
+        // setImmediate ensures it runs after current event loop tick (non-blocking)
+        for (const [uid] of userAutoBetIntervals) {
+          const userState = getUserState(uid);
+          if (userState?.config?.autoBetEnabled) {
+            setImmediate(() => runAutoBet(uid).catch(() => {}));
+          }
+        }
+      }
+    }
+  }
 }
 
 // Kraken WebSocket state
@@ -7044,7 +7074,9 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   // Compute gross edge for both sides, adjusted for YES/NO bias
   // SOL has 4.44% NO bias (NO wins more often), so shift edge toward NO
   const noBias = learnedParams.byToken?.[token]?.noBias || 0;
-  const biasAdj = (noBias > 0 && learnedParams.byToken?.[token]?.sampleSize >= 100) ? noBias / 2 : 0;
+  // Use full NO bias (not halved) — SOL's 4.44% NO advantage is statistically significant
+  // at n=2,790 samples (2.3σ) and should be fully applied to edge calculation
+  const biasAdj = (noBias > 0 && learnedParams.byToken?.[token]?.sampleSize >= 100) ? noBias : 0;
   let favoredWinRate = empirical.winRate;
   let unfavoredWinRate = 100 - empirical.winRate;
   if (biasAdj > 0) {
@@ -7382,6 +7414,24 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
   const grossEdge = adjustedWinRate - marketImpliedProb;
   const netEdge = grossEdge - feePct - spreadPenalty - slippagePct - fillUncertaintyPenalty;
 
+  // MARKET EFFICIENCY SCORE: Measure how much the market is mispricing vs our fair value model.
+  // A high mispricingScore means the market is significantly underpricing our estimated probability.
+  // This is the most direct measure of exploitable edge — the gap between our model and the market.
+  //
+  // Three components of mispricing:
+  //   1. Raw gross edge (our win rate minus market price)
+  //   2. Whether the z-score/theoretical model ALSO agrees we have edge (2nd opinion)
+  //   3. Whether recent momentum is aligned with the bet direction (confirming signal)
+  const mispricingScore = grossEdge; // Core: how much market underestimates our win rate
+  const hasTheoreticalConfirmation = theoreticalWinRate !== null && theoreticalWinRate > marketImpliedProb;
+  const hasMomentumConfirmation = momSignal && (
+    (betSide === 'YES' && (momSignal.m1 > 0 || momSignal.m5 > 0)) ||
+    (betSide === 'NO' && (momSignal.m1 < 0 || momSignal.m5 < 0))
+  );
+
+  // Log the mispricing analysis for diagnostics
+  console.log(` Market efficiency: grossEdge=${grossEdge.toFixed(1)}% | theoretical=${hasTheoreticalConfirmation ? '✓ confirms' : '✗ disagrees'} | momentum=${hasMomentumConfirmation ? '✓ aligned' : '✗ opposed'} | score=${mispricingScore.toFixed(1)}%`);
+
   // Calculate signal strength
   const signalStrength = calculateSignalStrength(
     adjustedWinRate,
@@ -7397,6 +7447,18 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
 
   // Build rejection reasons - only hard rejections for genuine deal-breakers
   const reasons = [];
+
+  // DUAL-CONFIRMATION GATE: For borderline edges (10-14%), require at least one of:
+  // theoretical model confirmation OR momentum alignment. If both disagree, it's likely noise.
+  // At high edges (15%+) or with clear mispricing, bypass this gate.
+  const baseMinEdgeForGate = rules.minEdgeAfterFees || 10;
+  const DUAL_CONFIRM_EDGE_THRESHOLD = baseMinEdgeForGate + 4; // 14% edge bypasses gate
+  if (netEdge >= baseMinEdgeForGate && netEdge < DUAL_CONFIRM_EDGE_THRESHOLD) {
+    // Borderline edge: need at least one confirmation signal
+    if (!hasTheoreticalConfirmation && !hasMomentumConfirmation) {
+      reasons.push(`Borderline edge ${netEdge.toFixed(1)}% lacks confirmation (z-score disagrees, momentum opposed) — likely noise`);
+    }
+  }
 
   if (isFavoredSideBet) {
     // Favored bets: standard win rate and edge thresholds
@@ -7429,9 +7491,9 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
 
     // In low vol, outcomes are more predictable - smaller edge is acceptable
-    // With 6% base, low-vol reduces to 3% (allows more bets through in calm markets)
+    // With 10% base, low-vol reduces to 7% (still requires substantial edge in calm markets)
     // Off-peak: raise edge floor by +3% (compensate for wider spreads in thin books)
-    const baseMinEdge = rules.minEdgeAfterFees || 6;
+    const baseMinEdge = rules.minEdgeAfterFees || 10;
     // Favorite-longshot bias: scale edge requirement inversely with contract price
     // High-price contracts (70c+) have low fees + high win rates → base edge sufficient
     // Mid-range (30-50c) has highest fees → require extra edge. Longshots (<30c) need even more.
@@ -7474,7 +7536,7 @@ function evaluateOpportunityEmpirical(parsed, currentPrice, tables = null, order
     }
 
     // Unfavored bets: skip win rate filter (inherently <50%), require higher edge + cheap price
-    const minUnfavoredEdge = rules.minUnfavoredEdge || 8;
+    const minUnfavoredEdge = rules.minUnfavoredEdge || 12;
     if (netEdge < minUnfavoredEdge) {
       reasons.push(`Unfavored edge ${netEdge.toFixed(1)}% < ${minUnfavoredEdge}%`);
     }
