@@ -125,15 +125,15 @@ async function fetchGFSEnsemble(lat, lon) {
     return cached.data;
   }
 
-  // Build member field list: temperature_2m_max_member01 … member30
-  const memberFields = Array.from({ length: 30 }, (_, i) =>
-    `temperature_2m_max_member${String(i + 1).padStart(2, '0')}`
+  // Build member field list: temperature_2m_max_member00 … member30 (31 members: control + 30 perturbations)
+  const memberFields = Array.from({ length: 31 }, (_, i) =>
+    `temperature_2m_max_member${String(i).padStart(2, '0')}`
   ).join(',');
 
   const url =
     `https://ensemble-api.open-meteo.com/v1/ensemble` +
     `?latitude=${lat}&longitude=${lon}` +
-    `&models=gfs_seamless` +
+    `&models=gfs025` +
     `&daily=temperature_2m_max,${memberFields}` +
     `&temperature_unit=fahrenheit` +
     `&forecast_days=7` +
@@ -219,14 +219,14 @@ function blendModelProbs(gfsProb, hrrrHigh, nbmHigh, gfsSpread, threshold, hours
   return Math.max(0.02, Math.min(0.98, blended / total));
 }
 
-// Calculate P(daily_high >= threshold) from 30 GFS ensemble members on targetDate (YYYY-MM-DD)
+// Calculate P(daily_high >= threshold) from GFS025 ensemble members on targetDate (YYYY-MM-DD)
 function gfsEnsembleProb(ensembleData, targetDate, threshold) {
   const idx = ensembleData.daily?.time?.indexOf(targetDate);
   if (idx === undefined || idx === -1) return null;
 
   let above = 0;
   let total = 0;
-  for (let m = 1; m <= 30; m++) {
+  for (let m = 0; m <= 30; m++) {
     const key = `temperature_2m_max_member${String(m).padStart(2, '0')}`;
     const val = ensembleData.daily?.[key]?.[idx];
     if (val !== null && val !== undefined && !isNaN(val)) {
@@ -245,7 +245,7 @@ function gfsEnsembleStats(ensembleData, targetDate) {
   if (idx === undefined || idx === -1) return null;
 
   const vals = [];
-  for (let m = 1; m <= 30; m++) {
+  for (let m = 0; m <= 30; m++) {
     const key = `temperature_2m_max_member${String(m).padStart(2, '0')}`;
     const val = ensembleData.daily?.[key]?.[idx];
     if (val !== null && val !== undefined && !isNaN(val)) vals.push(val);
