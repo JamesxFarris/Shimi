@@ -384,7 +384,7 @@ const DEFAULT_EMPIRICAL_TABLES = {
     kellyFraction: 0.15,      // Fractional Kelly (very conservative: 15%)
     maxDollarsPerBet: 25,     // Hard cap per weather bet
     maxBankrollPct: 0.05,     // Max 5% of bankroll per bet
-    scanIntervalMinutes: 15,  // Re-scan every 15 minutes (GFS updates every 6h)
+    scanIntervalMinutes: 5,   // Re-scan every 5 minutes (HRRR/NWS update hourly, markets move)
     cities: Object.keys(WEATHER_CITIES), // Which city series to monitor
   },
 
@@ -5380,7 +5380,7 @@ async function runWeatherBet(userId = null) {
 function startWeatherBetting(userId) {
   if (weatherBetIntervals.has(userId)) return; // already running
   const userState = getUserState(userId);
-  const intervalMin = userState?.config?.weatherBetting?.scanIntervalMinutes || 15;
+  const intervalMin = userState?.config?.weatherBetting?.scanIntervalMinutes || 5;
   const intervalMs = intervalMin * 60 * 1000;
 
   // Run immediately, then on interval

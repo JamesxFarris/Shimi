@@ -194,28 +194,33 @@ function getModelHigh(modelData, targetDate) {
   return (val !== null && val !== undefined && !isNaN(val)) ? val : null;
 }
 
-// Blend GEFS ensemble probability with HRRR and NBM deterministic forecasts.
-// Weights shift toward higher-resolution models as the market approaches close.
-function blendModelProbs(gfsProb, hrrrHigh, nbmHigh, gfsSpread, threshold, hoursToClose) {
+// Blend GEFS ensemble + HRRR + NBM + NWS forecasts.
+// NWS is the Kalshi settlement source — it gains weight as the market approaches close.
+// Weights shift toward higher-resolution / official models as the market approaches close.
+function blendModelProbs(gfsProb, hrrrHigh, nbmHigh, nwsHigh, gfsSpread, threshold, hoursToClose) {
   const sigma = Math.max(2, gfsSpread || 4); // minimum 2°F for converting point forecast → prob
   const hrrrProb = hrrrHigh !== null ? forecastToProb(hrrrHigh, threshold, sigma) : null;
   const nbmProb  = nbmHigh  !== null ? forecastToProb(nbmHigh,  threshold, sigma) : null;
+  // NWS is the official settlement source — use it as the highest-weight signal near close
+  const nwsProb  = nwsHigh  !== null ? forecastToProb(nwsHigh,  threshold, sigma) : null;
 
-  // Time-based weights: HRRR/NBM gain weight as market approaches close
-  let [wGefs, wNbm, wHrrr] =
-    hoursToClose > 24 ? [0.70, 0.20, 0.10] :
-    hoursToClose > 12 ? [0.40, 0.35, 0.25] :
-    hoursToClose >  6 ? [0.20, 0.30, 0.50] :
-                        [0.10, 0.20, 0.70];
+  // Time-based weights: NWS and HRRR gain weight as market approaches close
+  // NWS is dominant near settlement because it IS what Kalshi settles on
+  let [wGefs, wNbm, wHrrr, wNws] =
+    hoursToClose > 24 ? [0.55, 0.15, 0.10, 0.20] :
+    hoursToClose > 12 ? [0.30, 0.20, 0.15, 0.35] :
+    hoursToClose >  6 ? [0.15, 0.15, 0.25, 0.45] :
+                        [0.05, 0.10, 0.20, 0.65];
 
   // Redistribute weight if a model is unavailable
-  if (hrrrProb === null) { wGefs += wHrrr * 0.6; wNbm += wHrrr * 0.4; wHrrr = 0; }
-  if (nbmProb  === null) { wGefs += wNbm; wNbm = 0; }
+  if (hrrrProb === null) { wGefs += wHrrr * 0.5; wNws += wHrrr * 0.3; wNbm += wHrrr * 0.2; wHrrr = 0; }
+  if (nbmProb  === null) { wGefs += wNbm * 0.6; wNws += wNbm * 0.4; wNbm = 0; }
+  if (nwsProb  === null) { wGefs += wNws * 0.5; wHrrr += wNws * 0.3; wNbm += wNws * 0.2; wNws = 0; }
 
-  const total = wGefs + wHrrr + wNbm;
+  const total = wGefs + wHrrr + wNbm + wNws;
   if (total === 0) return gfsProb;
 
-  const blended = (gfsProb * wGefs) + (hrrrProb ?? 0) * wHrrr + (nbmProb ?? 0) * wNbm;
+  const blended = (gfsProb * wGefs) + (hrrrProb ?? 0) * wHrrr + (nbmProb ?? 0) * wNbm + (nwsProb ?? 0) * wNws;
   return Math.max(0.02, Math.min(0.98, blended / total));
 }
 
@@ -414,7 +419,7 @@ function calcWeatherEdge(modelProb, marketAskPrice, maker = true) {
 
 export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
   const cfg = userConfig?.weatherBetting || {};
-  const minEdge = cfg.minEdge ?? 0.10;            // 10% minimum net edge
+  const minEdge = cfg.minEdge ?? 0.12;            // 12% minimum net edge
   const minLiquidity = cfg.minLiquidity ?? 500;   // $500 minimum open interest
   const maxHoursToClose = cfg.maxHoursToClose ?? 30; // Don't bet >30h before close
   const minHoursToClose = cfg.minHoursToClose ?? 2;  // Don't bet <2h before close
@@ -443,14 +448,18 @@ export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
       // 2. Fetch GFS ensemble once for this city (cached)
       const ensemble = await fetchGFSEnsemble(cityConfig.lat, cityConfig.lon);
 
-      // 3. Fetch HRRR (3 km, hourly updates) and NBM (2.5 km bias-corrected) in parallel
-      let hrrrData = null, nbmData = null;
-      try {
-        [hrrrData, nbmData] = await Promise.all([
-          fetchDetModel('hrrr_conus', cityConfig.lat, cityConfig.lon, 3).catch(() => null),
-          fetchDetModel('nbm_conus',  cityConfig.lat, cityConfig.lon, 7).catch(() => null),
-        ]);
-      } catch { /* deterministic models optional — GEFS alone is still valid */ }
+      // 3. Fetch HRRR, NBM, and NWS in parallel.
+      //    NWS is the official settlement source for Kalshi KXHIGH markets — highest priority signal.
+      let hrrrData = null, nbmData = null, nwsData = null, currentObsF = null;
+      await Promise.all([
+        fetchDetModel('hrrr_conus', cityConfig.lat, cityConfig.lon, 3).then(d => { hrrrData = d; }).catch(() => {}),
+        fetchDetModel('nbm_conus',  cityConfig.lat, cityConfig.lon, 7).then(d => { nbmData = d;  }).catch(() => {}),
+        fetchNWSForecast(cityConfig.nwsOffice, cityConfig.nwsGridX, cityConfig.nwsGridY).then(d => { nwsData = d; }).catch(() => {}),
+        // Current NWS observation — if temp already exceeds threshold today, YES is nearly certain
+        getNWSCurrentObservation(cityConfig.station).then(t => { currentObsF = t; }).catch(() => {}),
+      ]);
+
+      const todayDate = new Date().toISOString().substring(0, 10);
 
       // 4. Evaluate each market
       for (const market of markets) {
@@ -478,24 +487,43 @@ export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
 
           if (modelProb === null) continue;
 
-          // 6. Blend GEFS + HRRR + NBM for final probability
+          // 5b. LOCK: if today's observed temp already confirms the outcome, override probability.
+          //     This is the highest-confidence edge: current observation IS the settlement data.
+          let observationLock = null;
+          if (currentObsF !== null && targetDate === todayDate) {
+            if (isAboveMarket && currentObsF >= thresholdLow) {
+              observationLock = 0.97; // daily high already confirmed above threshold — YES near-certain
+              console.log(`  [WEATHER] ★ OBS LOCK: ${cityConfig.name} current ${currentObsF.toFixed(1)}°F ≥ ${thresholdLow}°F threshold`);
+            } else if (isRangeMarket && thresholdHigh != null && currentObsF >= thresholdLow && currentObsF < thresholdHigh) {
+              // Current obs is in range — not conclusive (high may still climb out of range)
+            } else if (isAboveMarket && currentObsF < thresholdLow - 8) {
+              // Very unlikely to reach threshold — soft NO lock
+              observationLock = 0.04;
+              console.log(`  [WEATHER] ★ OBS LOCK: ${cityConfig.name} current ${currentObsF.toFixed(1)}°F well below ${thresholdLow}°F`);
+            }
+          }
+
+          // 6. Blend GEFS + HRRR + NBM + NWS for final probability
           const stats = gfsEnsembleStats(ensemble, targetDate);
           const gfsSpreadVal = parseFloat(stats?.spread || 4);
           const hrrrHigh = hrrrData ? getModelHigh(hrrrData, targetDate) : null;
           const nbmHigh  = nbmData  ? getModelHigh(nbmData,  targetDate) : null;
+          const nwsHigh  = nwsData  ? nwsForecastHigh(nwsData, targetDate) : null;
 
           let finalModelProb;
-          if (isAboveMarket) {
+          if (observationLock !== null) {
+            finalModelProb = observationLock;
+          } else if (isAboveMarket) {
             finalModelProb = blendModelProbs(
-              modelProb, hrrrHigh, nbmHigh, gfsSpreadVal, thresholdLow, parsed.hoursToClose
+              modelProb, hrrrHigh, nbmHigh, nwsHigh, gfsSpreadVal, thresholdLow, parsed.hoursToClose
             );
           } else {
             // Range market: blend each bound separately, then take the difference
             const gfsProbLow  = gfsEnsembleProb(ensemble, targetDate, thresholdLow) ?? modelProb;
             const gfsProbHigh = thresholdHigh ? (gfsEnsembleProb(ensemble, targetDate, thresholdHigh) ?? 0) : 0;
-            const blendedLow  = blendModelProbs(gfsProbLow,  hrrrHigh, nbmHigh, gfsSpreadVal, thresholdLow,  parsed.hoursToClose);
+            const blendedLow  = blendModelProbs(gfsProbLow,  hrrrHigh, nbmHigh, nwsHigh, gfsSpreadVal, thresholdLow,  parsed.hoursToClose);
             const blendedHigh = thresholdHigh
-              ? blendModelProbs(gfsProbHigh, hrrrHigh, nbmHigh, gfsSpreadVal, thresholdHigh, parsed.hoursToClose)
+              ? blendModelProbs(gfsProbHigh, hrrrHigh, nbmHigh, nwsHigh, gfsSpreadVal, thresholdHigh, parsed.hoursToClose)
               : 0;
             finalModelProb = Math.max(0.01, blendedLow - blendedHigh);
           }
@@ -510,7 +538,9 @@ export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
             ` | GEFS:${(modelProb * 100).toFixed(1)}%` +
             ` HRRR:${hrrrHigh !== null ? hrrrHigh.toFixed(1) + '°F' : 'n/a'}` +
             ` NBM:${nbmHigh !== null ? nbmHigh.toFixed(1) + '°F' : 'n/a'}` +
-            ` → blend:${(finalModelProb * 100).toFixed(1)}% (±${gfsSpreadVal.toFixed(1)}°F)` +
+            ` NWS:${nwsHigh !== null ? nwsHigh.toFixed(1) + '°F' : 'n/a'}` +
+            ` obs:${currentObsF !== null && targetDate === todayDate ? currentObsF.toFixed(1) + '°F' : 'n/a'}` +
+            ` → blend:${(finalModelProb * 100).toFixed(1)}%${observationLock !== null ? ' [OBS LOCK]' : ''} (±${gfsSpreadVal.toFixed(1)}°F)` +
             ` | market: YES=${(parsed.yesAsk * 100).toFixed(0)}c NO=${(parsed.noAsk * 100).toFixed(0)}c` +
             ` | yesEdge=${(yesEdge.netEdgeFraction * 100).toFixed(1)}% noEdge=${(noEdge.netEdgeFraction * 100).toFixed(1)}%` +
             ` | ${parsed.hoursToClose.toFixed(1)}h to close`
@@ -547,6 +577,9 @@ export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
               gfsMembers: stats?.members || 0,
               hrrrForecastHigh: hrrrHigh,
               nbmForecastHigh: nbmHigh,
+              nwsForecastHigh: nwsHigh,
+              currentObsF,
+              observationLock: observationLock !== null,
               yesAsk: parsed.yesAsk,
               noAsk: parsed.noAsk,
               hoursToClose: parsed.hoursToClose,

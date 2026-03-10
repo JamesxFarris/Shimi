@@ -331,7 +331,7 @@ function recordBet(state, opp, contracts, priceInCents) {
 function startWeatherBetting(userId) {
   if (weatherBetIntervals.has(userId)) return;
   loadUserState(userId).then(state => {
-    const intervalMin = state.config.weatherBetting?.scanIntervalMinutes || 15;
+    const intervalMin = state.config.weatherBetting?.scanIntervalMinutes || 5;
     const intervalMs = intervalMin * 60 * 1000;
     runWeatherBet(userId).catch(() => {});
     const id = setInterval(() => runWeatherBet(userId).catch(() => {}), intervalMs);
