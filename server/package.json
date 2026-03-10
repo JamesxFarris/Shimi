@@ -5,8 +5,10 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node --watch index.js"
+    "start": "node weatherServer.js",
+    "start:legacy": "node index.js",
+    "dev": "node --watch weatherServer.js",
+    "dev:legacy": "node --watch index.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

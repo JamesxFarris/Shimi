@@ -158,12 +158,12 @@
     }
   },
   "selectivityRules": {
-    "minSignalStrength": 58,
-    "minEmpiricalWinRate": 64,
-    "minEdgeAfterFees": 6,
-    "minUnfavoredEdge": 8,
-    "maxBetsPerHour": 25,
-    "maxBetsPerToken": 3,
+    "minSignalStrength": 62,
+    "minEmpiricalWinRate": 70,
+    "minEdgeAfterFees": 10,
+    "minUnfavoredEdge": 12,
+    "maxBetsPerHour": 10,
+    "maxBetsPerToken": 2,
     "requireRegimeCheck": true
   },
   "performanceTracking": {
