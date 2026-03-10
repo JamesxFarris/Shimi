@@ -10,6 +10,7 @@ import * as auth from './auth.js';
 import WebSocket from 'ws';
 import { getKalshiWebSocket } from './kalshiWebSocket.js';
 import { pool, initDatabase } from './db.js';
+import { scanWeatherMarkets, calcWeatherBetSize, WEATHER_CITIES } from './weatherBot.js';
 import {
   ML_FEATURE_NAMES, sigmoid, extractMLFeatures, normalizeFeatures,
   mlPredict, computeFeatureStats, trainMLModel, buildMLTrainingData,
@@ -368,6 +369,23 @@ const DEFAULT_EMPIRICAL_TABLES = {
       { minEdge: 15, minWinRate: 52 },
       { minEdge: 10, minWinRate: 55 },
     ],
+  },
+
+  // Weather market betting configuration
+  // Uses 30-member GFS ensemble from Open-Meteo (free, no API key) vs Kalshi market prices.
+  // Settlement source: NWS Daily Climate Report — the same data our forecast targets.
+  weatherBetting: {
+    enabled: false,           // Toggle independently from crypto auto-bet
+    minEdge: 0.10,            // 10% minimum net edge after fees (higher bar than crypto)
+    minLiquidity: 500,        // $500 minimum open interest (avoid ghost markets)
+    maxHoursToClose: 30,      // Don't bet > 30h before market close (forecast too uncertain)
+    minHoursToClose: 2,       // Don't bet < 2h before close (price already locked in)
+    makerMode: true,          // Always use maker orders for weather (fees matter less but still)
+    kellyFraction: 0.15,      // Fractional Kelly (very conservative: 15%)
+    maxDollarsPerBet: 25,     // Hard cap per weather bet
+    maxBankrollPct: 0.05,     // Max 5% of bankroll per bet
+    scanIntervalMinutes: 15,  // Re-scan every 15 minutes (GFS updates every 6h)
+    cities: Object.keys(WEATHER_CITIES), // Which city series to monitor
   },
 
   // Performance tracking for adaptive adjustment
@@ -5255,6 +5273,160 @@ let lastScanStatus = {
 // Maker fee savings tracker: accumulates taker-maker fee difference on each maker fill
 let makerFeeSavings = { totalCents: 0, fillCount: 0, fallbackCount: 0 };
 
+// ──────────────────────────────────────────────────────────────────────────
+// WEATHER BETTING ENGINE
+// Scans Kalshi KXHIGH temperature markets using 30-member GFS ensemble.
+// Runs on a separate 15-minute interval from the crypto auto-bet loop.
+// ──────────────────────────────────────────────────────────────────────────
+const weatherBetIntervals = new Map(); // userId → intervalId
+const weatherBetRunning = new Map();   // userId → boolean (concurrency guard)
+
+async function runWeatherBet(userId = null) {
+  const key = userId || 'default';
+  if (weatherBetRunning.get(key)) return; // skip if already running
+  weatherBetRunning.set(key, true);
+
+  try {
+    const userState = userId ? await getUserStateAsync(userId) : { config, portfolio };
+    const userConfig = userState?.config || config;
+    const userPortfolio = userState?.portfolio || portfolio;
+
+    const wCfg = userConfig.weatherBetting || {};
+    if (!wCfg.enabled) return;
+
+    // Check bankroll
+    const balance = userPortfolio.balance || 0;
+    if (balance < 5) {
+      console.log(`[WEATHER] Bankroll too low ($${(balance/100).toFixed(2)}) — skipping scan`);
+      return;
+    }
+
+    console.log(`\n☁ WEATHER SCAN starting (balance: $${(balance/100).toFixed(2)})`);
+
+    // Run the scanner
+    const { opportunities } = await scanWeatherMarkets(kalshiRequest, userConfig);
+
+    if (opportunities.length === 0) return;
+
+    // Safety: max 2 weather bets per scan to avoid over-betting
+    const toPlace = opportunities.slice(0, 2);
+
+    for (const opp of toPlace) {
+      try {
+        // Check if we already hold a position in this market
+        const existing = (userPortfolio.positions || []).find(p => p.ticker === opp.ticker);
+        if (existing) {
+          console.log(`[WEATHER] Already holding ${opp.ticker} — skipping`);
+          continue;
+        }
+
+        // Size the bet
+        const betDollars = calcWeatherBetSize(
+          opp.betModelProb,
+          opp.betPrice,
+          balance / 100, // convert cents to dollars
+          wCfg
+        );
+        const contracts = Math.max(1, Math.round(betDollars / opp.betPrice));
+        const maxContracts = Math.floor((wCfg.maxDollarsPerBet || 25) / opp.betPrice);
+        const finalContracts = Math.min(contracts, maxContracts);
+
+        if (finalContracts < 1) continue;
+
+        const priceInCents = Math.round(opp.betPrice * 100);
+
+        console.log(
+          `\n☁ PLACING WEATHER BET: ${opp.betSide} on ${opp.city} ${opp.isAboveMarket ? '>=' : 'range'} ${opp.threshold}°F` +
+          ` on ${opp.targetDate}` +
+          ` | ${finalContracts} contracts @ ${priceInCents}c` +
+          ` | GFS: ${(opp.betModelProb * 100).toFixed(1)}% | edge: ${(opp.betEdge * 100).toFixed(1)}%`
+        );
+
+        if (!userConfig.isAuthenticated) {
+          console.log(`[WEATHER] SIM BET (not authenticated) — would place ${finalContracts}x ${opp.betSide} @ ${priceInCents}c`);
+          trackBet({
+            ticker: opp.ticker,
+            side: opp.betSide,
+            price: priceInCents,
+            contracts: finalContracts,
+            totalCost: finalContracts * priceInCents,
+            predictedProb: opp.betModelProb * 100,
+            token: opp.token,
+            marketType: 'weather',
+            userId,
+          });
+          continue;
+        }
+
+        // Place real order via Kalshi API
+        const orderBody = {
+          ticker: opp.ticker,
+          client_order_id: `weather-${opp.ticker}-${Date.now()}`,
+          type: wCfg.makerMode !== false ? 'limit' : 'market',
+          action: 'buy',
+          side: opp.betSide.toLowerCase(),
+          count: finalContracts,
+          yes_price: opp.betSide === 'YES' ? priceInCents : undefined,
+          no_price: opp.betSide === 'NO' ? priceInCents : undefined,
+          expiration_ts: Math.floor((Date.now() + 30000) / 1000), // 30s expiry for limit
+        };
+        // Remove undefined fields
+        Object.keys(orderBody).forEach(k => orderBody[k] === undefined && delete orderBody[k]);
+
+        const orderResp = await kalshiRequest('POST', '/portfolio/orders', orderBody, userConfig);
+
+        if (orderResp?.order) {
+          const filled = orderResp.order.filled_count || 0;
+          console.log(`[WEATHER] Order placed: ${orderResp.order.status} | filled ${filled}/${finalContracts} contracts`);
+
+          if (filled > 0) {
+            trackBet({
+              ticker: opp.ticker,
+              side: opp.betSide,
+              price: priceInCents,
+              contracts: filled,
+              totalCost: filled * priceInCents,
+              predictedProb: opp.betModelProb * 100,
+              token: opp.token,
+              marketType: 'weather',
+              userId,
+            });
+          }
+        }
+      } catch (betErr) {
+        console.error(`[WEATHER] Failed to place bet on ${opp.ticker}: ${betErr.message}`);
+      }
+    }
+  } catch (err) {
+    console.error(`[WEATHER] Scan error: ${err.message}`);
+  } finally {
+    weatherBetRunning.set(key, false);
+  }
+}
+
+// Start / stop the weather scan interval for a user
+function startWeatherBetting(userId) {
+  if (weatherBetIntervals.has(userId)) return; // already running
+  const userState = getUserState(userId);
+  const intervalMin = userState?.config?.weatherBetting?.scanIntervalMinutes || 15;
+  const intervalMs = intervalMin * 60 * 1000;
+
+  // Run immediately, then on interval
+  runWeatherBet(userId).catch(() => {});
+  const id = setInterval(() => runWeatherBet(userId).catch(() => {}), intervalMs);
+  weatherBetIntervals.set(userId, id);
+  console.log(`☁ Weather betting started for user ${userId} (every ${intervalMin} min)`);
+}
+
+function stopWeatherBetting(userId) {
+  const id = weatherBetIntervals.get(userId);
+  if (id) {
+    clearInterval(id);
+    weatherBetIntervals.delete(userId);
+    console.log(`☁ Weather betting stopped for user ${userId}`);
+  }
+}
+
 // Track insufficient balance to avoid spamming Kalshi API
 let insufficientBalanceUntil = 0; // timestamp when we can try again
 // Concurrency guard: prevent overlapping runAutoBet() calls that bypass risk limits (per-user)
@@ -6348,6 +6520,77 @@ app.post('/api/crypto/auto-bet/toggle', (req, res) => {
     });
   }
 });
+
+// ── WEATHER BETTING API ENDPOINTS ──────────────────────────────────────────
+
+// Toggle weather betting on/off
+app.post('/api/weather-bet/toggle', (req, res) => {
+  const userConfig = req.userState?.config || config;
+  const { enabled } = req.body;
+
+  if (!userConfig.weatherBetting) userConfig.weatherBetting = {};
+  userConfig.weatherBetting.enabled = !!enabled;
+
+  if (enabled) {
+    startWeatherBetting(req.userId);
+  } else {
+    stopWeatherBetting(req.userId);
+  }
+
+  saveUserState(req.userId);
+  res.json({ success: true, weatherBettingEnabled: userConfig.weatherBetting.enabled });
+});
+
+// Update weather betting config
+app.post('/api/weather-bet/config', (req, res) => {
+  const userConfig = req.userState?.config || config;
+  if (!userConfig.weatherBetting) userConfig.weatherBetting = {};
+
+  const allowed = ['minEdge', 'minLiquidity', 'maxHoursToClose', 'minHoursToClose',
+                   'makerMode', 'kellyFraction', 'maxDollarsPerBet', 'maxBankrollPct',
+                   'scanIntervalMinutes'];
+  for (const key of allowed) {
+    if (req.body[key] !== undefined) userConfig.weatherBetting[key] = req.body[key];
+  }
+
+  saveUserState(req.userId);
+  res.json({ success: true, weatherBetting: userConfig.weatherBetting });
+});
+
+// Get current weather opportunities (scan on demand)
+app.get('/api/weather-bet/opportunities', async (req, res) => {
+  try {
+    const userConfig = req.userState?.config || config;
+    const { opportunities, errors } = await scanWeatherMarkets(kalshiRequest, userConfig);
+    res.json({ opportunities, errors, scannedAt: new Date().toISOString() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get weather bet status
+app.get('/api/weather-bet/status', (req, res) => {
+  const userConfig = req.userState?.config || config;
+  const wCfg = userConfig.weatherBetting || {};
+
+  // Restore interval if enabled but not running (e.g. after server restart)
+  if (req.userId && wCfg.enabled && !weatherBetIntervals.has(req.userId)) {
+    startWeatherBetting(req.userId);
+  }
+
+  res.json({
+    enabled: !!wCfg.enabled,
+    intervalRunning: weatherBetIntervals.has(req.userId),
+    config: wCfg,
+    cities: Object.entries(WEATHER_CITIES).map(([ticker, c]) => ({
+      ticker,
+      name: c.name,
+      station: c.station,
+    })),
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
 
 // Get auto-bet scan status - also restore interval if needed
 app.get('/api/auto-bet/status', (req, res) => {
