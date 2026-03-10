@@ -163,8 +163,13 @@ async function fetchDetModel(model, lat, lon, forecastDays = 3) {
   const cached = detModelCache.get(cacheKey);
   if (cached && Date.now() - cached.fetchedAt < DET_CACHE_TTL_MS) return cached.data;
 
+  // HRRR and NBM are US models served via /v1/forecast; GFS variants use /v1/gfs
+  const endpoint = (model === 'hrrr_conus' || model === 'nbm_conus')
+    ? 'https://api.open-meteo.com/v1/forecast'
+    : 'https://api.open-meteo.com/v1/gfs';
+
   const url =
-    `https://api.open-meteo.com/v1/gfs` +
+    `${endpoint}` +
     `?latitude=${lat}&longitude=${lon}` +
     `&daily=temperature_2m_max` +
     `&models=${model}` +
