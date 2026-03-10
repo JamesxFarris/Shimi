@@ -39,7 +39,7 @@ const DEFAULT_CONFIG = {
     kellyFraction: 0.15,
     maxDollarsPerBet: 25,
     maxBankrollPct: 0.05,
-    scanIntervalMinutes: 15,
+    scanIntervalMinutes: 5,
   },
 };
 
