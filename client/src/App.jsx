@@ -353,6 +353,7 @@ function App() {
   const [error, setError] = useState(null)
   const [autoBetEnabled, setAutoBetEnabled] = useState(false)
   const [scanStatus, setScanStatus] = useState(null)
+  const [weatherBetEnabled, setWeatherBetEnabled] = useState(false)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [showAuth, setShowAuth] = useState(false)
   const [authForm, setAuthForm] = useState({ apiKeyId: '', privateKey: '' })
@@ -629,6 +630,7 @@ function App() {
     fetchPortfolio()
     fetchPerformance()  // Fetch performance stats on load
     fetchAutoBetStatus()  // Get current auto-bet state
+    fetchWeatherStatus()  // Get current weather betting state
     fetchRiskSettings()     // Get saved risk settings
     fetchScaleInSettings()  // Get saved scale-in settings
     fetchModelMonitoring()  // Get prospective data, selectivity rules
@@ -880,6 +882,31 @@ function App() {
       if (data.success) setAutoBetEnabled(data.autoBetEnabled)
     } catch (err) {
       alert('Error toggling auto-bet')
+    }
+  }
+
+  // Fetch weather betting status
+  const fetchWeatherStatus = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/weather-bet/status`)
+      if (!res.ok) return
+      const data = await res.json()
+      setWeatherBetEnabled(data.enabled)
+    } catch { /* optional */ }
+  }
+
+  // Toggle weather betting
+  const toggleWeatherBet = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/weather-bet/toggle`, {
+        method: 'POST',
+        body: JSON.stringify({ enabled: !weatherBetEnabled })
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      if (data.success) setWeatherBetEnabled(data.weatherBettingEnabled)
+    } catch (err) {
+      alert('Error toggling weather betting')
     }
   }
 
@@ -1309,6 +1336,15 @@ function App() {
                     <span className="action-icon">{autoBetEnabled ? '⏹' : '▶'}</span>
                     <span className="action-text">
                       {autoBetEnabled ? 'Stop Auto-Bet' : 'Start Auto-Bet (15s)'}
+                    </span>
+                  </button>
+                  <button
+                    className={`action-btn ${weatherBetEnabled ? 'danger' : 'secondary'}`}
+                    onClick={toggleWeatherBet}
+                  >
+                    <span className="action-icon">{weatherBetEnabled ? '⏹' : '☁'}</span>
+                    <span className="action-text">
+                      {weatherBetEnabled ? 'Stop Weather Bot' : 'Start Weather Bot'}
                     </span>
                   </button>
                 </div>
