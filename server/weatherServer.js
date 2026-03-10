@@ -36,9 +36,9 @@ const DEFAULT_CONFIG = {
     maxHoursToClose: 30,
     minHoursToClose: 2,
     makerMode: true,
-    kellyFraction: 0.15,
-    maxDollarsPerBet: 25,
-    maxBankrollPct: 0.05,
+    kellyFraction: 0.50,
+    maxDollarsPerBet: 10,
+    maxBankrollPct: 0.35,
     scanIntervalMinutes: 5,
   },
 };
