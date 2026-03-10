@@ -125,23 +125,26 @@ async function fetchGFSEnsemble(lat, lon) {
     return cached.data;
   }
 
-  // Build member field list: temperature_2m_max_member00 … member30 (31 members: control + 30 perturbations)
+  // GFS025 ensemble only exposes member data at HOURLY resolution.
+  // temperature_2m_max_memberXX does not exist as a daily field — only
+  // temperature_2m_memberXX (hourly) is valid. We fetch hourly and compute
+  // daily highs per member ourselves in gfsEnsembleProb/Stats.
   const memberFields = Array.from({ length: 31 }, (_, i) =>
-    `temperature_2m_max_member${String(i).padStart(2, '0')}`
+    `temperature_2m_member${String(i).padStart(2, '0')}`
   ).join(',');
 
   const url =
     `https://ensemble-api.open-meteo.com/v1/ensemble` +
     `?latitude=${lat}&longitude=${lon}` +
     `&models=gfs025` +
-    `&daily=temperature_2m_max,${memberFields}` +
+    `&hourly=${memberFields}` +
     `&temperature_unit=fahrenheit` +
     `&forecast_days=7` +
     `&timezone=auto`;
 
   const resp = await fetch(url, {
     headers: { 'User-Agent': 'Shimi-WeatherBot/1.0' },
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(20000),
   });
   if (!resp.ok) throw new Error(`Open-Meteo API error ${resp.status}`);
 
@@ -229,18 +232,40 @@ function blendModelProbs(gfsProb, hrrrHigh, nbmHigh, nwsHigh, gfsSpread, thresho
   return Math.max(0.02, Math.min(0.98, blended / total));
 }
 
-// Calculate P(daily_high >= threshold) from GFS025 ensemble members on targetDate (YYYY-MM-DD)
+// Get all hour-indices in the hourly time array that belong to targetDate (YYYY-MM-DD)
+function getHourIndicesForDate(hourlyTimes, targetDate) {
+  const indices = [];
+  for (let i = 0; i < hourlyTimes.length; i++) {
+    if (hourlyTimes[i] && hourlyTimes[i].startsWith(targetDate)) indices.push(i);
+  }
+  return indices;
+}
+
+// Compute the daily high for a single ensemble member from hourly data
+function memberDailyHigh(hourlyVals, dayIndices) {
+  let high = -Infinity;
+  let hasData = false;
+  for (const i of dayIndices) {
+    const v = hourlyVals[i];
+    if (v !== null && v !== undefined && !isNaN(v)) { high = Math.max(high, v); hasData = true; }
+  }
+  return hasData ? high : null;
+}
+
+// Calculate P(daily_high >= threshold) from GFS025 ensemble hourly members on targetDate (YYYY-MM-DD)
 function gfsEnsembleProb(ensembleData, targetDate, threshold) {
-  const idx = ensembleData.daily?.time?.indexOf(targetDate);
-  if (idx === undefined || idx === -1) return null;
+  const times = ensembleData.hourly?.time;
+  if (!times) return null;
+  const dayIndices = getHourIndicesForDate(times, targetDate);
+  if (dayIndices.length === 0) return null;
 
   let above = 0;
   let total = 0;
   for (let m = 0; m <= 30; m++) {
-    const key = `temperature_2m_max_member${String(m).padStart(2, '0')}`;
-    const val = ensembleData.daily?.[key]?.[idx];
-    if (val !== null && val !== undefined && !isNaN(val)) {
-      if (val >= threshold) above++;
+    const key = `temperature_2m_member${String(m).padStart(2, '0')}`;
+    const high = memberDailyHigh(ensembleData.hourly[key], dayIndices);
+    if (high !== null) {
+      if (high >= threshold) above++;
       total++;
     }
   }
@@ -249,16 +274,18 @@ function gfsEnsembleProb(ensembleData, targetDate, threshold) {
   return above / total;
 }
 
-// Also compute the ensemble mean and spread (for logging/diagnostics)
+// Also compute the ensemble mean and spread of daily highs (for logging/diagnostics)
 function gfsEnsembleStats(ensembleData, targetDate) {
-  const idx = ensembleData.daily?.time?.indexOf(targetDate);
-  if (idx === undefined || idx === -1) return null;
+  const times = ensembleData.hourly?.time;
+  if (!times) return null;
+  const dayIndices = getHourIndicesForDate(times, targetDate);
+  if (dayIndices.length === 0) return null;
 
   const vals = [];
   for (let m = 0; m <= 30; m++) {
-    const key = `temperature_2m_max_member${String(m).padStart(2, '0')}`;
-    const val = ensembleData.daily?.[key]?.[idx];
-    if (val !== null && val !== undefined && !isNaN(val)) vals.push(val);
+    const key = `temperature_2m_member${String(m).padStart(2, '0')}`;
+    const high = memberDailyHigh(ensembleData.hourly[key], dayIndices);
+    if (high !== null) vals.push(high);
   }
 
   if (vals.length === 0) return null;
