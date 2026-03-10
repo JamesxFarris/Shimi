@@ -1251,7 +1251,6 @@ async function checkPendingSettlements() {
   const pending = performanceData.bets.filter(b => b.outcome === 'pending');
   if (pending.length === 0) return;
 
-  console.log(` Checking ${pending.length} pending bets for settlement...`);
 
   for (const bet of pending) {
     // Guard against concurrent settlement of the same bet (async gap between find and settle)
@@ -1664,27 +1663,7 @@ function updateTokenPrice(token, price, now, source) {
   const RAPID_SCAN_COOLDOWN_MS = 90000; // 90s cooldown per token (avoid hammering API)
   if (!cryptoPrices[token].lastRapidScanAt) cryptoPrices[token].lastRapidScanAt = 0;
 
-  if (now - cryptoPrices[token].lastRapidScanAt > RAPID_SCAN_COOLDOWN_MS) {
-    const hist = cryptoPrices[token].history;
-    const ninetySecsAgo = now - 90000;
-    const oldEntry = hist.find(h => h.time <= ninetySecsAgo + 5000);
-    if (oldEntry && oldEntry.price > 0) {
-      const movePct = Math.abs(price - oldEntry.price) / oldEntry.price;
-      if (movePct >= RAPID_MOVE_THRESHOLD) {
-        cryptoPrices[token].lastRapidScanAt = now;
-        const dir = price > oldEntry.price ? '▲' : '▼';
-        console.log(`⚡ RAPID SCAN: ${token} moved ${dir}${(movePct * 100).toFixed(2)}% in 90s — scanning all users immediately`);
-        // Trigger immediate scan for all users with auto-bet active
-        // setImmediate ensures it runs after current event loop tick (non-blocking)
-        for (const [uid] of userAutoBetIntervals) {
-          const userState = getUserState(uid);
-          if (userState?.config?.autoBetEnabled) {
-            setImmediate(() => runAutoBet(uid).catch(() => {}));
-          }
-        }
-      }
-    }
-  }
+  // Rapid scan trigger removed — crypto auto-bet disabled
 }
 
 // Kraken WebSocket state
@@ -2106,8 +2085,7 @@ function getFundingRate(token) {
 }
 
 // Poll funding rates every 60s
-fetchFundingRates();
-setInterval(fetchFundingRates, 60000);
+// fetchFundingRates disabled — crypto trading removed
 
 // ============================================
 // RISK MANAGEMENT
@@ -5474,8 +5452,7 @@ async function _runAutoBetInner(userId = null) {
     const userPortfolio = userState?.portfolio || portfolio;
     const userBetHistory = userState?.betHistory || betHistory;
 
-    console.log('\n- ========== AUTO-BET SCAN ==========');
-    if (userId) console.log(` User: ${userId}`);
+    // Scan header removed — only log meaningful events
 
     // Refresh balance from Kalshi BEFORE bankroll floor check (prevents stale cache blocking bets)
     if (userConfig.isAuthenticated) {
@@ -5483,7 +5460,6 @@ async function _runAutoBetInner(userId = null) {
         const balanceData = await kalshiRequest('GET', '/portfolio/balance', null, userConfig);
         userPortfolio.balance = balanceData.balance || 0;
         userConfig.bankroll = userPortfolio.balance;
-        console.log(` Fresh balance: $${(userPortfolio.balance / 100).toFixed(2)}`);
       } catch (e) {
         console.log(' Could not refresh balance:', e.message);
       }
@@ -5492,7 +5468,7 @@ async function _runAutoBetInner(userId = null) {
     // SAFETY CHECK 1: Bankroll floor don't bet if balance too low
     if (isBankrollTooLow(userConfig)) {
       const minBankroll = userConfig.minBankrollCents || 200;
-      console.log(` BANKROLL FLOOR: Balance $${((userConfig.bankroll || 0)/100).toFixed(2)} < minimum $${(minBankroll/100).toFixed(2)} auto-bet paused`);
+      console.log(` BANKROLL FLOOR: Balance $${((userConfig.bankroll || 0)/100).toFixed(2)} < minimum $${(minBankroll/100).toFixed(2)} — auto-bet paused`);
       lastScanStatus = {
         ...lastScanStatus,
         timestamp: new Date().toISOString(),
@@ -5500,7 +5476,6 @@ async function _runAutoBetInner(userId = null) {
         statusMessage: `Balance too low ($${((userConfig.bankroll || 0)/100).toFixed(2)} < $${(minBankroll/100).toFixed(2)} min)`,
         blockedReasons: ['Bankroll below minimum floor']
       };
-      console.log('========================================\n');
       return;
     }
 
@@ -5538,27 +5513,6 @@ async function _runAutoBetInner(userId = null) {
         true // log filtered positions
       );
       syncKalshiPositionsToBetHistory(userState, userPortfolio.positions, userId);
-      console.log(` Refreshed positions: ${userPortfolio.positions.length} open positions from Kalshi`);
-      if (userPortfolio.positions.length > 0) {
-        userPortfolio.positions.forEach(p => {
-          const token = getTokenFromTicker(p.ticker);
-          console.log(` Position: ${p.ticker} (${token}) | contracts=${p.position} | avg_price=${p.average_price} | market_exposure=${p.market_exposure}`);
-        });
-        const tokenExposure = getExposureByToken(userState);
-        console.log(` Calculated token exposure:`);
-        for (const [token, exposure] of Object.entries(tokenExposure)) {
-          console.log(` ${token}: $${(exposure/100).toFixed(2)} exposure (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)})`);
-        }
-      }
-      // Show rolling spend per token (actual budget tracking)
-      const rollingSpend = Object.fromEntries(Object.keys(TRACKED_TOKENS).map(t => [t, getRollingSpendByToken(userId, t, CYCLE_WINDOW_MS)]));
-      const totalSpend = Object.values(rollingSpend).reduce((sum, v) => sum + v, 0);
-      const maxPerCycle = getMaxPerTokenPerCycle(userConfig);
-      const maxTotal = getMaxTotalPerCycle(userConfig);
-      console.log(`Pre-bet rolling spend (15min): ${JSON.stringify(
-        Object.fromEntries(Object.entries(rollingSpend).map(([k,v]) => [k, '$'+(v/100).toFixed(2)]))
-      )} | Total: $${(totalSpend/100).toFixed(2)}/$${(maxTotal/100).toFixed(2)} | Per-token limit: $${(maxPerCycle/100).toFixed(2)}`);
-
       // AUTO-SELL REMOVED: Positions ride to expiry (no take-profit/stop-loss exits)
     }
 
@@ -5576,7 +5530,6 @@ async function _runAutoBetInner(userId = null) {
         statusMessage: `${openPositions} open positions (max ${maxOpenPositions})`,
         blockedReasons: [`${openPositions}/${maxOpenPositions} positions open`]
       };
-      console.log('========================================\n');
       return;
     }
 
@@ -5603,8 +5556,6 @@ async function _runAutoBetInner(userId = null) {
     }
     runAutoBet._lastFullRun = now;
 
-    console.log(` Fetched: ${cryptoMarkets.length} crypto markets (${Object.keys(TRACKED_TOKENS).join(', ')})`);
-    console.log(` Recent bets tracking: ${recentBets.size} markets`);
 
     // Subscribe to WebSocket updates for these markets
     if (wsEnabled && kalshiWs) {
@@ -5623,12 +5574,7 @@ async function _runAutoBetInner(userId = null) {
       lastScanStatus.status = 'sitting_out';
       lastScanStatus.statusMessage = globalSitOut.reasons[0];
       lastScanStatus.blockedReasons = globalSitOut.reasons;
-      console.log('========================================\n');
       return;
-    }
-
-    if (isOffPeakHours()) {
-      console.log(` OFF-PEAK MODE: Trading cautiously (higher thresholds, 50% position size, +2c slippage)`);
     }
 
     // Analyze crypto opportunities with EMPIRICAL evaluation
@@ -5640,19 +5586,11 @@ async function _runAutoBetInner(userId = null) {
       const priceData = cryptoPrices[parsed.cryptoType];
       if (!priceData?.price) return null;
       const priceAge = Date.now() - priceData.timestamp;
-      if (priceAge > 60000) {
-        console.log(` Stale price for ${parsed.cryptoType} in autoBet: ${(priceAge/1000).toFixed(0)}s old - skipping`);
-        return null;
-      }
+      if (priceAge > 60000) return null;
 
       // Price history gate: don't bet without enough data for vol/momentum estimates
-      // 10 ticks = enough for basic vol calc (theoretical model needs 10+5 log-returns)
-      // Was 30 but REST fallback only delivers ~2 ticks/min when WS is flaky
       const historyLength = priceData.history?.length || 0;
-      if (historyLength < 10) {
-        console.log(` Waiting for price history on ${parsed.cryptoType}: ${historyLength}/10 ticks - skipping`);
-        return null;
-      }
+      if (historyLength < 10) return null;
 
       // Fetch orderbook for liquidity check
       let orderbook = null;
@@ -5700,43 +5638,12 @@ async function _runAutoBetInner(userId = null) {
     }
     const minAutoThreshold = learnedParams.selectivityRules?.minEmpiricalWinRate || 62;
 
-    console.log(` Analyzed: ${allOpps.length} valid | ${withEdgeCount} with edge | ${recommendedCount} recommended`);
-
-    // Log rejection reasons for each market so we can debug why nothing passes
-    if (recommendedCount === 0 && allOpps.length > 0) {
-      console.log(` Rejection reasons:`);
-      for (const m of allOpps) {
-        const token = m.cryptoType || m.assetType || getTokenFromTicker(m.ticker);
-        const topReason = m.reasons?.[0] || (m.shouldBet ? 'passed' : 'unknown');
-        const sig = m.signalStrength || 0;
-        const edge = m.edge?.toFixed(1) || '?';
-        console.log(`   ${token}: signal=${sig} edge=${edge}% | ${topReason}`);
-      }
-    }
 
     // Update scan status
     lastScanStatus.marketsScanned = cryptoMarkets.length;
     lastScanStatus.activeMarkets = allOpps.length;
     lastScanStatus.marketsWithEdge = withEdgeCount;
 
-    // Show signal strength distribution for empirical debugging
-    // Signal strength distribution (math-based bucket assignment)
-    const bucketNames = ['0-40', '40-60', '60-70', '70-80', '80-90', '90-100'];
-    const bucketThresholds = [40, 60, 70, 80, 90, 101]; // upper bounds
-    const signalBuckets = Object.fromEntries(bucketNames.map(n => [n, 0]));
-    for (const m of allOpps) {
-      const sig = m.signalStrength || 0;
-      const idx = sig < 40 ? 0 : sig < 60 ? 1 : Math.min(5, 2 + Math.floor((sig - 60) / 10));
-      signalBuckets[bucketNames[idx]]++;
-    }
-    console.log(` Signal strength distribution: ${JSON.stringify(signalBuckets)}`);
-
-    // Show regime status for each token
-    console.log(` Volatility regimes:`);
-    for (const token of Object.keys(TRACKED_TOKENS)) {
-      const regime = detectVolatilityRegime(token);
-      console.log(` ${token}: ${regime.regime} (${regime.reason})`);
-    }
 
     // Filter to only empirically recommended opportunities
     const opportunities = allOpps
@@ -5798,42 +5705,19 @@ async function _runAutoBetInner(userId = null) {
         return bSignal - aSignal;
       });
 
-    const highSignalCount = opportunities.filter(o => (o.signalStrength || 0) >= 80).length;
-    console.log(` Final: ${opportunities.length} opportunities (${highSignalCount} with signal 80)`);
-
-    // Show top opportunities with empirical details
-    if (opportunities.length > 0) {
-      console.log(` Top empirical opportunities:`);
-      opportunities.slice(0, 3).forEach(m => {
-        console.log(` - ${m.title}: signal=${m.signalStrength} | win=${m.winProbability}% @ ${m.marketPriceCents}c | edge=${m.edge?.toFixed(1)}% | regime=${m.regime}`);
-      });
-    }
-
-    // Show markets that almost qualified (signal 60-70)
     const minSignal = learnedParams.selectivityRules?.minSignalStrength || 60;
     const almostQualified = allOpps.filter(m => {
       const sig = m.signalStrength || 0;
       return sig >= minSignal - 15 && sig < minSignal && m.edge > 0;
     });
-    if (almostQualified.length > 0) {
-      console.log(` ${almostQualified.length} markets approaching signal threshold:`);
-      almostQualified.slice(0, 3).forEach(m => {
-        const rejectionReason = m.reasons?.[0] || 'Unknown';
-        console.log(` - ${m.title}: signal=${m.signalStrength} | ${rejectionReason}`);
-      });
-    }
 
     if (opportunities.length === 0) {
-      console.log(' No empirically valid opportunities - waiting for next scan...');
-      console.log('========================================\n');
-
-      // Update status with reason
+      // Update status silently (no log spam)
       lastScanStatus.status = 'no_opportunities';
-      lastScanStatus.statusMessage = `Scanning ${Object.keys(TRACKED_TOKENS).length} markets (${Object.keys(TRACKED_TOKENS).join(', ')}) - waiting for high-signal opportunity`;
+      lastScanStatus.statusMessage = `Scanning ${Object.keys(TRACKED_TOKENS).length} markets — waiting for high-signal opportunity`;
       if (almostQualified.length > 0) {
         lastScanStatus.blockedReasons.push(`${almostQualified.length} markets with signal ${minSignal-15}-${minSignal-1} (need ${minSignal}+)`);
       }
-      // Show rejected opportunities and their reasons
       const rejectedWithReasons = allOpps.filter(m => !m.shouldBet && m.reasons?.length > 0);
       if (rejectedWithReasons.length > 0) {
         lastScanStatus.blockedReasons.push(`${rejectedWithReasons.length} markets rejected by empirical filters`);
@@ -5870,10 +5754,8 @@ async function _runAutoBetInner(userId = null) {
       }
     }
     if (correlationFiltered.length === 0 && opportunities.length > 0) {
-      console.log(` All ${opportunities.length} opportunities blocked by correlation guard (${[...tokensInWindow].join(', ')} already bet)`);
       lastScanStatus.status = 'no_opportunities';
       lastScanStatus.statusMessage = `Correlation guard: ${[...tokensInWindow].join(', ')} already bet this 15min window`;
-      console.log('========================================\n');
       return;
     }
     const finalOpportunities = correlationFiltered.length > 0 ? correlationFiltered : opportunities;
@@ -5884,14 +5766,8 @@ async function _runAutoBetInner(userId = null) {
     const best = finalOpportunities[0];
     const category = best.marketCategory || 'crypto';
 
-    // Display EMPIRICAL analysis for best opportunity
-    console.log(`\n BEST EMPIRICAL OPPORTUNITY [${category.toUpperCase()}]:`);
-    console.log(` ${best.title}`);
-    console.log(` Signal Strength: ${best.signalStrength}/100`);
-    console.log(` Side: ${best.betSide} @ ${best.marketPriceCents}c | Win rate: ${best.winProbability}% (empirical)`);
-    console.log(` Current: $${best.currentPrice?.toFixed(2) || 'N/A'} | Strike: $${best.strikePrice?.toFixed(2) || 'N/A'}`);
-    console.log(` Distance: ${best.absDistance?.toFixed(2)}% from strike | Regime: ${best.regime}`);
-    console.log(` Edge: +${best.edge?.toFixed(1)}% (after fees) | Sample size: ${best.sampleSize}`);
+    // Display best opportunity found
+    console.log(` OPPORTUNITY: ${best.betSide} ${best.title} @ ${best.marketPriceCents}c | signal=${best.signalStrength} edge=+${best.edge?.toFixed(1)}% win=${best.winProbability}% (n=${best.sampleSize})`);
 
     // MOMENTUM CONFIRMATION - Check if price trend supports our bet direction
     const token = best.assetType || best.cryptoType || getTokenFromTicker(best.ticker);
@@ -5905,30 +5781,19 @@ async function _runAutoBetInner(userId = null) {
     const momentumAligned = (betIsBullish && isBullish) || (!betIsBullish && isBearish);
     const momentumOpposed = (betIsBullish && isBearish) || (!betIsBullish && isBullish);
 
-    console.log(` Momentum: ${momentum.direction} (5m: ${(momentum.m5*100).toFixed(2)}%, 15m: ${(momentum.m15*100).toFixed(2)}%)`);
-
     // Apply momentum adjustment to edge
     const momentumSettings = userConfig.momentumSettings || {};
     if (momentumSettings.enabled !== false) {
-      if (momentumAligned && momentum.strength === 'strong') {
-        console.log(` Momentum ALIGNED with bet (+${momentumSettings.alignmentBonus || 2}% edge bonus)`);
-      } else if (momentumOpposed && momentum.strength === 'strong') {
-        console.log(` Momentum OPPOSED to bet - consider skipping`);
+      if (momentumOpposed && momentum.strength === 'strong') {
         // If momentum strongly opposes and we don't have great edge, skip
         if (best.edge < 8 && momentum.strength === 'strong') {
-          console.log(` Skipping bet: momentum strongly opposed with only ${best.edge.toFixed(1)}% edge`);
+          console.log(` Skipping bet: momentum ${momentum.direction} opposes ${best.betSide} with only ${best.edge.toFixed(1)}% edge`);
           lastScanStatus.status = 'momentum_opposed';
           lastScanStatus.statusMessage = `Momentum ${momentum.direction} opposes ${best.betSide} bet`;
           lastScanStatus.blockedReasons.push(`Momentum opposed: ${momentum.direction} vs ${best.betSide}`);
-          console.log('========================================\n');
           return;
         }
       }
-    }
-
-    // Show other good opportunities
-    if (opportunities.length > 1) {
-      console.log(` + ${opportunities.length - 1} more opportunities with signal ${minSignal}`);
     }
 
     // Check per-token limit
@@ -5939,9 +5804,6 @@ async function _runAutoBetInner(userId = null) {
     if (effectiveBudget < 10) {
       const tokenLimit = remainingTokenBudget < 10;
       const reason = tokenLimit ? `${tokenName} token cycle limit` : 'total cycle budget';
-      console.log(`Token limit reached: ${reason}`);
-      console.log('========================================\n');
-
       lastScanStatus.status = 'token_limit';
       lastScanStatus.statusMessage = `Cycle limit reached: ${reason}`;
       lastScanStatus.blockedReasons.push(`${reason}: token=$${(remainingTokenBudget/100).toFixed(2)}, total=$${(remainingTotalBudget/100).toFixed(2)}`);
@@ -5956,23 +5818,13 @@ async function _runAutoBetInner(userId = null) {
         const existingSide = existingPos.position > 0 ? 'YES' : 'NO';
         const newSide = best.betSide?.toUpperCase();
         if (existingSide !== newSide) {
-          console.log(` OPPOSITE POSITION BLOCKED: Already holding ${existingSide} on ${best.ticker}, refusing ${newSide} bet`);
           lastScanStatus.status = 'opposite_position';
           lastScanStatus.statusMessage = `Already holding ${existingSide} on ${best.ticker}`;
           lastScanStatus.blockedReasons.push(`Opposite position: holding ${existingSide}, tried ${newSide}`);
-          console.log('========================================\n');
           return;
         }
       }
     }
-
-    // Display confidence based on signal strength
-    const confidenceLevel = best.signalStrength >= 85 ? ' HIGH CONFIDENCE (empirical)' :
-                           best.signalStrength >= 75 ? ' GOOD SIGNAL' : ' MODERATE SIGNAL';
-    console.log(` ${confidenceLevel}`);
-    console.log(` Token budget for ${tokenName}: $${(remainingTokenBudget/100).toFixed(2)} remaining`);
-    console.log(` Total cycle budget: $${(getRemainingTotalBudget(userConfig, userId)/100).toFixed(2)} remaining of $${(getMaxTotalPerCycle(userConfig)/100).toFixed(2)}`);
-    console.log(` Effective budget: $${(effectiveBudget/100).toFixed(2)} (min of token=$${(remainingTokenBudget/100).toFixed(2)}, total=$${(remainingTotalBudget/100).toFixed(2)})`);
 
     // Cap bet at effective budget (min of token and total cycle budget)
     const hardCapCents = effectiveBudget;
@@ -5986,7 +5838,6 @@ async function _runAutoBetInner(userId = null) {
       console.log(` Skipping extreme price ${priceCents}c (floor=${HARD_PRICE_FLOOR}c, ceiling=${HARD_PRICE_CEILING}c)`);
       lastScanStatus.status = 'price_extreme';
       lastScanStatus.statusMessage = `Price ${priceCents}c outside ${HARD_PRICE_FLOOR}-${HARD_PRICE_CEILING}c range`;
-      console.log('========================================\n');
       return;
     }
 
@@ -6012,7 +5863,6 @@ async function _runAutoBetInner(userId = null) {
     const MIN_BET_CENTS = 200;
     const MAX_BET_CENTS = Math.min(hardCapCents, Math.max(MIN_BET_CENTS, aggKellyBet));
 
-    console.log(` Bet sizing: Kelly=${(kellyFraction*100).toFixed(1)}% bankroll=$${(bankroll/100).toFixed(2)} kellyBet=$${(aggKellyBet/100).toFixed(2)}${isLowVol ? ' (1/2 low-vol)' : ''}${hasStrongCorrelation ? ' (1/2 corr)' : ''} confidence=${(confidenceScale*100).toFixed(0)}% (${sampleSize} samples) capped=$${(MAX_BET_CENTS/100).toFixed(2)} (cycle limit $${(getMaxPerTokenPerCycle(userConfig)/100).toFixed(2)}/token)`);
 
     // Calculate contracts but cap total cost
     let count = Math.floor(MAX_BET_CENTS / priceCents);
@@ -6116,12 +5966,7 @@ async function _runAutoBetInner(userId = null) {
         ],
       });
 
-      console.log(`\n SIMULATED BET PLACED:`);
-      console.log(` ${betRecord.side.toUpperCase()} on ${assetName}`);
-      console.log(` ${count} contracts @ ${priceCents}c = $${(betRecord.totalCost/100).toFixed(2)}`);
-      console.log(` Edge: +${best.edge.toFixed(1)}% | Win prob: ${best.winProbability}%`);
-      console.log(` New balance: $${(userConfig.bankroll/100).toFixed(2)}`);
-      console.log('========================================\n');
+      console.log(` SIM BET: ${betRecord.side.toUpperCase()} ${assetName} — ${count}x @ ${priceCents}c = $${(betRecord.totalCost/100).toFixed(2)} | edge=+${best.edge.toFixed(1)}% balance=$${(userConfig.bankroll/100).toFixed(2)}`);
 
       lastScanStatus.status = 'bet_placed';
       lastScanStatus.statusMessage = `Simulated ${best.betSide} on ${assetName} (${count}x @ ${priceCents}c)`;
@@ -6162,14 +6007,14 @@ async function _runAutoBetInner(userId = null) {
         console.log(` Orderbook fetch failed for maker: ${obErr.message}, using market ask`);
       }
       fillPrice = Math.min(Math.max(makerAsk - 1, 1), 99);
-      console.log(` MAKER ORDER: posting at ${fillPrice}c (ask=${makerAsk}c, market=${priceCents}c)`);
+      console.log(` PLACING BET: ${best.betSide.toUpperCase()} ${assetName} — ${count}x @ ${fillPrice}c (maker, ask=${makerAsk}c) = $${(totalCost/100).toFixed(2)} | edge=+${best.edge.toFixed(1)}%`);
     } else {
       // TAKER ORDER: existing logic — limit order above ask to ensure fill
       const baseFillSlippage3 = userConfig.selectivityRules?.fillSlippageCents ?? 3;
       const offPeakFillBonus = isOffPeakHours() ? 1 : 0;
       const fillSlippage = (best.regime === 'low' ? Math.max(1, baseFillSlippage3 - 2) : baseFillSlippage3) + offPeakFillBonus;
       fillPrice = Math.min(priceCents + fillSlippage, 99);
-      console.log(` TAKER ORDER: posting at ${fillPrice}c (ask=${priceCents}c, slippage=${fillSlippage}c)`);
+      console.log(` PLACING BET: ${best.betSide.toUpperCase()} ${assetName} — ${count}x @ ${fillPrice}c (taker) = $${(totalCost/100).toFixed(2)} | edge=+${best.edge.toFixed(1)}%`);
     }
 
     // Fix 1: Track the attempt BEFORE placing order so side-flip protection works even on unfilled orders
@@ -6183,7 +6028,6 @@ async function _runAutoBetInner(userId = null) {
       unfilled: true  // Will be cleared on successful fill
     });
 
-    console.log(`\n PLACING REAL BET...`);
     // Generate idempotency key to prevent duplicate orders on timeout/retry
     const clientOrderId = `shimi-${best.ticker}-${best.betSide}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
     const orderRequest = {
@@ -6460,65 +6304,12 @@ async function _runAutoBetInner(userId = null) {
 }
 
 app.post('/api/crypto/auto-bet/toggle', (req, res) => {
-  const { enabled, intervalSeconds = 10 } = req.body; // Check every 10 seconds for faster reaction
-
-  // Require authentication for auto-bet
-  if (!req.userId) {
-    return res.status(401).json({ success: false, error: 'Please login first' });
+  // Crypto auto-betting has been removed. Weather betting is used instead.
+  const { enabled } = req.body;
+  if (enabled) {
+    return res.status(410).json({ success: false, error: 'Crypto auto-betting has been disabled. Use weather betting instead.' });
   }
-
-  const userConfig = req.userState.config;
-  const userPortfolio = req.userState.portfolio;
-
-  if (enabled && !userConfig.autoBetEnabled) {
-    userConfig.autoBetEnabled = true;
-    saveUserState(req.userId);
-
-    // For now, auto-bet still uses the user's state through the middleware
-    // TODO: Implement per-user auto-bet intervals
-    runAutoBet(req.userId);
-
-    // Store interval per user
-    if (userAutoBetIntervals.has(req.userId)) {
-      clearInterval(userAutoBetIntervals.get(req.userId));
-    }
-    userAutoBetIntervals.set(req.userId, setInterval(() => runAutoBet(req.userId), intervalSeconds * 1000));
-
-    // Start active position monitoring (coin-flip prevention, easy profit, stop-loss)
-    const monitorIntervalMs = userConfig.takeProfitSettings?.scanIntervalMs || 15000;
-    startTakeProfitScanning(monitorIntervalMs, req.userId, userConfig, userPortfolio);
-
-    res.json({
-      success: true,
-      message: `Auto-betting enabled (every ${intervalSeconds}s)`,
-      autoBetEnabled: true
-    });
-  } else if (!enabled && userConfig.autoBetEnabled) {
-    userConfig.autoBetEnabled = false;
-    saveUserState(req.userId);
-
-    // Clear user's auto-bet interval
-    if (userAutoBetIntervals.has(req.userId)) {
-      clearInterval(userAutoBetIntervals.get(req.userId));
-      userAutoBetIntervals.delete(req.userId);
-    }
-    if (autoBetInterval) {
-      clearInterval(autoBetInterval);
-      autoBetInterval = null;
-    }
-
-    // NOTE: Do NOT stop take-profit scanning when auto-bet is disabled
-    // Position protection (stop-loss) should always run to protect open positions
-    // stopTakeProfitScanning(req.userId); // REMOVED - keep monitoring active
-
-    res.json({ success: true, message: 'Auto-betting disabled (position monitoring still active)', autoBetEnabled: false });
-  } else {
-    res.json({
-      success: true,
-      message: `Auto-betting ${userConfig.autoBetEnabled ? 'running' : 'stopped'}`,
-      autoBetEnabled: userConfig.autoBetEnabled
-    });
-  }
+  res.json({ success: true, message: 'Crypto auto-betting is disabled', autoBetEnabled: false });
 });
 
 // ── WEATHER BETTING API ENDPOINTS ──────────────────────────────────────────
