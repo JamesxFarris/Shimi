@@ -21,6 +21,23 @@
 import fetch from 'node-fetch';
 
 // ──────────────────────────────────────────────
+// MATH HELPERS
+// ──────────────────────────────────────────────
+
+// Normal CDF (Abramowitz & Stegun, accurate to ±7.5e-8)
+function normalCDF(z) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  const cdf = 1 - (Math.exp(-z * z / 2) / Math.sqrt(2 * Math.PI)) * poly;
+  return z >= 0 ? cdf : 1 - cdf;
+}
+
+// P(daily_high >= threshold) from a deterministic point forecast + uncertainty (std dev °F)
+function forecastToProb(forecastHigh, threshold, uncertainty) {
+  return Math.max(0.01, Math.min(0.99, normalCDF((forecastHigh - threshold) / Math.max(1.5, uncertainty))));
+}
+
+// ──────────────────────────────────────────────
 // CITY CONFIG
 // NWS stations must match Kalshi's settlement station exactly.
 // ──────────────────────────────────────────────
@@ -131,6 +148,75 @@ async function fetchGFSEnsemble(lat, lon) {
   const data = await resp.json();
   gfsCache.set(cacheKey, { data, fetchedAt: Date.now() });
   return data;
+}
+
+// ──────────────────────────────────────────────
+// HRRR + NBM DETERMINISTIC FORECASTS (Open-Meteo)
+// HRRR: 3 km resolution, hourly updates, best accuracy within 48 h
+// NBM:  2.5 km bias-corrected blend including ECMWF, hourly updates
+// ──────────────────────────────────────────────
+const detModelCache = new Map();
+const DET_CACHE_TTL_MS = 30 * 60 * 1000; // 30 min — these models update hourly
+
+async function fetchDetModel(model, lat, lon, forecastDays = 3) {
+  const cacheKey = `${model}:${lat.toFixed(4)},${lon.toFixed(4)}`;
+  const cached = detModelCache.get(cacheKey);
+  if (cached && Date.now() - cached.fetchedAt < DET_CACHE_TTL_MS) return cached.data;
+
+  const url =
+    `https://api.open-meteo.com/v1/gfs` +
+    `?latitude=${lat}&longitude=${lon}` +
+    `&daily=temperature_2m_max` +
+    `&models=${model}` +
+    `&temperature_unit=fahrenheit` +
+    `&forecast_days=${forecastDays}` +
+    `&timezone=auto`;
+
+  const resp = await fetch(url, {
+    headers: { 'User-Agent': 'Shimi-WeatherBot/1.0' },
+    signal: AbortSignal.timeout(12000),
+  });
+  if (!resp.ok) throw new Error(`Open-Meteo ${model} API error ${resp.status}`);
+
+  const data = await resp.json();
+  detModelCache.set(cacheKey, { data, fetchedAt: Date.now() });
+  return data;
+}
+
+// Extract forecasted daily high (°F) for a specific date from Open-Meteo deterministic response
+function getModelHigh(modelData, targetDate) {
+  const times = modelData?.daily?.time;
+  const highs = modelData?.daily?.temperature_2m_max;
+  if (!times || !highs) return null;
+  const idx = times.indexOf(targetDate);
+  if (idx === -1) return null;
+  const val = highs[idx];
+  return (val !== null && val !== undefined && !isNaN(val)) ? val : null;
+}
+
+// Blend GEFS ensemble probability with HRRR and NBM deterministic forecasts.
+// Weights shift toward higher-resolution models as the market approaches close.
+function blendModelProbs(gfsProb, hrrrHigh, nbmHigh, gfsSpread, threshold, hoursToClose) {
+  const sigma = Math.max(2, gfsSpread || 4); // minimum 2°F for converting point forecast → prob
+  const hrrrProb = hrrrHigh !== null ? forecastToProb(hrrrHigh, threshold, sigma) : null;
+  const nbmProb  = nbmHigh  !== null ? forecastToProb(nbmHigh,  threshold, sigma) : null;
+
+  // Time-based weights: HRRR/NBM gain weight as market approaches close
+  let [wGefs, wNbm, wHrrr] =
+    hoursToClose > 24 ? [0.70, 0.20, 0.10] :
+    hoursToClose > 12 ? [0.40, 0.35, 0.25] :
+    hoursToClose >  6 ? [0.20, 0.30, 0.50] :
+                        [0.10, 0.20, 0.70];
+
+  // Redistribute weight if a model is unavailable
+  if (hrrrProb === null) { wGefs += wHrrr * 0.6; wNbm += wHrrr * 0.4; wHrrr = 0; }
+  if (nbmProb  === null) { wGefs += wNbm; wNbm = 0; }
+
+  const total = wGefs + wHrrr + wNbm;
+  if (total === 0) return gfsProb;
+
+  const blended = (gfsProb * wGefs) + (hrrrProb ?? 0) * wHrrr + (nbmProb ?? 0) * wNbm;
+  return Math.max(0.02, Math.min(0.98, blended / total));
 }
 
 // Calculate P(daily_high >= threshold) from 30 GFS ensemble members on targetDate (YYYY-MM-DD)
@@ -357,15 +443,14 @@ export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
       // 2. Fetch GFS ensemble once for this city (cached)
       const ensemble = await fetchGFSEnsemble(cityConfig.lat, cityConfig.lon);
 
-      // 3. Optionally fetch NWS forecast for secondary signal
-      let nwsData = null;
+      // 3. Fetch HRRR (3 km, hourly updates) and NBM (2.5 km bias-corrected) in parallel
+      let hrrrData = null, nbmData = null;
       try {
-        nwsData = await fetchNWSForecast(
-          cityConfig.nwsOffice,
-          cityConfig.nwsGridX,
-          cityConfig.nwsGridY
-        );
-      } catch { /* NWS is optional */ }
+        [hrrrData, nbmData] = await Promise.all([
+          fetchDetModel('hrrr_conus', cityConfig.lat, cityConfig.lon, 3).catch(() => null),
+          fetchDetModel('nbm_conus',  cityConfig.lat, cityConfig.lon, 7).catch(() => null),
+        ]);
+      } catch { /* deterministic models optional — GEFS alone is still valid */ }
 
       // 4. Evaluate each market
       for (const market of markets) {
@@ -393,51 +478,53 @@ export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
 
           if (modelProb === null) continue;
 
-          // 6. NWS secondary signal — if available, blend conservatively (20% weight)
-          const nwsHigh = nwsData ? nwsForecastHigh(nwsData, targetDate) : null;
-          let finalModelProb = modelProb;
-          if (nwsHigh !== null && isAboveMarket) {
-            // NWS gives a point estimate, not a probability. Use it to confirm direction:
-            // If NWS high is well above threshold, nudge model prob up slightly;
-            // if well below, nudge down.
-            const nwsGap = (nwsHigh - thresholdLow) / 5; // normalized gap (5°F = 1 unit)
-            const nwsNudge = Math.max(-0.05, Math.min(0.05, nwsGap * 0.01));
-            finalModelProb = Math.max(0.02, Math.min(0.98, modelProb + nwsNudge));
+          // 6. Blend GEFS + HRRR + NBM for final probability
+          const stats = gfsEnsembleStats(ensemble, targetDate);
+          const gfsSpreadVal = parseFloat(stats?.spread || 4);
+          const hrrrHigh = hrrrData ? getModelHigh(hrrrData, targetDate) : null;
+          const nbmHigh  = nbmData  ? getModelHigh(nbmData,  targetDate) : null;
+
+          let finalModelProb;
+          if (isAboveMarket) {
+            finalModelProb = blendModelProbs(
+              modelProb, hrrrHigh, nbmHigh, gfsSpreadVal, thresholdLow, parsed.hoursToClose
+            );
+          } else {
+            // Range market: blend each bound separately, then take the difference
+            const gfsProbLow  = gfsEnsembleProb(ensemble, targetDate, thresholdLow) ?? modelProb;
+            const gfsProbHigh = thresholdHigh ? (gfsEnsembleProb(ensemble, targetDate, thresholdHigh) ?? 0) : 0;
+            const blendedLow  = blendModelProbs(gfsProbLow,  hrrrHigh, nbmHigh, gfsSpreadVal, thresholdLow,  parsed.hoursToClose);
+            const blendedHigh = thresholdHigh
+              ? blendModelProbs(gfsProbHigh, hrrrHigh, nbmHigh, gfsSpreadVal, thresholdHigh, parsed.hoursToClose)
+              : 0;
+            finalModelProb = Math.max(0.01, blendedLow - blendedHigh);
           }
 
           // 7. Evaluate both YES and NO sides
           const yesEdge = calcWeatherEdge(finalModelProb, parsed.yesAsk, useMaker);
           const noEdge = calcWeatherEdge(1 - finalModelProb, parsed.noAsk, useMaker);
 
-          const stats = gfsEnsembleStats(ensemble, targetDate);
-
           // Log every market evaluated (for diagnostics)
           console.log(
-            `  [WEATHER] ${parsed.city} ${targetDate} ${isAboveMarket ? '>=' : 'between'} ${thresholdLow}°F` +
-            ` | GFS: ${(finalModelProb * 100).toFixed(1)}% yes` +
-            ` | mean=${stats?.mean}°F ±${stats?.spread}°F` +
+            `  [WEATHER] ${parsed.city} ${targetDate} ${isAboveMarket ? '>=' : 'range'} ${thresholdLow}°F` +
+            ` | GEFS:${(modelProb * 100).toFixed(1)}%` +
+            ` HRRR:${hrrrHigh !== null ? hrrrHigh.toFixed(1) + '°F' : 'n/a'}` +
+            ` NBM:${nbmHigh !== null ? nbmHigh.toFixed(1) + '°F' : 'n/a'}` +
+            ` → blend:${(finalModelProb * 100).toFixed(1)}% (±${gfsSpreadVal.toFixed(1)}°F)` +
             ` | market: YES=${(parsed.yesAsk * 100).toFixed(0)}c NO=${(parsed.noAsk * 100).toFixed(0)}c` +
-            ` | yesEdge=${(yesEdge.netEdgeFraction * 100).toFixed(1)}%` +
-            ` | noEdge=${(noEdge.netEdgeFraction * 100).toFixed(1)}%` +
+            ` | yesEdge=${(yesEdge.netEdgeFraction * 100).toFixed(1)}% noEdge=${(noEdge.netEdgeFraction * 100).toFixed(1)}%` +
             ` | ${parsed.hoursToClose.toFixed(1)}h to close`
           );
 
           // 8. Find the best side if edge exists
-          let betSide = null;
-          let betEdge = null;
-          let betPrice = null;
-          let betModelProb = null;
+          let betSide = null, betEdge = null, betPrice = null, betModelProb = null;
 
           if (yesEdge.netEdgeFraction >= minEdge && yesEdge.netEdgeFraction >= noEdge.netEdgeFraction) {
-            betSide = 'YES';
-            betEdge = yesEdge.netEdgeFraction;
-            betPrice = parsed.yesAsk;
-            betModelProb = finalModelProb;
+            betSide = 'YES'; betEdge = yesEdge.netEdgeFraction;
+            betPrice = parsed.yesAsk; betModelProb = finalModelProb;
           } else if (noEdge.netEdgeFraction >= minEdge) {
-            betSide = 'NO';
-            betEdge = noEdge.netEdgeFraction;
-            betPrice = parsed.noAsk;
-            betModelProb = 1 - finalModelProb;
+            betSide = 'NO'; betEdge = noEdge.netEdgeFraction;
+            betPrice = parsed.noAsk; betModelProb = 1 - finalModelProb;
           }
 
           if (betSide) {
@@ -454,10 +541,12 @@ export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
               betPrice,
               betEdge,
               betModelProb,
+              gfsRawProb: modelProb,
               gfsMean: parseFloat(stats?.mean || 0),
-              gfsSpread: parseFloat(stats?.spread || 0),
+              gfsSpread: gfsSpreadVal,
               gfsMembers: stats?.members || 0,
-              nwsForecastHigh: nwsHigh,
+              hrrrForecastHigh: hrrrHigh,
+              nbmForecastHigh: nbmHigh,
               yesAsk: parsed.yesAsk,
               noAsk: parsed.noAsk,
               hoursToClose: parsed.hoursToClose,
