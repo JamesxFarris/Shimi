@@ -125,19 +125,15 @@ async function fetchGFSEnsemble(lat, lon) {
     return cached.data;
   }
 
-  // GFS025 ensemble only exposes member data at HOURLY resolution.
-  // temperature_2m_max_memberXX does not exist as a daily field — only
-  // temperature_2m_memberXX (hourly) is valid. We fetch hourly and compute
-  // daily highs per member ourselves in gfsEnsembleProb/Stats.
-  const memberFields = Array.from({ length: 31 }, (_, i) =>
-    `temperature_2m_member${String(i).padStart(2, '0')}`
-  ).join(',');
-
+  // GFS025 ensemble: requesting `hourly=temperature_2m` automatically returns
+  // the control run as `temperature_2m` plus all 30 perturbation members as
+  // `temperature_2m_member01..member30`. Individual member fields cannot be
+  // listed explicitly in the URL — requesting the base variable is the API contract.
   const url =
     `https://ensemble-api.open-meteo.com/v1/ensemble` +
     `?latitude=${lat}&longitude=${lon}` +
     `&models=gfs025` +
-    `&hourly=${memberFields}` +
+    `&hourly=temperature_2m` +
     `&temperature_unit=fahrenheit` +
     `&forecast_days=7` +
     `&timezone=auto`;
@@ -259,10 +255,14 @@ function gfsEnsembleProb(ensembleData, targetDate, threshold) {
   const dayIndices = getHourIndicesForDate(times, targetDate);
   if (dayIndices.length === 0) return null;
 
+  // GFS025 returns: `temperature_2m` (control run) + `temperature_2m_member01..30`
+  // There is no `temperature_2m_member00` — the control run uses the base key.
+  const memberKeys = ['temperature_2m', ...Array.from({ length: 30 }, (_, i) =>
+    `temperature_2m_member${String(i + 1).padStart(2, '0')}`)];
+
   let above = 0;
   let total = 0;
-  for (let m = 0; m <= 30; m++) {
-    const key = `temperature_2m_member${String(m).padStart(2, '0')}`;
+  for (const key of memberKeys) {
     const high = memberDailyHigh(ensembleData.hourly[key], dayIndices);
     if (high !== null) {
       if (high >= threshold) above++;
@@ -281,9 +281,11 @@ function gfsEnsembleStats(ensembleData, targetDate) {
   const dayIndices = getHourIndicesForDate(times, targetDate);
   if (dayIndices.length === 0) return null;
 
+  const memberKeys = ['temperature_2m', ...Array.from({ length: 30 }, (_, i) =>
+    `temperature_2m_member${String(i + 1).padStart(2, '0')}`)];
+
   const vals = [];
-  for (let m = 0; m <= 30; m++) {
-    const key = `temperature_2m_member${String(m).padStart(2, '0')}`;
+  for (const key of memberKeys) {
     const high = memberDailyHigh(ensembleData.hourly[key], dayIndices);
     if (high !== null) vals.push(high);
   }
