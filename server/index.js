@@ -11,6 +11,7 @@ import WebSocket from 'ws';
 import { getKalshiWebSocket } from './kalshiWebSocket.js';
 import { pool, initDatabase } from './db.js';
 import { scanWeatherMarkets, calcWeatherBetSize, WEATHER_CITIES } from './weatherBot.js';
+import { recordWeatherBet, checkWeatherSettlements, getWeatherPnLSummary } from './weatherPnL.js';
 import {
   ML_FEATURE_NAMES, sigmoid, extractMLFeatures, normalizeFeatures,
   mlPredict, computeFeatureStats, trainMLModel, buildMLTrainingData,
@@ -5363,6 +5364,18 @@ async function runWeatherBet(userId = null) {
               marketType: 'weather',
               userId,
             });
+            recordWeatherBet({
+              ticker: opp.ticker,
+              city: opp.city,
+              targetDate: opp.targetDate,
+              threshold: opp.threshold,
+              betSide: opp.betSide,
+              contracts: filled,
+              pricePerContract: opp.betPrice,
+              modelProb: opp.betModelProb,
+              edge: opp.betEdge,
+              userId,
+            });
           }
         }
       } catch (betErr) {
@@ -5471,6 +5484,36 @@ app.get('/api/weather-bet/status', (req, res) => {
     })),
   });
 });
+
+// Weather P&L summary
+app.get('/api/weather-bet/pnl', (req, res) => {
+  res.json(getWeatherPnLSummary(req.userId));
+});
+
+// Check settlements on demand
+app.post('/api/weather-bet/check-settlements', async (req, res) => {
+  try {
+    const userConfig = req.userState?.config || config;
+    await checkWeatherSettlements(kalshiRequest, userConfig);
+    res.json({ success: true, summary: getWeatherPnLSummary(req.userId) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+
+// Hourly settlement checker — runs every hour to auto-settle any finalized bets
+setInterval(async () => {
+  try {
+    // Use config from any active user (settlements are global)
+    const anyUserId = [...weatherBetIntervals.keys()][0];
+    if (!anyUserId) return;
+    const state = getUserState(anyUserId);
+    const userConfig = state?.config || config;
+    await checkWeatherSettlements(kalshiRequest, userConfig);
+  } catch {}
+}, 60 * 60 * 1000);
 
 // ──────────────────────────────────────────────────────────────────────────
 

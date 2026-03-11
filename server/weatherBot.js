@@ -112,16 +112,35 @@ const MONTH_MAP = {
 
 // ──────────────────────────────────────────────
 // GFS ENSEMBLE FORECAST (Open-Meteo)
-// Free, no API key. Updates every 6 hours.
+// Free, no API key. Runs every 6h at 00z/06z/12z/18z UTC.
+// Data available ~2.5h after each run time.
 // 30 independent ensemble members → probability distribution.
 // ──────────────────────────────────────────────
 const gfsCache = new Map(); // key: `${lat},${lon}` → { data, fetchedAt }
-const GFS_CACHE_TTL_MS = 60 * 60 * 1000; // Re-fetch at most once per hour
+
+// Returns the Unix ms timestamp of the most recently available GFS run.
+// GFS ensemble runs at 00z/06z/12z/18z UTC, available ~2.5h later.
+function lastGFSRunAvailableMs() {
+  const now = new Date();
+  const runHours = [0, 6, 12, 18];
+  const AVAIL_DELAY_H = 2.5;
+  // Walk backwards through today's (and yesterday's) run slots
+  for (let dayOffset = 0; dayOffset <= 1; dayOffset++) {
+    const d = new Date(now);
+    d.setUTCDate(d.getUTCDate() - dayOffset);
+    for (let i = runHours.length - 1; i >= 0; i--) {
+      d.setUTCHours(runHours[i] + AVAIL_DELAY_H, 30, 0, 0);
+      if (d.getTime() <= now.getTime()) return d.getTime();
+    }
+  }
+  return now.getTime() - 6 * 3600 * 1000; // fallback: 6h ago
+}
 
 async function fetchGFSEnsemble(lat, lon) {
   const cacheKey = `${lat.toFixed(4)},${lon.toFixed(4)}`;
   const cached = gfsCache.get(cacheKey);
-  if (cached && Date.now() - cached.fetchedAt < GFS_CACHE_TTL_MS) {
+  // Only re-fetch if a newer GFS run has become available since we last fetched
+  if (cached && cached.fetchedAt >= lastGFSRunAvailableMs()) {
     return cached.data;
   }
 
@@ -365,17 +384,27 @@ function parseKalshiWeatherMarket(market, seriesTicker) {
     ticker.match(/-T(\d+)$/i);
   const isAboveMarket = !!aboveMatch;
 
-  // --- Range market: "between X and Y°F" ---
-  const rangeMatch = title.match(/between\s+(\d+)\s+and\s+(\d+)\s*°?f/i);
+  // --- Range market: "between X and Y°F" or "X to Y°F" ---
+  const rangeMatch =
+    title.match(/between\s+(\d+)\s+and\s+(\d+)\s*°?f/i) ||
+    title.match(/(\d+)\s*(?:°?f)?\s*(?:to|-)\s*(\d+)\s*°?f/i);
   const isRangeMarket = !!rangeMatch && !isAboveMarket;
 
-  if (!isAboveMarket && !isRangeMarket) return null;
+  // --- Below market: "below X°F" / "less than X°F" (YES = high < threshold) ---
+  // Kalshi may frame these as separate markets or as NO-side descriptions.
+  const belowMatch = !isAboveMarket && !isRangeMarket &&
+    (title.match(/(?:below|less than|under|at or below|no more than|stay below)\s+(\d+)\s*°?f/i));
+  const isBelowMarket = !!belowMatch;
+
+  if (!isAboveMarket && !isRangeMarket && !isBelowMarket) return null;
 
   // Extract threshold(s)
   let thresholdLow, thresholdHigh;
   if (isRangeMarket) {
     thresholdLow = parseInt(rangeMatch[1]);
     thresholdHigh = parseInt(rangeMatch[2]);
+  } else if (isBelowMarket) {
+    thresholdLow = parseInt(belowMatch[1]);
   } else {
     thresholdLow = parseInt(aboveMatch[1]);
   }
@@ -413,6 +442,7 @@ function parseKalshiWeatherMarket(market, seriesTicker) {
     targetDate,
     isAboveMarket,
     isRangeMarket,
+    isBelowMarket,
     thresholdLow,
     thresholdHigh: thresholdHigh || null,
     hoursToClose,
@@ -439,12 +469,10 @@ function calcKalshiFee(price, maker = true) {
 function calcWeatherEdge(modelProb, marketAskPrice, maker = true) {
   const fee = calcKalshiFee(marketAskPrice, maker);
   const spreadPenalty = 0.01; // conservative 1% spread/slippage buffer
+  // fee is in dollar-per-contract units, same as marketAskPrice — subtract directly
   const grossEdge = modelProb - marketAskPrice;
-  const netEdge = grossEdge - (fee / marketAskPrice) * 100 / 100 - spreadPenalty;
-  // Simplify: edge in probability units (0-1)
-  const feeFraction = fee / marketAskPrice;
-  const netEdgeFraction = modelProb - marketAskPrice - feeFraction - spreadPenalty;
-  return { grossEdge, netEdgeFraction, fee, feeFraction };
+  const netEdgeFraction = modelProb - marketAskPrice - fee - spreadPenalty;
+  return { grossEdge, netEdgeFraction, fee };
 }
 
 // ──────────────────────────────────────────────
@@ -453,7 +481,7 @@ function calcWeatherEdge(modelProb, marketAskPrice, maker = true) {
 
 export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
   const cfg = userConfig?.weatherBetting || {};
-  const minEdge = cfg.minEdge ?? 0.12;            // 12% minimum net edge
+  const minEdge = cfg.minEdge ?? 0.08;            // 8% minimum net edge (fee math is correct now)
   const minLiquidity = cfg.minLiquidity ?? 500;   // $500 minimum open interest
   const maxHoursToClose = cfg.maxHoursToClose ?? 30; // Don't bet >30h before close
   const minHoursToClose = cfg.minHoursToClose ?? 2;  // Don't bet <2h before close
@@ -504,12 +532,18 @@ export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
           if (parsed.hoursToClose < minHoursToClose) continue;
           if (parsed.liquidity < minLiquidity && parsed.volume < minLiquidity) continue;
 
-          const { targetDate, isAboveMarket, isRangeMarket, thresholdLow, thresholdHigh } = parsed;
+          const { targetDate, isAboveMarket, isRangeMarket, isBelowMarket, thresholdLow, thresholdHigh } = parsed;
 
           // 5. Calculate model probability from GFS ensemble
+          // modelProb always represents P(YES wins) for this market.
           let modelProb = null;
           if (isAboveMarket) {
+            // YES = high >= threshold
             modelProb = gfsEnsembleProb(ensemble, targetDate, thresholdLow);
+          } else if (isBelowMarket) {
+            // YES = high < threshold → P(YES) = 1 - P(high >= threshold)
+            const pAbove = gfsEnsembleProb(ensemble, targetDate, thresholdLow);
+            if (pAbove !== null) modelProb = 1 - pAbove;
           } else if (isRangeMarket && thresholdHigh != null) {
             // P(in range) = P(>= low) - P(>= high)
             const probAboveLow = gfsEnsembleProb(ensemble, targetDate, thresholdLow);
@@ -521,23 +555,26 @@ export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
 
           if (modelProb === null) continue;
 
-          // 5b. LOCK: if today's observed temp already confirms the outcome, override probability.
-          //     This is the highest-confidence edge: current observation IS the settlement data.
+          // 5b. LOCK: if today's observed max already confirms the outcome, override probability.
+          //     currentObsF is the highest NWS observation recorded today so far.
           let observationLock = null;
           if (currentObsF !== null && targetDate === todayDate) {
             if (isAboveMarket && currentObsF >= thresholdLow) {
-              observationLock = 0.97; // daily high already confirmed above threshold — YES near-certain
-              console.log(`  [WEATHER] ★ OBS LOCK: ${cityConfig.name} current ${currentObsF.toFixed(1)}°F ≥ ${thresholdLow}°F threshold`);
-            } else if (isRangeMarket && thresholdHigh != null && currentObsF >= thresholdLow && currentObsF < thresholdHigh) {
-              // Current obs is in range — not conclusive (high may still climb out of range)
+              // Daily high already confirmed above threshold — YES is near-certain
+              observationLock = 0.97;
+              console.log(`  [WEATHER] ★ OBS LOCK YES: ${cityConfig.name} observed max ${currentObsF.toFixed(1)}°F ≥ ${thresholdLow}°F`);
+            } else if (isBelowMarket && currentObsF >= thresholdLow) {
+              // Already exceeded the "below" threshold — YES (below) is near-impossible
+              observationLock = 0.03;
+              console.log(`  [WEATHER] ★ OBS LOCK NO: ${cityConfig.name} observed max ${currentObsF.toFixed(1)}°F ≥ ${thresholdLow}°F, below-market YES dead`);
             } else if (isAboveMarket && currentObsF < thresholdLow - 8) {
-              // Very unlikely to reach threshold — soft NO lock
+              // Current max is way below threshold — very unlikely to reach it
               observationLock = 0.04;
-              console.log(`  [WEATHER] ★ OBS LOCK: ${cityConfig.name} current ${currentObsF.toFixed(1)}°F well below ${thresholdLow}°F`);
+              console.log(`  [WEATHER] ★ OBS LOCK NO: ${cityConfig.name} max so far ${currentObsF.toFixed(1)}°F, ${thresholdLow}°F threshold unreachable`);
             }
           }
 
-          // 6. Blend GEFS + HRRR + NBM + NWS for final probability
+          // 6. Blend GEFS + HRRR + NBM + NWS for final P(YES)
           const stats = gfsEnsembleStats(ensemble, targetDate);
           const gfsSpreadVal = parseFloat(stats?.spread || 4);
           const hrrrHigh = hrrrData ? getModelHigh(hrrrData, targetDate) : null;
@@ -551,6 +588,11 @@ export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
             finalModelProb = blendModelProbs(
               modelProb, hrrrHigh, nbmHigh, nwsHigh, gfsSpreadVal, thresholdLow, parsed.hoursToClose
             );
+          } else if (isBelowMarket) {
+            // Blend in terms of P(above threshold), then invert
+            const pAboveGFS = gfsEnsembleProb(ensemble, targetDate, thresholdLow) ?? (1 - modelProb);
+            const blendedAbove = blendModelProbs(pAboveGFS, hrrrHigh, nbmHigh, nwsHigh, gfsSpreadVal, thresholdLow, parsed.hoursToClose);
+            finalModelProb = Math.max(0.02, Math.min(0.98, 1 - blendedAbove));
           } else {
             // Range market: blend each bound separately, then take the difference
             const gfsProbLow  = gfsEnsembleProb(ensemble, targetDate, thresholdLow) ?? modelProb;
@@ -566,9 +608,11 @@ export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
           const yesEdge = calcWeatherEdge(finalModelProb, parsed.yesAsk, useMaker);
           const noEdge = calcWeatherEdge(1 - finalModelProb, parsed.noAsk, useMaker);
 
+          const marketTypeLabel = isAboveMarket ? '>=' : isBelowMarket ? '<' : 'range';
+
           // Log every market evaluated (for diagnostics)
           console.log(
-            `  [WEATHER] ${parsed.city} ${targetDate} ${isAboveMarket ? '>=' : 'range'} ${thresholdLow}°F` +
+            `  [WEATHER] ${parsed.city} ${targetDate} ${marketTypeLabel} ${thresholdLow}°F` +
             ` | GEFS:${(modelProb * 100).toFixed(1)}%` +
             ` HRRR:${hrrrHigh !== null ? hrrrHigh.toFixed(1) + '°F' : 'n/a'}` +
             ` NBM:${nbmHigh !== null ? nbmHigh.toFixed(1) + '°F' : 'n/a'}` +
@@ -601,6 +645,7 @@ export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
               thresholdHigh: parsed.thresholdHigh,
               isAboveMarket,
               isRangeMarket,
+              isBelowMarket,
               betSide,
               betPrice,
               betEdge,
@@ -640,7 +685,7 @@ export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
     console.log(`\n☁ WEATHER SCAN: ${opportunities.length} opportunity(ies) found`);
     for (const opp of opportunities) {
       console.log(
-        `  ★ ${opp.betSide} on ${opp.city} ${opp.isAboveMarket ? '>=' : 'range'} ${opp.threshold}°F` +
+        `  ★ ${opp.betSide} on ${opp.city} ${opp.isAboveMarket ? '>=' : opp.isBelowMarket ? '<' : 'range'} ${opp.threshold}°F` +
         ` on ${opp.targetDate} | edge=${(opp.betEdge * 100).toFixed(1)}%` +
         ` | GFS=${(opp.betModelProb * 100).toFixed(1)}% vs market=${(opp.betPrice * 100).toFixed(0)}c`
       );
@@ -670,8 +715,10 @@ export function calcWeatherBetSize(modelProb, marketPrice, bankroll, cfg = {}) {
   // Actually: f* = (p * (b+1) - 1) / b for a bet that returns b per dollar wagered
   // For prediction market: if you pay $price and win $1, your profit is $(1-price)
   // So b_net = (1 - price) / price, and f* = (p - (1-p)/b_net) ... let's use standard:
-  // f* = (p*(b_net+1) - 1) / b_net = (p/price - 1) / ((1-price)/price) = (p - price) / (1 - price)
-  const kellySizing = (modelProb - marketPrice) / (1 - marketPrice);
+  // f* = (p - price) / (1 - price), using effective cost = price + fee
+  const fee = calcKalshiFee(marketPrice);
+  const effectiveCost = Math.min(0.99, marketPrice + fee);
+  const kellySizing = (modelProb - effectiveCost) / (1 - effectiveCost);
 
   const fractional = kellySizing * kellyFraction;
   const capped = Math.min(fractional, maxPct);
@@ -681,21 +728,44 @@ export function calcWeatherBetSize(modelProb, marketPrice, bankroll, cfg = {}) {
 }
 
 // ──────────────────────────────────────────────
-// DIAGNOSTIC: Get current NWS observed temperature for a station
-// Useful for checking if a market is about to settle and comparing to forecast
+// NWS OBSERVATIONS
+// Fetches today's hourly observations and returns the highest temperature recorded
+// so far today. More accurate than just "latest" for the observation lock — the
+// daily high may have already passed even if the current reading is lower.
 // ──────────────────────────────────────────────
 export async function getNWSCurrentObservation(station) {
   try {
-    const url = `https://api.weather.gov/stations/${station}/observations/latest`;
+    const todayUTC = new Date().toISOString().split('T')[0];
+    const startISO = `${todayUTC}T00:00:00+00:00`;
+    const url = `https://api.weather.gov/stations/${station}/observations?start=${startISO}&limit=24`;
     const resp = await fetch(url, {
-      headers: { 'User-Agent': '(Shimi WeatherBot, contact@shimi.app)' },
-      signal: AbortSignal.timeout(8000),
+      headers: {
+        'User-Agent': '(Shimi WeatherBot, contact@shimi.app)',
+        'Accept': 'application/geo+json',
+      },
+      signal: AbortSignal.timeout(10000),
     });
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      // Fallback to single latest observation
+      const fallback = await fetch(`https://api.weather.gov/stations/${station}/observations/latest`, {
+        headers: { 'User-Agent': '(Shimi WeatherBot, contact@shimi.app)' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!fallback.ok) return null;
+      const d = await fallback.json();
+      const c = d.properties?.temperature?.value;
+      return c !== null && c !== undefined ? (c * 9 / 5) + 32 : null;
+    }
     const data = await resp.json();
-    const tempC = data.properties?.temperature?.value;
-    if (tempC === null || tempC === undefined) return null;
-    return (tempC * 9 / 5) + 32; // convert C to F
+    const features = data.features || [];
+    let maxF = null;
+    for (const f of features) {
+      const c = f.properties?.temperature?.value;
+      if (c === null || c === undefined) continue;
+      const f_ = (c * 9 / 5) + 32;
+      if (maxF === null || f_ > maxF) maxF = f_;
+    }
+    return maxF;
   } catch {
     return null;
   }
