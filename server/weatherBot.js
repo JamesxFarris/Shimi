@@ -545,9 +545,11 @@ export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
             const pAbove = gfsEnsembleProb(ensemble, targetDate, thresholdLow);
             if (pAbove !== null) modelProb = 1 - pAbove;
           } else if (isRangeMarket && thresholdHigh != null) {
-            // P(in range) = P(>= low) - P(>= high)
-            const probAboveLow = gfsEnsembleProb(ensemble, targetDate, thresholdLow);
-            const probAboveHigh = gfsEnsembleProb(ensemble, targetDate, thresholdHigh);
+            // P(in range [low, high]) = P(>= low) - P(>= high+1)
+            // Upper bound is inclusive: "67 to 68°F" means high is 67°F or 68°F.
+            // Using thresholdHigh (not +1) would exclude the top value entirely.
+            const probAboveLow  = gfsEnsembleProb(ensemble, targetDate, thresholdLow);
+            const probAboveHigh = gfsEnsembleProb(ensemble, targetDate, thresholdHigh + 1);
             if (probAboveLow !== null && probAboveHigh !== null) {
               modelProb = probAboveLow - probAboveHigh;
             }
@@ -567,6 +569,10 @@ export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
               // Already exceeded the "below" threshold — YES (below) is near-impossible
               observationLock = 0.03;
               console.log(`  [WEATHER] ★ OBS LOCK NO: ${cityConfig.name} observed max ${currentObsF.toFixed(1)}°F ≥ ${thresholdLow}°F, below-market YES dead`);
+            } else if (isRangeMarket && thresholdHigh != null && currentObsF > thresholdHigh) {
+              // Already above the range's upper bound — YES is dead
+              observationLock = 0.03;
+              console.log(`  [WEATHER] ★ OBS LOCK NO: ${cityConfig.name} max ${currentObsF.toFixed(1)}°F exceeded range ceiling ${thresholdHigh}°F`);
             } else if (isAboveMarket && currentObsF < thresholdLow - 8) {
               // Current max is way below threshold — very unlikely to reach it
               observationLock = 0.04;
@@ -594,12 +600,13 @@ export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
             const blendedAbove = blendModelProbs(pAboveGFS, hrrrHigh, nbmHigh, nwsHigh, gfsSpreadVal, thresholdLow, parsed.hoursToClose);
             finalModelProb = Math.max(0.02, Math.min(0.98, 1 - blendedAbove));
           } else {
-            // Range market: blend each bound separately, then take the difference
+            // Range market: blend each bound separately, then take the difference.
+            // Use thresholdHigh+1 so the upper value is included (same logic as modelProb above).
             const gfsProbLow  = gfsEnsembleProb(ensemble, targetDate, thresholdLow) ?? modelProb;
-            const gfsProbHigh = thresholdHigh ? (gfsEnsembleProb(ensemble, targetDate, thresholdHigh) ?? 0) : 0;
-            const blendedLow  = blendModelProbs(gfsProbLow,  hrrrHigh, nbmHigh, nwsHigh, gfsSpreadVal, thresholdLow,  parsed.hoursToClose);
+            const gfsProbHigh = thresholdHigh ? (gfsEnsembleProb(ensemble, targetDate, thresholdHigh + 1) ?? 0) : 0;
+            const blendedLow  = blendModelProbs(gfsProbLow,  hrrrHigh, nbmHigh, nwsHigh, gfsSpreadVal, thresholdLow,      parsed.hoursToClose);
             const blendedHigh = thresholdHigh
-              ? blendModelProbs(gfsProbHigh, hrrrHigh, nbmHigh, nwsHigh, gfsSpreadVal, thresholdHigh, parsed.hoursToClose)
+              ? blendModelProbs(gfsProbHigh, hrrrHigh, nbmHigh, nwsHigh, gfsSpreadVal, thresholdHigh + 1, parsed.hoursToClose)
               : 0;
             finalModelProb = Math.max(0.01, blendedLow - blendedHigh);
           }
