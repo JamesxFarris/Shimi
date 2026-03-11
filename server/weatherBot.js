@@ -378,35 +378,47 @@ function parseKalshiWeatherMarket(market, seriesTicker) {
   const ticker = market.ticker || '';
   const title = (market.title || '').toLowerCase();
 
-  // --- Threshold (above) market: "at or above X°F" ---
-  const aboveMatch =
-    title.match(/(?:at or above|at least|above|exceed)\s+(\d+)\s*°?f/i) ||
-    ticker.match(/-T(\d+)$/i);
-  const isAboveMarket = !!aboveMatch;
+  // --- Threshold (above) market: ticker -T65 or title "at or above X°F" ---
+  const aboveTickerMatch = ticker.match(/-T(\d+)$/i);
+  const aboveTitleMatch  = title.match(/(?:at or above|at least|above|exceed)\s+(\d+)\s*°?f/i);
+  const aboveMatch       = aboveTickerMatch || aboveTitleMatch;
+  const isAboveMarket    = !!aboveMatch && !ticker.match(/-B(\d+)T(\d+)$/i);
 
-  // --- Range market: "between X and Y°F" or "X to Y°F" ---
-  const rangeMatch =
+  // --- Range market: ticker -B78T80 (T-value is EXCLUSIVE upper) or title "between X and Y°F" ---
+  // Ticker is the primary detection method — more reliable than title parsing.
+  // Kalshi range ticker convention: -B<low>T<exclusiveHigh>
+  //   e.g. B78T80 → high is 78°F or 79°F → store thresholdHigh = 79 (inclusive)
+  const rangeTickerMatch = !isAboveMarket && ticker.match(/-B(\d+)T(\d+)$/i);
+  const rangeTitleMatch  = !isAboveMarket && !rangeTickerMatch && (
     title.match(/between\s+(\d+)\s+and\s+(\d+)\s*°?f/i) ||
-    title.match(/(\d+)\s*(?:°?f)?\s*(?:to|-)\s*(\d+)\s*°?f/i);
-  const isRangeMarket = !!rangeMatch && !isAboveMarket;
+    title.match(/(\d+)\s*°?f\s+(?:to|and)\s+(\d+)\s*°?f/i)
+  );
+  const rangeMatch    = rangeTickerMatch || rangeTitleMatch;
+  const isRangeMarket = !!rangeMatch;
 
-  // --- Below market: "below X°F" / "less than X°F" (YES = high < threshold) ---
-  // Kalshi may frame these as separate markets or as NO-side descriptions.
-  const belowMatch = !isAboveMarket && !isRangeMarket &&
-    (title.match(/(?:below|less than|under|at or below|no more than|stay below)\s+(\d+)\s*°?f/i));
+  // --- Below market: title "below X°F" / "less than X°F" (YES = high < threshold) ---
+  const belowMatch   = !isAboveMarket && !isRangeMarket &&
+    title.match(/(?:below|less than|under|at or below|no more than|stay below)\s+(\d+)\s*°?f/i);
   const isBelowMarket = !!belowMatch;
 
   if (!isAboveMarket && !isRangeMarket && !isBelowMarket) return null;
 
-  // Extract threshold(s)
+  // Extract threshold(s) — thresholdHigh is always the INCLUSIVE upper bound
   let thresholdLow, thresholdHigh;
   if (isRangeMarket) {
-    thresholdLow = parseInt(rangeMatch[1]);
-    thresholdHigh = parseInt(rangeMatch[2]);
+    if (rangeTickerMatch) {
+      // Ticker T-value is the exclusive upper: B78T80 → range [78, 79] → inclusiveHigh = 80 - 1 = 79
+      thresholdLow  = parseInt(rangeTickerMatch[1]);
+      thresholdHigh = parseInt(rangeTickerMatch[2]) - 1;
+    } else {
+      // Title "between 78 and 79°F" → range [78, 79] inclusive → inclusiveHigh = 79
+      thresholdLow  = parseInt(rangeMatch[1]);
+      thresholdHigh = parseInt(rangeMatch[2]);
+    }
   } else if (isBelowMarket) {
     thresholdLow = parseInt(belowMatch[1]);
   } else {
-    thresholdLow = parseInt(aboveMatch[1]);
+    thresholdLow = parseInt(aboveTickerMatch ? aboveTickerMatch[1] : aboveTitleMatch[1]);
   }
 
   // Extract date from ticker (e.g. -26MAR10 → 2026-03-10)
