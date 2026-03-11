@@ -20,6 +20,18 @@
 
 import fetch from 'node-fetch';
 
+// Fetch with automatic retry on 429 (rate limit) with exponential backoff
+async function fetchWithRetry(url, options = {}, maxRetries = 4) {
+  let delay = 2000;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const resp = await fetch(url, options);
+    if (resp.status !== 429) return resp;
+    if (attempt === maxRetries) return resp; // return 429 so callers can handle it
+    await new Promise(r => setTimeout(r, delay));
+    delay *= 2;
+  }
+}
+
 // ──────────────────────────────────────────────
 // MATH HELPERS
 // ──────────────────────────────────────────────
@@ -157,7 +169,7 @@ async function fetchGFSEnsemble(lat, lon) {
     `&forecast_days=7` +
     `&timezone=auto`;
 
-  const resp = await fetch(url, {
+  const resp = await fetchWithRetry(url, {
     headers: { 'User-Agent': 'Shimi-WeatherBot/1.0' },
     signal: AbortSignal.timeout(20000),
   });
@@ -195,7 +207,7 @@ async function fetchDetModel(model, lat, lon, forecastDays = 3) {
     `&forecast_days=${forecastDays}` +
     `&timezone=auto`;
 
-  const resp = await fetch(url, {
+  const resp = await fetchWithRetry(url, {
     headers: { 'User-Agent': 'Shimi-WeatherBot/1.0' },
     signal: AbortSignal.timeout(12000),
   });
@@ -502,10 +514,13 @@ export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
   const opportunities = [];
   const errors = [];
 
-  // Process each city series in parallel
+  // Process cities in small batches to avoid hammering Open-Meteo rate limits
   const seriesList = Object.keys(WEATHER_CITIES);
+  const BATCH_SIZE = 2;
 
-  await Promise.allSettled(seriesList.map(async (seriesTicker) => {
+  for (let i = 0; i < seriesList.length; i += BATCH_SIZE) {
+    const batch = seriesList.slice(i, i + BATCH_SIZE);
+    await Promise.allSettled(batch.map(async (seriesTicker) => {
     const cityConfig = WEATHER_CITIES[seriesTicker];
 
     try {
@@ -696,6 +711,7 @@ export async function scanWeatherMarkets(kalshiReq, userConfig = {}) {
       console.error(`[WEATHER] Error scanning ${seriesTicker}: ${seriesErr.message}`);
     }
   }));
+  } // end batch loop
 
   // Sort by edge descending
   opportunities.sort((a, b) => b.betEdge - a.betEdge);
