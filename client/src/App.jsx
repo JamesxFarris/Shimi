@@ -422,6 +422,19 @@ function App() {
     maxBetsPerMarket: 3,
     minTimeBetweenBets: 60000
   })
+  const [hedgeMode, setHedgeMode] = useState({
+    enabled: false,
+    arbitrageEnabled: true,
+    hedgeEnabled: true,
+    maxCombinedCost: 0.98,
+    minArbSpread: 0.01,
+    maxHedgeCostPct: 40,
+    minPrimaryEdge: 3,
+    sizingMode: 'proportional',
+    maxBothSidesPerCycle: 2,
+  })
+  const [hedgeScanResults, setHedgeScanResults] = useState(null)
+  const [hedgeScanLoading, setHedgeScanLoading] = useState(false)
   const [settingsSavedSection, setSettingsSavedSection] = useState(null)
   const [settingsSaving, setSettingsSaving] = useState(false)
   // Model monitoring state
@@ -634,6 +647,7 @@ function App() {
     fetchRiskSettings()     // Get saved risk settings
     fetchScaleInSettings()  // Get saved scale-in settings
     fetchModelMonitoring()  // Get prospective data, selectivity rules
+    fetchHedgeSettings()    // Get hedge mode settings
     checkAuth()
 
     // Track whether fast polling is active to avoid double-fetching opportunities
@@ -936,6 +950,53 @@ function App() {
     } catch (err) {
       console.error('Error fetching scale-in settings:', err)
     }
+  }
+
+  // Fetch hedge mode settings from server
+  const fetchHedgeSettings = async () => {
+    try {
+      const res = await authFetch(`${API_BASE}/api/hedge-mode/settings`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      if (data.success && data.hedgeMode) {
+        setHedgeMode(data.hedgeMode)
+      }
+    } catch (err) {
+      console.error('Error fetching hedge settings:', err)
+    }
+  }
+
+  // Save hedge mode settings
+  const saveHedgeSettings = async (updates) => {
+    setSettingsSaving(true)
+    try {
+      const res = await authFetch(`${API_BASE}/api/hedge-mode/settings`, {
+        method: 'POST',
+        body: JSON.stringify(updates || hedgeMode)
+      })
+      const data = await res.json()
+      if (data.success && data.hedgeMode) {
+        setHedgeMode(data.hedgeMode)
+        setSettingsSavedSection('hedge')
+        setTimeout(() => setSettingsSavedSection(null), 2000)
+      }
+    } catch (err) {
+      console.error('Error saving hedge settings:', err)
+    }
+    setSettingsSaving(false)
+  }
+
+  // Scan for hedge opportunities
+  const scanHedgeOpportunities = async () => {
+    setHedgeScanLoading(true)
+    try {
+      const res = await authFetch(`${API_BASE}/api/hedge-mode/scan`)
+      const data = await res.json()
+      if (data.success) setHedgeScanResults(data)
+    } catch (err) {
+      console.error('Error scanning hedge opportunities:', err)
+    }
+    setHedgeScanLoading(false)
   }
 
   // Update local risk settings state (doesn't save until Save clicked)
@@ -2564,6 +2625,12 @@ function App() {
                         {isAuthenticated ? 'Live' : 'Simulation'}
                       </span>
                     </div>
+                    <div className="settings-item">
+                      <span className="settings-label">Hedge Mode</span>
+                      <span className={`settings-value`} style={{ color: hedgeMode.enabled ? '#ff8800' : '#888' }}>
+                        {hedgeMode.enabled ? 'Active' : 'Off'}
+                      </span>
+                    </div>
                   </div>
                 </div>
 
@@ -2596,6 +2663,138 @@ function App() {
 
                 {/* Scale-In Settings - hidden from UI, logic still active server-side */}
 
+                {/* Hedge Mode / Both-Sides Strategy */}
+                <div className="settings-card wide" style={{ borderLeft: '3px solid #ff8800' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <h3 className="settings-card-title" style={{ margin: 0 }}>Hedge Mode (Both-Sides)</h3>
+                      <p className="settings-description" style={{ margin: '4px 0 0' }}>
+                        Buy YES and NO on the same market to lock in guaranteed profits (arbitrage) or reduce risk (hedging).
+                      </p>
+                    </div>
+                    <button
+                      className={`auto-bet-btn ${hedgeMode.enabled ? 'active' : ''}`}
+                      style={{ minWidth: '90px' }}
+                      onClick={() => {
+                        const next = { ...hedgeMode, enabled: !hedgeMode.enabled }
+                        setHedgeMode(next)
+                        saveHedgeSettings(next)
+                      }}
+                    >
+                      {hedgeMode.enabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+
+                  {hedgeMode.enabled && (
+                    <div style={{ marginTop: '14px' }}>
+                      <div className="settings-list">
+                        <div className="settings-item">
+                          <span className="settings-label">Arbitrage (cost &lt; $1.00)</span>
+                          <button
+                            className={`disconnect-btn`}
+                            style={{ padding: '3px 10px', fontSize: '11px', color: hedgeMode.arbitrageEnabled ? '#00ff88' : '#888' }}
+                            onClick={() => {
+                              const next = { ...hedgeMode, arbitrageEnabled: !hedgeMode.arbitrageEnabled }
+                              setHedgeMode(next)
+                              saveHedgeSettings(next)
+                            }}
+                          >{hedgeMode.arbitrageEnabled ? 'On' : 'Off'}</button>
+                        </div>
+                        <div className="settings-item">
+                          <span className="settings-label">Hedging (both edges +EV)</span>
+                          <button
+                            className={`disconnect-btn`}
+                            style={{ padding: '3px 10px', fontSize: '11px', color: hedgeMode.hedgeEnabled ? '#00ff88' : '#888' }}
+                            onClick={() => {
+                              const next = { ...hedgeMode, hedgeEnabled: !hedgeMode.hedgeEnabled }
+                              setHedgeMode(next)
+                              saveHedgeSettings(next)
+                            }}
+                          >{hedgeMode.hedgeEnabled ? 'On' : 'Off'}</button>
+                        </div>
+                        <div className="settings-item">
+                          <span className="settings-label">Sizing Mode</span>
+                          <button
+                            className={`disconnect-btn`}
+                            style={{ padding: '3px 10px', fontSize: '11px' }}
+                            onClick={() => {
+                              const next = { ...hedgeMode, sizingMode: hedgeMode.sizingMode === 'proportional' ? 'equal' : 'proportional' }
+                              setHedgeMode(next)
+                              saveHedgeSettings(next)
+                            }}
+                          >{hedgeMode.sizingMode === 'proportional' ? 'Proportional' : 'Equal 50/50'}</button>
+                        </div>
+                        <div className="settings-item">
+                          <span className="settings-label">Max Hedge Budget</span>
+                          <span className="settings-value">{hedgeMode.maxHedgeCostPct || 40}%</span>
+                        </div>
+                        <div className="settings-item">
+                          <span className="settings-label">Min Primary Edge</span>
+                          <span className="settings-value">{hedgeMode.minPrimaryEdge || 3}%</span>
+                        </div>
+                        <div className="settings-item">
+                          <span className="settings-label">Max Per Cycle</span>
+                          <span className="settings-value">{hedgeMode.maxBothSidesPerCycle || 2}</span>
+                        </div>
+                      </div>
+
+                      {/* Scan Button */}
+                      <div style={{ marginTop: '12px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <button
+                          className="connect-btn"
+                          style={{ fontSize: '12px', padding: '6px 14px' }}
+                          onClick={scanHedgeOpportunities}
+                          disabled={hedgeScanLoading}
+                        >
+                          {hedgeScanLoading ? 'Scanning...' : 'Scan for Opportunities'}
+                        </button>
+                        {hedgeScanResults && (
+                          <span style={{ fontSize: '12px', opacity: 0.6 }}>
+                            {hedgeScanResults.opportunities.length} found / {hedgeScanResults.totalScanned} scanned
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Scan Results */}
+                      {hedgeScanResults && hedgeScanResults.opportunities.length > 0 && (
+                        <div style={{ marginTop: '10px', maxHeight: '250px', overflowY: 'auto' }}>
+                          {hedgeScanResults.opportunities.map((opp, i) => (
+                            <div key={i} style={{
+                              padding: '8px 12px', marginBottom: '4px', borderRadius: '6px',
+                              background: opp.type === 'ARBITRAGE' ? 'rgba(0,255,136,0.06)' : 'rgba(255,136,0,0.06)',
+                              border: `1px solid ${opp.type === 'ARBITRAGE' ? 'rgba(0,255,136,0.15)' : 'rgba(255,136,0,0.15)'}`,
+                              fontSize: '12px',
+                            }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                <span>
+                                  <strong style={{ color: opp.type === 'ARBITRAGE' ? '#00ff88' : '#ff8800' }}>{opp.type}</strong>
+                                  <span style={{ marginLeft: '8px' }}>{opp.token}</span>
+                                  <span style={{ marginLeft: '6px', opacity: 0.5 }}>{opp.timeRemaining?.toFixed(1)}min left</span>
+                                </span>
+                                <span style={{ color: opp.type === 'ARBITRAGE' ? '#00ff88' : '#ff8800', fontWeight: 'bold' }}>
+                                  {opp.type === 'ARBITRAGE'
+                                    ? `+$${(opp.netArbProfit * 100).toFixed(1)}/100ct`
+                                    : `EV: ${(opp.combinedEV * 100).toFixed(2)}c`
+                                  }
+                                </span>
+                              </div>
+                              <div style={{ opacity: 0.6, marginTop: '2px' }}>
+                                YES: {(opp.yesAsk * 100).toFixed(0)}c | NO: {(opp.noAsk * 100).toFixed(0)}c | Combined: {(opp.combinedCost * 100).toFixed(1)}c
+                                {opp.type === 'HEDGE' && <> | Primary: {opp.primarySide} ({opp.primaryEdge}% edge)</>}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {hedgeScanResults && hedgeScanResults.opportunities.length === 0 && (
+                        <div style={{ marginTop: '8px', fontSize: '12px', opacity: 0.5 }}>
+                          No arbitrage or hedge opportunities found right now. Markets need mispriced YES+NO spreads.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
 
                 {/* How It Works */}
                 <div className="settings-card wide">

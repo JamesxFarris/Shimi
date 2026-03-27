@@ -190,6 +190,22 @@ const DEFAULT_CONFIG = {
     easyProfitThreshold: 12, // Near expiry (<5min): take 12%+ profit (accounts for fees)
     coinFlipPreventionEnabled: true // Exit coin-flip positions near expiry (can disable to ride it out)
     // Note: Early exits (>5min left) require 18%+ profit to justify fees
+  },
+  // Hedge mode: buy both YES and NO on same market for risk-free or risk-reduced positions
+  hedgeMode: {
+    enabled: false, // Must be explicitly enabled
+    // Arbitrage: auto-detect when YES ask + NO ask < $1.00 (guaranteed profit)
+    arbitrageEnabled: true,
+    maxCombinedCost: 0.98, // Max combined cost in dollars (< $1.00 = arb exists)
+    minArbSpread: 0.01, // Min $0.01 guaranteed profit per contract pair
+    // Hedge: buy weaker side to reduce risk when primary bet is uncertain
+    hedgeEnabled: true,
+    maxHedgeCostPct: 40, // Max % of budget to spend on hedge side
+    minPrimaryEdge: 3, // Primary side must have at least 3% edge
+    minHedgeEdge: 0, // Hedge side only needs non-negative edge (we're buying insurance)
+    // Sizing: how to split capital between sides
+    sizingMode: 'proportional', // 'equal' = 50/50 split, 'proportional' = size by edge ratio
+    maxBothSidesPerCycle: 2, // Max both-sides trades per 15-min cycle
   }
 };
 
@@ -4822,6 +4838,190 @@ app.post('/api/cancel-all-orders', async (req, res) => {
   }
 });
 
+// ============================================
+// HEDGE MODE: Both-sides arbitrage & hedging
+// ============================================
+
+// Track both-sides trades per cycle to enforce rate limiting
+const bothSidesCycleTracker = new Map(); // userId -> { timestamps: [] }
+
+function getBothSidesCountThisCycle(userId) {
+  const tracker = bothSidesCycleTracker.get(userId);
+  if (!tracker) return 0;
+  const cutoff = Date.now() - CYCLE_WINDOW_MS;
+  tracker.timestamps = tracker.timestamps.filter(ts => ts > cutoff);
+  return tracker.timestamps.length;
+}
+
+function recordBothSidesTrade(userId) {
+  if (!bothSidesCycleTracker.has(userId)) {
+    bothSidesCycleTracker.set(userId, { timestamps: [] });
+  }
+  bothSidesCycleTracker.get(userId).timestamps.push(Date.now());
+}
+
+// Scan all markets for both-sides opportunities (arbitrage + hedging)
+function scanForBothSidesOpportunities(markets, cryptoPrices, userConfig) {
+  const hedgeSettings = userConfig.hedgeMode || config.hedgeMode;
+  if (!hedgeSettings?.enabled) return [];
+
+  const opportunities = [];
+
+  for (const market of markets) {
+    const parsed = parseMarket(market);
+    const token = parsed.cryptoType;
+    const priceData = cryptoPrices[token];
+    if (!priceData?.price) continue;
+
+    const yesAsk = parsed.yesAsk || 0;
+    const noAsk = parsed.noAsk || 0;
+    if (yesAsk <= 0 || noAsk <= 0) continue;
+
+    const combinedCost = yesAsk + noAsk;
+    const arbSpread = 1.0 - combinedCost;
+
+    // Calculate fees for both sides
+    const yesFee = Math.min(2, Math.ceil(7 * yesAsk * (1 - yesAsk))) / 100;
+    const noFee = Math.min(2, Math.ceil(7 * noAsk * (1 - noAsk))) / 100;
+    const totalFees = yesFee + noFee;
+    const netArbProfit = arbSpread - totalFees;
+
+    // Evaluate edges on both sides independently
+    const yesResult = evaluateOpportunityEmpirical(
+      { ...parsed, forceCheckSide: 'YES' }, priceData.price, learnedParams, null, userConfig
+    );
+    const noResult = evaluateOpportunityEmpirical(
+      { ...parsed, forceCheckSide: 'NO' }, priceData.price, learnedParams, null, userConfig
+    );
+
+    const yesEdge = yesResult ? parseFloat(yesResult.edge || 0) : -99;
+    const noEdge = noResult ? parseFloat(noResult.edge || 0) : -99;
+    const yesWinRate = yesResult ? parseFloat(yesResult.winRate || 0) : 0;
+    const noWinRate = noResult ? parseFloat(noResult.winRate || 0) : 0;
+
+    // 1. PURE ARBITRAGE: combined cost < threshold AND net profit after fees > 0
+    if (hedgeSettings.arbitrageEnabled && combinedCost <= hedgeSettings.maxCombinedCost && netArbProfit >= hedgeSettings.minArbSpread) {
+      opportunities.push({
+        type: 'ARBITRAGE',
+        ticker: parsed.ticker,
+        title: parsed.title,
+        token,
+        yesAsk, noAsk,
+        combinedCost: Math.round(combinedCost * 10000) / 10000,
+        arbSpread: Math.round(arbSpread * 10000) / 10000,
+        netArbProfit: Math.round(netArbProfit * 10000) / 10000,
+        yesFee, noFee,
+        yesEdge, noEdge,
+        yesWinRate, noWinRate,
+        currentPrice: priceData.price,
+        strikePrice: parsed.strikePrice,
+        timeRemaining: parsed.timeRemainingMinutes,
+        parsed,
+        // Score: higher = better arb
+        score: netArbProfit * 10000,
+      });
+      continue; // Don't double-count as hedge
+    }
+
+    // 2. HEDGE: both sides have some edge, use one to reduce risk on the other
+    if (hedgeSettings.hedgeEnabled && yesEdge >= hedgeSettings.minHedgeEdge && noEdge >= hedgeSettings.minHedgeEdge) {
+      const primarySide = yesEdge >= noEdge ? 'YES' : 'NO';
+      const primaryEdge = primarySide === 'YES' ? yesEdge : noEdge;
+      const hedgeEdge = primarySide === 'YES' ? noEdge : yesEdge;
+
+      // Primary side must meet minimum edge threshold
+      if (primaryEdge < hedgeSettings.minPrimaryEdge) continue;
+
+      // Hedging makes sense when the primary edge is good but we want to reduce variance
+      // Combined expected value: we profit if either side has positive EV
+      const combinedEV = (yesWinRate / 100) * (1 - yesAsk) - (1 - yesWinRate / 100) * yesAsk
+                       + (noWinRate / 100) * (1 - noAsk) - (1 - noWinRate / 100) * noAsk;
+
+      if (combinedEV > 0) {
+        opportunities.push({
+          type: 'HEDGE',
+          ticker: parsed.ticker,
+          title: parsed.title,
+          token,
+          yesAsk, noAsk,
+          combinedCost: Math.round(combinedCost * 10000) / 10000,
+          primarySide,
+          primaryEdge: Math.round(primaryEdge * 100) / 100,
+          hedgeEdge: Math.round(hedgeEdge * 100) / 100,
+          combinedEV: Math.round(combinedEV * 10000) / 10000,
+          yesWinRate, noWinRate,
+          yesFee, noFee,
+          currentPrice: priceData.price,
+          strikePrice: parsed.strikePrice,
+          timeRemaining: parsed.timeRemainingMinutes,
+          parsed,
+          // Score: combined EV weighted by edge quality
+          score: combinedEV * 1000 + primaryEdge,
+        });
+      }
+    }
+  }
+
+  // Sort by score (best opportunities first)
+  opportunities.sort((a, b) => b.score - a.score);
+  return opportunities;
+}
+
+// Calculate contract counts for both sides of a hedge/arb trade
+function calculateHedgeSizing(opp, budgetCents, hedgeSettings) {
+  const yesAskCents = Math.round(opp.yesAsk * 100);
+  const noAskCents = Math.round(opp.noAsk * 100);
+
+  if (opp.type === 'ARBITRAGE') {
+    // Equal sizing: buy equal contracts on both sides for maximum arb profit
+    const maxContracts = Math.floor(budgetCents / (yesAskCents + noAskCents));
+    return {
+      yesContracts: Math.max(1, maxContracts),
+      noContracts: Math.max(1, maxContracts),
+      yesCost: Math.max(1, maxContracts) * yesAskCents,
+      noCost: Math.max(1, maxContracts) * noAskCents,
+      totalCost: Math.max(1, maxContracts) * (yesAskCents + noAskCents),
+    };
+  }
+
+  // HEDGE sizing
+  const mode = hedgeSettings.sizingMode || 'proportional';
+  const maxHedgePct = (hedgeSettings.maxHedgeCostPct || 40) / 100;
+
+  if (mode === 'equal') {
+    // Split budget 50/50
+    const halfBudget = Math.floor(budgetCents / 2);
+    const yesContracts = Math.max(1, Math.floor(halfBudget / yesAskCents));
+    const noContracts = Math.max(1, Math.floor(halfBudget / noAskCents));
+    return {
+      yesContracts, noContracts,
+      yesCost: yesContracts * yesAskCents,
+      noCost: noContracts * noAskCents,
+      totalCost: yesContracts * yesAskCents + noContracts * noAskCents,
+    };
+  }
+
+  // Proportional: more capital to higher-edge side
+  const primaryBudget = Math.floor(budgetCents * (1 - maxHedgePct));
+  const hedgeBudget = Math.floor(budgetCents * maxHedgePct);
+
+  let yesContracts, noContracts;
+  if (opp.primarySide === 'YES') {
+    yesContracts = Math.max(1, Math.floor(primaryBudget / yesAskCents));
+    noContracts = Math.max(1, Math.floor(hedgeBudget / noAskCents));
+  } else {
+    noContracts = Math.max(1, Math.floor(primaryBudget / noAskCents));
+    yesContracts = Math.max(1, Math.floor(hedgeBudget / yesAskCents));
+  }
+
+  return {
+    yesContracts, noContracts,
+    yesCost: yesContracts * yesAskCents,
+    noCost: noContracts * noAskCents,
+    totalCost: yesContracts * yesAskCents + noContracts * noAskCents,
+  };
+}
+
 // Auto-bet on best opportunity (Place Best Bet button) - now supports all markets
 app.post('/api/crypto/auto-bet', async (req, res) => {
   try {
@@ -4917,6 +5117,213 @@ app.post('/api/crypto/auto-bet', async (req, res) => {
       .sort((a, b) => parseFloat(b.winProbability) - parseFloat(a.winProbability));
 
     const totalScanned = cryptoMarkets.length;
+
+    // ============================================
+    // HEDGE MODE: Scan for both-sides opportunities
+    // ============================================
+    const hedgeSettings = userConfig.hedgeMode || config.hedgeMode;
+    if (hedgeSettings?.enabled) {
+      const bothSidesCount = getBothSidesCountThisCycle(req.userId);
+      const maxPerCycle = hedgeSettings.maxBothSidesPerCycle || 2;
+
+      if (bothSidesCount < maxPerCycle) {
+        const hedgeOpps = scanForBothSidesOpportunities(cryptoMarkets, cryptoPrices, userConfig);
+
+        if (hedgeOpps.length > 0) {
+          const hedgeBest = hedgeOpps[0];
+          const hedgeToken = hedgeBest.token;
+          const hedgeRemainingToken = getRemainingTokenBudget(hedgeBest.ticker, hedgeToken, req.userState, userConfig, req.userId);
+          const hedgeRemainingTotal = getRemainingTotalBudget(userConfig, req.userId);
+          const hedgeBudget = Math.min(hedgeRemainingToken, hedgeRemainingTotal);
+
+          if (hedgeBudget >= 20) {
+            // Check if this market already has a position (skip if so)
+            const hedgeBetKey = `${req.userId ?? 'default'}:${hedgeBest.ticker}`;
+            const alreadyBet = recentBets.has(hedgeBetKey);
+
+            if (!alreadyBet) {
+              console.log(` HEDGE MODE [${hedgeBest.type}]: ${hedgeBest.title} | YES@${(hedgeBest.yesAsk*100).toFixed(0)}c + NO@${(hedgeBest.noAsk*100).toFixed(0)}c = ${(hedgeBest.combinedCost*100).toFixed(1)}c`);
+
+              const sizing = calculateHedgeSizing(hedgeBest, hedgeBudget, hedgeSettings);
+
+              if (sizing.totalCost <= hedgeBudget) {
+                // Slippage buffer for fills
+                const fillSlippage = userConfig.selectivityRules?.fillSlippageCents ?? 3;
+                const yesPrice = Math.min(Math.round(hedgeBest.yesAsk * 100) + fillSlippage, 99);
+                const noPrice = Math.min(Math.round(hedgeBest.noAsk * 100) + fillSlippage, 99);
+
+                if (!userConfig.isAuthenticated) {
+                  // Simulated hedge trade
+                  const hedgeRecord = {
+                    id: Date.now().toString(),
+                    ticker: hedgeBest.ticker,
+                    title: hedgeBest.title,
+                    marketCategory: 'crypto',
+                    assetType: hedgeToken,
+                    side: 'both',
+                    hedgeType: hedgeBest.type,
+                    yesContracts: sizing.yesContracts,
+                    noContracts: sizing.noContracts,
+                    yesPrice: Math.round(hedgeBest.yesAsk * 100),
+                    noPrice: Math.round(hedgeBest.noAsk * 100),
+                    totalCost: sizing.totalCost,
+                    combinedCost: hedgeBest.combinedCost,
+                    arbSpread: hedgeBest.arbSpread || 0,
+                    netArbProfit: hedgeBest.netArbProfit || 0,
+                    primarySide: hedgeBest.primarySide || null,
+                    primaryEdge: hedgeBest.primaryEdge || 0,
+                    hedgeEdge: hedgeBest.hedgeEdge || 0,
+                    timestamp: new Date().toISOString(),
+                    status: 'simulated',
+                    auto: true,
+                    isHedge: true,
+                  };
+
+                  userBetHistory.unshift(hedgeRecord);
+                  userConfig.bankroll -= sizing.totalCost;
+                  trackSpend(req.userId, sizing.totalCost, hedgeToken);
+                  recordBothSidesTrade(req.userId);
+
+                  recentBets.set(hedgeBetKey, {
+                    timestamp: now, side: 'BOTH', probability: 99, betCount: 1
+                  });
+
+                  if (req.userId) saveUserState(req.userId);
+
+                  return res.json({
+                    success: true,
+                    simulated: true,
+                    hedge: true,
+                    hedgeType: hedgeBest.type,
+                    bet: hedgeRecord,
+                    opportunity: hedgeBest,
+                    newBalance: userConfig.bankroll / 100,
+                    risk: getRiskByType(req.userState),
+                  });
+                }
+
+                // REAL both-sides order placement
+                try {
+                  // Place YES order
+                  const yesOrder = {
+                    ticker: hedgeBest.ticker,
+                    action: 'buy',
+                    side: 'yes',
+                    type: 'limit',
+                    count: sizing.yesContracts,
+                    yes_price: yesPrice,
+                  };
+                  console.log(` HEDGE YES order:`, JSON.stringify(yesOrder));
+                  const yesResponse = await kalshiRequest('POST', '/portfolio/orders', yesOrder, userConfig);
+                  const yesResult = yesResponse.order || {};
+                  const yesFilled = yesResult.filled_count || 0;
+
+                  // Cancel if unfilled
+                  if (yesFilled === 0 && yesResult.order_id) {
+                    try { await kalshiRequest('DELETE', `/portfolio/orders/${yesResult.order_id}`, null, userConfig); }
+                    catch (e) { console.log(`Could not cancel YES order: ${e.message}`); }
+                  }
+
+                  // Place NO order
+                  const noOrder = {
+                    ticker: hedgeBest.ticker,
+                    action: 'buy',
+                    side: 'no',
+                    type: 'limit',
+                    count: sizing.noContracts,
+                    no_price: noPrice,
+                  };
+                  console.log(` HEDGE NO order:`, JSON.stringify(noOrder));
+                  const noResponse = await kalshiRequest('POST', '/portfolio/orders', noOrder, userConfig);
+                  const noResult = noResponse.order || {};
+                  const noFilled = noResult.filled_count || 0;
+
+                  // Cancel if unfilled
+                  if (noFilled === 0 && noResult.order_id) {
+                    try { await kalshiRequest('DELETE', `/portfolio/orders/${noResult.order_id}`, null, userConfig); }
+                    catch (e) { console.log(`Could not cancel NO order: ${e.message}`); }
+                  }
+
+                  const totalFilled = yesFilled + noFilled;
+                  if (totalFilled === 0) {
+                    return res.json({
+                      success: false,
+                      error: 'Both-sides orders not filled. No liquidity.',
+                      hedge: true,
+                    });
+                  }
+
+                  const actualYesCost = yesFilled * (yesResult.average_fill_price || yesPrice);
+                  const actualNoCost = noFilled * (noResult.average_fill_price || noPrice);
+                  const actualTotalCost = actualYesCost + actualNoCost;
+
+                  const hedgeRecord = {
+                    id: Date.now().toString(),
+                    ticker: hedgeBest.ticker,
+                    title: hedgeBest.title,
+                    marketCategory: 'crypto',
+                    assetType: hedgeToken,
+                    side: 'both',
+                    hedgeType: hedgeBest.type,
+                    yesContracts: yesFilled,
+                    noContracts: noFilled,
+                    yesPrice: yesResult.average_fill_price || yesPrice,
+                    noPrice: noResult.average_fill_price || noPrice,
+                    yesOrderId: yesResult.order_id,
+                    noOrderId: noResult.order_id,
+                    totalCost: actualTotalCost,
+                    combinedCost: hedgeBest.combinedCost,
+                    arbSpread: hedgeBest.arbSpread || 0,
+                    netArbProfit: hedgeBest.netArbProfit || 0,
+                    primarySide: hedgeBest.primarySide || null,
+                    primaryEdge: hedgeBest.primaryEdge || 0,
+                    hedgeEdge: hedgeBest.hedgeEdge || 0,
+                    timestamp: new Date().toISOString(),
+                    status: totalFilled === sizing.yesContracts + sizing.noContracts ? 'filled' : 'partial',
+                    auto: true,
+                    isHedge: true,
+                  };
+
+                  userBetHistory.unshift(hedgeRecord);
+                  trackSpend(req.userId, actualTotalCost, hedgeToken);
+                  recordBothSidesTrade(req.userId);
+
+                  recentBets.set(hedgeBetKey, {
+                    timestamp: now, side: 'BOTH', probability: 99, betCount: 1
+                  });
+
+                  trackBet({
+                    ...hedgeRecord,
+                    userId: req.userId,
+                    count: totalFilled,
+                    token: hedgeToken,
+                  });
+
+                  if (req.userId) saveUserState(req.userId);
+
+                  console.log(` HEDGE FILLED: ${yesFilled}x YES + ${noFilled}x NO on ${hedgeBest.ticker} (${hedgeBest.type})`);
+
+                  return res.json({
+                    success: true,
+                    hedge: true,
+                    hedgeType: hedgeBest.type,
+                    bet: hedgeRecord,
+                    opportunity: hedgeBest,
+                    risk: getRiskByType(req.userState),
+                  });
+                } catch (err) {
+                  console.error(` HEDGE ORDER ERROR: ${err.message}`);
+                  // Fall through to normal auto-bet if hedge fails
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    // ============================================
+    // END HEDGE MODE
+    // ============================================
 
     if (opportunities.length === 0) {
       return res.json({
@@ -8588,6 +8995,62 @@ app.post('/api/model/selectivity', (req, res) => {
     message: 'Selectivity rules updated',
     selectivityRules: current
   });
+});
+
+// ============================================
+// HEDGE MODE ENDPOINTS
+// ============================================
+
+app.get('/api/hedge-mode/settings', (req, res) => {
+  const userConfig = req.userState?.config || config;
+  res.json({
+    success: true,
+    hedgeMode: userConfig.hedgeMode || config.hedgeMode,
+  });
+});
+
+app.post('/api/hedge-mode/settings', (req, res) => {
+  if (!req.userId) return res.status(401).json({ error: 'Authentication required' });
+
+  const userConfig = req.userState.config;
+  const updates = req.body;
+  const current = userConfig.hedgeMode || { ...config.hedgeMode };
+
+  if (updates.enabled !== undefined) current.enabled = !!updates.enabled;
+  if (updates.arbitrageEnabled !== undefined) current.arbitrageEnabled = !!updates.arbitrageEnabled;
+  if (updates.hedgeEnabled !== undefined) current.hedgeEnabled = !!updates.hedgeEnabled;
+  if (updates.maxCombinedCost !== undefined) current.maxCombinedCost = Math.max(0.90, Math.min(1.0, updates.maxCombinedCost));
+  if (updates.minArbSpread !== undefined) current.minArbSpread = Math.max(0.005, Math.min(0.10, updates.minArbSpread));
+  if (updates.maxHedgeCostPct !== undefined) current.maxHedgeCostPct = Math.max(10, Math.min(50, updates.maxHedgeCostPct));
+  if (updates.minPrimaryEdge !== undefined) current.minPrimaryEdge = Math.max(1, Math.min(15, updates.minPrimaryEdge));
+  if (updates.sizingMode !== undefined && ['equal', 'proportional'].includes(updates.sizingMode)) current.sizingMode = updates.sizingMode;
+  if (updates.maxBothSidesPerCycle !== undefined) current.maxBothSidesPerCycle = Math.max(1, Math.min(10, updates.maxBothSidesPerCycle));
+
+  userConfig.hedgeMode = current;
+  saveUserState(req.userId);
+
+  res.json({ success: true, hedgeMode: current });
+});
+
+// Scan for current hedge opportunities without placing bets
+app.get('/api/hedge-mode/scan', async (req, res) => {
+  try {
+    const userConfig = req.userState?.config || config;
+    const cryptoMarkets = await fetchCryptoMarkets();
+
+    // Temporarily force enabled for scanning
+    const scanConfig = { ...userConfig, hedgeMode: { ...(userConfig.hedgeMode || config.hedgeMode), enabled: true } };
+    const opportunities = scanForBothSidesOpportunities(cryptoMarkets, cryptoPrices, scanConfig);
+
+    res.json({
+      success: true,
+      opportunities: opportunities.slice(0, 20),
+      totalScanned: cryptoMarkets.length,
+      hedgeEnabled: (userConfig.hedgeMode || config.hedgeMode).enabled,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ML Model status endpoint
